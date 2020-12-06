@@ -14,4 +14,5 @@ cp vimrc ~/.vimrc
 ex -c source ~/.vimrc -c qa!
 ex -c PlugInstall coc.nvim -c PlugInstall coc.nvim -c PlugInstall vimtex -c PlugInstall auto-pairs -c PlugInstall lightline.vim -c PlugInstall vim-colors-solarized -c PlugInstall nerdtree -c qa!
 
+ex -c CocInstall coc-python -c CocInstall coc-json -c CocInstall -c coc-vimtex -c qa!
 
