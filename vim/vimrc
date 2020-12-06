@@ -4,30 +4,31 @@ endif
 
 nnoremap qt :vert term<CR><C-w><C-r>
 
-nnoremap s5 :so %<CR>
+noremap qq <Esc>:q<CR>
+noremap qqa <Esc>:qa<CR>
+noremap qqq <Esc>:q!<CR>
+noremap qqqa <Esc>:qa!<CR>
 
-noremap qq <Esc> :q<CR>
-noremap qqq <Esc> :q!<CR>
 noremap vs <Esc>:e $MYVIMRC<CR>
+
 inoremap qw <Esc>:w<CR>i<Right>
 nnoremap qw :w<CR>
+
 inoremap ii <Esc><Right>
 
 set number
 
 call plug#begin()
+	Plug 'neoclide/coc-prettier'
+	Plug 'neoclide/coc.nvim'
+	
+	Plug 'lervag/vimtex'
+	
+	Plug 'jiangmiao/auto-pairs'
+
 	Plug 'itchyny/lightline.vim'
 	Plug 'altercation/vim-colors-solarized'
-	Plug 'calincru/flex-bison-syntax'
-	Plug 'scrooloose/syntastic'
-	Plug 'othree/html5.vim'
-	Plug 'ryanoasis/vim-devicons'
 	Plug 'scrooloose/nerdtree'
-	Plug 'valloric/youcompleteme'
-	Plug 'jiangmiao/auto-pairs'
-	Plug 'jrozner/vim-antlr'
-	Plug 'dart-lang/dart-vim-plugin'
-	Plug 'leafgarland/typescript-vim'
 call plug#end()
 
 noremap qf <Esc>:NERDTreeToggle<CR>
