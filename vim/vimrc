@@ -5,33 +5,35 @@ endif
 nnoremap qt :vert term<CR><C-w><C-r>
 
 noremap qq <Esc>:q<CR>
-noremap qqa <Esc>:qa<CR>
-noremap qqq <Esc>:q!<CR>
-noremap qqqa <Esc>:qa!<CR>
+noremap qaq <Esc>:qa<CR>
+noremap qq1 <Esc>:q!<CR>
+noremap qaq1 <Esc>:qa!<CR>
+
+noremap qf <Esc>:NERDTreeToggle<CR>
 
 noremap vs <Esc>:e $MYVIMRC<CR>
 
 inoremap qw <Esc>:w<CR>i<Right>
-nnoremap qw :w<CR>
-
 inoremap ii <Esc><Right>
+
+imap <C-@> <C-n>
+
+inoremap ( ()<Left>
+inoremap { {}<Left>
+inoremap [ []<Left>
+inoremap " ""<Left>
+inoremap ' ''<Left>
+
+nnoremap qw :w<CR>
 
 set number
 
 call plug#begin()
-	Plug 'neoclide/coc-prettier'
-	Plug 'neoclide/coc.nvim'
-	
 	Plug 'lervag/vimtex'
-	
-	Plug 'jiangmiao/auto-pairs'
-
+	Plug 'scrooloose/nerdtree'
 	Plug 'itchyny/lightline.vim'
 	Plug 'altercation/vim-colors-solarized'
-	Plug 'scrooloose/nerdtree'
 call plug#end()
-
-noremap qf <Esc>:NERDTreeToggle<CR>
 
 set encoding=UTF-8
 set tabstop=4
