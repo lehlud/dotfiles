@@ -29,21 +29,18 @@ nnoremap qw :w<CR>
 set number
 
 call plug#begin()
+	" coding
 	Plug 'lervag/vimtex'
+	Plug 'neoclide/coc.nvim'
+	" ui
 	Plug 'scrooloose/nerdtree'
 	Plug 'itchyny/lightline.vim'
-	Plug 'altercation/vim-colors-solarized'
 call plug#end()
 
 set encoding=UTF-8
 set tabstop=4
 
-set background=dark
 set laststatus=2
 set noshowmode
-let g:lightline = {
-	\ 'colorscheme': 'solarized',
-	\ }
 
-colors solarized
-
+colors darkblue

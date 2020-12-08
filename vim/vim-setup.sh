@@ -1,8 +1,11 @@
 # install curl
-sudo apt install curl --assume-yes
+sudo pacman -S curl --noconfirm
 
 # install vim
-sudo apt install vim --assume-yes
+sudo pacman -S vim --noconfirm
+
+# install nodejs for coc
+sudo pacman -S nodejs --noconfirm
 
 # setup vim-plug
 curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
@@ -11,6 +14,9 @@ curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
 # copy vimrc
 cp vimrc ~/.vimrc
 
-ex -c source ~/.vimrc -c qa!
-ex -c PlugInstall vimtex -c PlugInstall lightline.vim -c PlugInstall vim-colors-solarized -c PlugInstall nerdtree -c qa!
-
+# source copied vimrc
+vim -c source ~/.vimrc -c qa!
+# install plugins
+vim -c PlugInstall vimtex -c coc.nvim -c PlugInstall lightline.vim -c PlugInstall nerdtree -c qa!
+#install coc plugins
+vim -c CocInstall coc-python -c qa!
