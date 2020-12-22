@@ -1,11 +1,11 @@
 #!/bin/sh
 
-# install kitty
-sudo apt install kitty --assume-yes
+# install alacritty
+# sh alacritty-setup.sh
 
-# copy kitty.conf
-cp kitty.conf ~/.config/kitty/kitty.conf
-
-# update default terminal
-sudo update-alternatives --config x-terminal-emulator
+# FISH SETUP
+sudo apt install -y fish curl
+curl -L https://get.oh-my.fish | fish
+mkdir -p $fish_complete_path[1]
+cp extra/completions/alacritty.fish $fish_complete_path[1]/alacritty.fish
 

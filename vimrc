@@ -1,5 +1,5 @@
 if has("syntax")
-	syntax on
+    syntax on
 endif
 
 nnoremap qt :vert term<CR><C-w><C-r>
@@ -29,15 +29,16 @@ nnoremap qw :w<CR>
 set number
 
 call plug#begin()
-	" coding
-	Plug 'lervag/vimtex'
-	Plug 'neoclide/coc.nvim'
-	" ui
-	Plug 'scrooloose/nerdtree'
-	Plug 'itchyny/lightline.vim'
+    " coding
+    Plug 'lervag/vimtex'
+    Plug 'neoclide/coc.nvim'
+    " ui
+    Plug 'scrooloose/nerdtree'
+    Plug 'itchyny/lightline.vim'
 call plug#end()
 
 set encoding=UTF-8
+set expandtab
 set tabstop=4
 
 set laststatus=2
