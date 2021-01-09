@@ -1,7 +1,7 @@
 #!/bin/sh
 
-# install curl, vim and nodejs 
-sudo pacman -S vim nodejs --noconfirm
+# install vim, nodejs and npm (dependencies for coc.nvim)
+sudo pacman -S vim nodejs npm--noconfirm
 
 # setup vim-plug
 curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
