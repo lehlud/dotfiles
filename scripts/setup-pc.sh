@@ -19,10 +19,17 @@ sudo pacman -Syu --noconfirm
 mkdir ~/.config/kitty ~/.config/i3 ~/.config/picom ~/.config/polybar
 
 cp ../.config/kitty/kitty.conf ~/.config/kitty/kitty.conf
-cp ../.config/i3/config-laptop ~/.config/i3/config
+cp ../.config/i3/config-pc ~/.config/i3/config
 cp ../.config/picom/picom.conf ~/.config/picom/picom.conf
-cp ../.config/polybar/config-laptop ~/.config/polybar/config
+cp ../.config/polybar/config-pc ~/.config/polybar/config
 
 cp ../.bashrc ~/.bashrc
 
 sh setup-doom-emacs.sh
+
+# install rtl8821ce WiFi driver
+cd ~/Downloads
+git clone git clone https://github.com/tomaspinho/rtl8821ce
+cd rtl8821ce
+makepkg -si --noconfirm
+
