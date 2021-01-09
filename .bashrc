@@ -221,4 +221,9 @@ ex ()
 
 [[ -f ~/.bashrc-personal ]] && . ~/.bashrc-personal
 
+
+
+# custom aliases
+alias emacs="emacs --no-window-system"
+
 neofetch
