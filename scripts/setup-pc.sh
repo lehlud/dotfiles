@@ -28,15 +28,21 @@ cp ../.config/picom/picom.conf ~/.config/picom/picom.conf
 cp ../.config/polybar/config-pc ~/.config/polybar/config
 cp ../.bashrc ~/.bashrc
 
-# full system upgrade
-sudo pacman -Syu --noconfirm
-
 # setup doom emacs
 sh doom-emacs-setup.sh
+sudo systemctl unmask snapd.service
+sudo systemctl enable snapd.service
+sudo systemctl start snapd.service
+sudo ln -s /var/lib/snapd/snap /snap
+sudo snap install core
+
+# setup snap package manager
+sudo pacman -S snapd --noconfirm
+
 
 # install rtl8821ce WiFi driver
-cd ~/Downloads
-git clone https://github.com/tomaspinho/rtl8821ce
-cd rtl8821ce
-makepkg -si --noconfirm
+# cd ~/Downloads
+# git clone https://github.com/tomaspinho/rtl8821ce
+# cd rtl8821ce
+# makepkg -si --noconfirm
 

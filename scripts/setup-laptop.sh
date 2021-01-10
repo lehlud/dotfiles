@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/bash
 
 # install curl
 sudo pacman -S curl --noconfirm
@@ -10,8 +10,8 @@ sh git-setup.sh
 # install python as a dependency for kitty
 sudo pacman -S python --noconfirm
 
-# install kitty, i3-gaps, picom, polybar and nitrogen
-sudo pacman -S kitty i3-gaps picom polybar nitrogen --noconfirm
+# install kitty, i3-gaps, picom, polybar, nitrogen and rofi
+sudo pacman -S kitty i3-gaps picom polybar nitrogen rofi  --noconfirm
 
 # full system upgrade
 sudo pacman -Syu --noconfirm
@@ -25,4 +25,8 @@ cp ../.config/polybar/config-laptop ~/.config/polybar/config
 
 cp ../.bashrc ~/.bashrc
 
-sh setup-doom-emacs.sh
+sudo echo "#!/bin/sh -e" > /etc/rc.local
+sudo echo "chown $USER /sys/class/backlight/amdgpu_bl0/brightness" >> /etc/rc.local
+sudo echo "exit 0" >> /etc/rc.local
+
+sh doom-emacs-setup.sh
