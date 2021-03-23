@@ -13,4 +13,4 @@ cp ../.vimrc ~/.vimrc
 # source copied vimrc
 vim -c source ~/.vimrc -c qa!
 # install plugins
-vim -c PlugInstall vimtex -c coc.nvim -c PlugInstall lightline.vim -c PlugInstall nerdtree -c qa!
+vim -c PlugInstall -c qa!

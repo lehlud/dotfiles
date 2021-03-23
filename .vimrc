@@ -18,22 +18,18 @@ inoremap ii <Esc><Right>
 
 imap <C-@> <C-n>
 
-inoremap ( ()<Left>
-inoremap { {}<Left>
-inoremap [ []<Left>
-inoremap " ""<Left>
-inoremap ' ''<Left>
-
 nnoremap qw :w<CR>
 
 set number
 
 call plug#begin()
     " coding
+    Plug 'jiangmiao/auto-pairs'
     Plug 'lervag/vimtex'
     Plug 'neoclide/coc.nvim'
     " ui
     Plug 'scrooloose/nerdtree'
+    Plug 'ryanoasis/vim-devicons'
     Plug 'itchyny/lightline.vim'
 call plug#end()
 
@@ -46,4 +42,7 @@ set noshowmode
 "set background=dark
 
 colors peachpuff
+
+highlight Pmenu ctermbg=black guibg=black
+highlight Pmenu ctermfg=white guifg=white
 
