@@ -17,6 +17,8 @@ setopt correct
 setopt extendedglob
 setopt appendhistory
 setopt inc_append_history
+setopt histignoredups
+
 
 autoload -Uz vcs_info
 
@@ -41,8 +43,17 @@ alias wget="wget -c"
 
 alias pacman="sudo pacman --color auto"
 
+function gcm() { git add .; git commit -m "$1"; }
+alias gcm=gcm
+alias gp="git push"
+alias gl="git pull"
+alias gcl="git clone"
+
 function weather() { curl "wttr.in/$1"; }
 alias weather=weather
+
+bindkey "^[[1;5C" forward-word
+bindkey "^[[1;5D" backward-word
 
 # Use powerline
 #USE_POWERLINE="true"
