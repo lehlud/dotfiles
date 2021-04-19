@@ -43,6 +43,8 @@ alias wget="wget -c"
 
 alias pacman="sudo pacman --color auto"
 
+alias emacs="emacs -nw"
+
 function gcm() { git add .; git commit -m "$1"; }
 alias gcm=gcm
 alias gp="git push"
