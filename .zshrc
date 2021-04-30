@@ -45,8 +45,16 @@ alias pacman="sudo pacman --color auto"
 
 alias emacs="emacs -nw"
 
-function gcm() { git add .; git commit -m "$1"; }
-alias gcm=gcm
+function gc() {
+    git add .
+    tmp=$(git config user.signingkey)
+    if [ {$tmp} > 2 ] ; then
+        git commit -S -m "$1"
+    else
+        git commit -m "$1"
+    fi
+}
+alias gc=gc
 alias gp="git push"
 alias gl="git pull"
 alias gcl="git clone"
@@ -57,13 +65,3 @@ alias weather=weather
 bindkey "^[[1;5C" forward-word
 bindkey "^[[1;5D" backward-word
 
-# Use powerline
-#USE_POWERLINE="true"
-# Source manjaro-zsh-configuration
-#if [[ -e /usr/share/zsh/manjaro-zsh-config ]]; then
-#  source /usr/share/zsh/manjaro-zsh-config
-#fi
-# Use manjaro zsh prompt
-#if [[ -e /usr/share/zsh/manjaro-zsh-prompt ]]; then
-#  source /usr/share/zsh/manjaro-zsh-prompt
-#fi
