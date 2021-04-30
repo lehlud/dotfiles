@@ -48,7 +48,7 @@ alias emacs="emacs -nw"
 function gc() {
     git add .
     tmp=$(git config user.signingkey)
-    if [ {$tmp} > 2 ] ; then
+    if [[ {$tmp} -gt 2 ]] ; then
         git commit -S -m "$1"
     else
         git commit -m "$1"
