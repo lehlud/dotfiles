@@ -33,11 +33,14 @@
   '(tooltip-mode nil))
 
 (custom-set-faces
- ;; custom-set-faces was added by Custom.
- ;; If you edit it by hand, you could mess it up, so be careful.
- ;; Your init file should contain only one such instance.
- ;; If there is more than one, they won't work right.
- )
+  ;; custom-set-faces was added by Custom.
+  ;; If you edit it by hand, you could mess it up, so be careful.
+  ;; Your init file should contain only one such instance.
+  ;; If there is more than one, they won't work right.
+  )
+
+;; auto complete default config
+(ac-config-default)
 
 ;; enable evil mode
 (require 'evil)
@@ -53,8 +56,7 @@
 (require 'dashboard)
 (dashboard-setup-startup-hook)
 
-;; define custom command
+;; define custom commands
 (defalias 'spg 'dashboard-refresh-buffer)
-
-(ac-config-default)
+(defalias 'sc 'shell-command) 
 
