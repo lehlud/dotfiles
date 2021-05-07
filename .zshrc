@@ -54,13 +54,17 @@ function gc() {
         git commit -m "$1"
     fi
 }
-alias gc=gc
 alias gp="git push"
 alias gl="git pull"
 alias gcl="git clone"
 
+function glcp() {
+	git pull;
+	git commit -m "$1";
+	git push;
+}
+
 function weather() { curl "wttr.in/$1"; }
-alias weather=weather
 
 bindkey "^[[1;5C" forward-word
 bindkey "^[[1;5D" backward-word
