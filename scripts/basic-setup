@@ -100,3 +100,7 @@ ipkg rofi
 
 # install keepassxc
 ipkg keepassxc
+
+# copy backgrounds
+mkdir -p ~/.local/share/backgrounds
+cp $FILEDIR/backgrounds/* ~/.local/share/backgrounds/
