@@ -1,0 +1,22 @@
+((("projectile" .
+   [1 0 0 0 0 0 0 0 0 0])
+  ("require" .
+   [2 0 0 0 0 0 1])
+  ("company" .
+   [1 0 0 0 0 0 1])
+  ("company-mode" .
+   [1 0 0 0 0 0 0 0 0 0 0 0])
+  ("autoarg" .
+   [0 0 0 0 0 0 1])
+  ("auto-complete-clang" .
+   [0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0])
+  ("lambda" .
+   [1 0 0 0 0 0])
+  ("setq" .
+   [1 0 0 0])
+  ("ac-sources" .
+   [2 0 0 0 0 0 0 0 0 0])
+  ("append" .
+   [1 0 0 0 0 0])
+  ("ac-source-yasnippet" .
+   [0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0])))

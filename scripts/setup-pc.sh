@@ -1,16 +1,22 @@
 #!/bin/bash
 
-source setup.sh
+BASEDIR=$(dirname "$0")
+source $BASEDIR/basic-setup.sh
 
-# setup gnome
-ipkg gnome
-ipkg gnome-tweaks
+# setup picom
+ipkg picom
+
+cp $FILEDIR/.config/picom/picom-pc.conf ~/.config/picom/picom.conf
+
+# setup wm
+ipkg xmonad
+ipkg xmonad-utils
+ipkg xmonad-contrib
+ipkg xmobar
+
+cp $FILEDIR/.xmonad/xmonad-pc.hs ~/.xmonad/xmonad.hs
+cp $FILEDIR/.config/xmobar/xmobar-pc.config ~/.config/xmobar/xmobar.config
 
 # setup nvidia driver
-wget -O ~/Downloads/nvidia-driver.run https://us.download.nvidia.com/XFree86/Linux-x86_64/460.80/NVIDIA-Linux-x86_64-460.80.run
-sudo ~/Downloads/nvidia-driver.run
-echo "sudo ~/Downloads/nvidia-driver.run" > ~/.profile
-cat post-setup.sh >> ~/.profile
-echo "\nrm ~/.profile\nsudo reboot" >> ~/.profile
+# ipkg nvidia
 sudo reboot
-
