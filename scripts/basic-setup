@@ -45,7 +45,7 @@ cp $FILEDIR/.zshrc ~
 mkdir -p ~/.config/kitty
 cp $FILEDIR/.config/kitty/kitty.conf ~/.config/kitty/
 
-sudo chsh -s `where zsh` $USER
+sudo chsh -s `which zsh` $USER
 
 # setup snap support
 ipkg snapd
@@ -82,6 +82,18 @@ ipkg gdm
 
 sudo rm -f /etc/systemd/system/display-manager.service
 sudo ln -s /usr/lib/systemd/system/gdm.service /etc/systemd/system/display-manager.service
+
+# setup picom
+ipkg picom
+
+mkdir -p ~/.config/picom
+cp $FILEDIR/.config/picom/picom.conf ~/.config/picom/
+
+# install xmonad and xmobar
+ipkg xmonad
+ipkg xmonad-utils
+ipkg xmonad-contrib
+ipkg xmobar
 
 # install keepassxc
 ipkg keepassxc

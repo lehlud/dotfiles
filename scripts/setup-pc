@@ -1,19 +1,10 @@
 #!/bin/bash
 
 BASEDIR=$(dirname "$0")
-source $BASEDIR/basic-setup.sh
+source $BASEDIR/basic-setup
 
-# setup picom
-ipkg picom
-
-cp $FILEDIR/.config/picom/picom-pc.conf ~/.config/picom/picom.conf
-
-# setup wm
-ipkg xmonad
-ipkg xmonad-utils
-ipkg xmonad-contrib
-ipkg xmobar
-
+mkdir -p ~/.xmonad
+mkdir -p ~/.config/xmobar
 cp $FILEDIR/.xmonad/xmonad-pc.hs ~/.xmonad/xmonad.hs
 cp $FILEDIR/.config/xmobar/xmobar-pc.config ~/.config/xmobar/xmobar.config
 

@@ -1,0 +1,11 @@
+#!/bin/bash
+
+BASEDIR=$(dirname "$0")
+source $BASEDIR/basic-setup
+
+mkdir -p ~/.xmonad
+mkdir -p ~/.config/xmobar
+cp $FILEDIR/.xmonad/xmonad-laptop.hs ~/.xmonad/xmonad.hs
+cp $FILEDIR/.config/xmobar/xmobar-laptop.config ~/.config/xmobar/xmobar.config
+
+sudo reboot
