@@ -95,5 +95,8 @@ ipkg xmonad-utils
 ipkg xmonad-contrib
 ipkg xmobar
 
+# install rofi
+ipkg rofi
+
 # install keepassxc
 ipkg keepassxc

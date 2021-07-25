@@ -8,4 +8,11 @@ mkdir -p ~/.config/xmobar
 cp $FILEDIR/.xmonad/xmonad-laptop.hs ~/.xmonad/xmonad.hs
 cp $FILEDIR/.config/xmobar/xmobar-laptop.config ~/.config/xmobar/xmobar.config
 
+# setup backlight
+ipkg_yay light
+
+echo "#\!/bin/sh" > /etc/rc.local
+echo "chown $USER /sys/class/backlight/amdgpu_bl0/brightness" >> /etc/rc.local
+echo "exit 0" >> /etc/rc.local
+
 sudo reboot
