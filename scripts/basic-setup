@@ -89,6 +89,9 @@ ipkg picom
 mkdir -p ~/.config/picom
 cp $FILEDIR/.config/picom/picom.conf ~/.config/picom/
 
+# install gnome-screenshot
+ipkg gnome-screenshot
+
 # install xmonad and xmobar
 ipkg xmonad
 ipkg xmonad-utils
@@ -101,6 +104,7 @@ ipkg rofi
 # install keepassxc
 ipkg keepassxc
 
-# copy backgrounds
+# setup background stuff
+ipkg nitrogen
 mkdir -p ~/.local/share/backgrounds
 cp $FILEDIR/backgrounds/* ~/.local/share/backgrounds/
