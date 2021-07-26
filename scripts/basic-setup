@@ -34,6 +34,7 @@ ipkg yay
 # setup git
 ipkg git
 ipkg libsecret
+ipkg gnome-keyring
 
 git config --global credential.helper /usr/lib/git-core/git-credential-libsecret
 

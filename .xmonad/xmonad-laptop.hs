@@ -32,14 +32,16 @@ myFocusFollowsMouse = True
 myClickJustFocuses :: Bool
 myClickJustFocuses = False
 
-myBorderWidth = 5
-
 myModMask = mod4Mask
 
 myWorkspaces = ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
 
+myBorderWidth = 5
 myNormalBorderColor = "#dddddd"
 myFocusedBorderColor = "#ff8700"
+
+-- screen spacing, then window spacing
+mySpacing x y = spacingRaw False (Border x x x x) True (Border y y y y) True
 
 myKeys :: [(String, X ())]
 myKeys = [
@@ -62,6 +64,12 @@ myKeys = [
     -- window keybindings
     ("M-<Tab>"      , windows W.focusDown),
     ("M-S-<Tab>"    , windows W.focusMaster),
+
+    -- spacing keybindings
+    ("M4-S-<Up>"    , incWindowSpacing 1),
+    ("M4-S-<Down>"  , decWindowSpacing 1),
+    ("M1-S-<Up>"    , incScreenSpacing 1),
+    ("M1-S-<Down>"  , decScreenSpacing 1),
 
     -- brightness keybindings
     ("<XF86MonBrightnessUp>"    , spawn "light -A 2"),
@@ -100,9 +108,11 @@ myMouseBindings (XConfig {XMonad.modMask = modm}) =
       -- you may also bind events to the mouse scroll wheel (button4 and button5)
     ]
 
-myLayout = spacing 12 $ avoidStruts (tiled ||| Mirror tiled ||| Full)
+
+
+myLayoutHook = avoidStruts (tiled ||| Mirror tiled ||| Full)
   where
-     tiled   = Tall nmaster delta ratio
+     tiled   = mySpacing 32 8 $ Tall nmaster delta ratio
      nmaster = 1
      ratio   = 1/2
      delta   = 3/100
@@ -115,7 +125,8 @@ myEventHook = mempty
 
 myLogHook = return ()
 
-myStartupHook = return ()
+myStartupHook = do
+    spawnOnce "xsetroot -cursor_name left_ptr"
 
 main = do
   xmproc0 <- spawnPipe "nitrogen --restore"
@@ -137,7 +148,7 @@ defaults = def {
     mouseBindings = myMouseBindings,
     
     -- hooks
-    layoutHook = myLayout,
+    layoutHook = myLayoutHook,
     manageHook = myManageHook,
     handleEventHook = myEventHook,
     logHook = myLogHook,
