@@ -64,6 +64,9 @@ myKeys = [
     -- window keybindings
     ("M-<Tab>"      , windows W.focusDown),
     ("M-S-<Tab>"    , windows W.focusMaster),
+    ("M4-M1-m"      , windows W.swapMaster),
+    ("M4-M1-<Up>"   , windows W.swapUp),
+    ("M4-M1-<Down>" , windows W.swapDown),
 
     -- spacing keybindings
     ("M4-S-<Up>"    , incWindowSpacing 1),
