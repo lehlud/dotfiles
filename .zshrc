@@ -64,6 +64,8 @@ function glcp() {
 	git push;
 }
 
+alias rr="curl -s -L http://bit.ly/10hA8iC | bash"
+
 function weather() { curl "wttr.in/$1"; }
 
 bindkey "^[[1;5C" forward-word
