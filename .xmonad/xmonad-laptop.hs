@@ -38,10 +38,7 @@ myWorkspaces = ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
 
 myBorderWidth = 5
 myNormalBorderColor = "#dddddd"
-
-myFocusedBorderColor1 = "#ff8700"
-myFocusedBorderColor2 = "#00ffa1"
-myFocusedBorderColor = myFocusedBorderColor1
+myFocusedBorderColor = "#ff8700"
 
 -- screen spacing, then window spacing
 mySpacing x y = spacingRaw False (Border x x x x) True (Border y y y y) True
@@ -58,7 +55,7 @@ myKeys = [
     -- killing, exiting and suspending keybindings
     ("M-q"          , kill),
     ("M-S-q"        , io (exitWith ExitSuccess)),
-    ("M-S-b"        , spawn "systemctl suspend"),
+    ("M-S-s"        , spawn "systemctl suspend"),
 
     -- restarting and recompiling keybindings
     ("M-r"          , spawn "xmonad --restart"),

@@ -85,7 +85,7 @@ sudo rm -f /etc/systemd/system/display-manager.service
 sudo ln -s /usr/lib/systemd/system/gdm.service /etc/systemd/system/display-manager.service
 
 # setup picom
-ipkg picom
+ipkg_yay picom-jonaburg-git
 
 mkdir -p ~/.config/picom
 cp $FILEDIR/.config/picom/picom.conf ~/.config/picom/
