@@ -9,6 +9,8 @@ import XMonad.Util.SpawnOnce
 import XMonad.Util.EZConfig
 
 import XMonad.Layout.Spacing
+
+import XMonad.Hooks.DynamicBars
 import XMonad.Hooks.ManageDocks
 
 import qualified XMonad.StackSet as W
@@ -51,10 +53,10 @@ myKeys = [
     ("M-S-d"        , spawn myAppMenuThemes),
     ("M-i"          , spawn myBrowser),
     ("M-S-i"        , spawn myAltBrowser),
-    
+
     -- killing, exiting and suspending keybindings
     ("M-q"          , kill),
-    ("M-S-q"        , io (exitWith ExitSuccess)),
+    ("M-S-q"        , io exitSuccess),
     ("M-S-s"        , spawn "systemctl suspend"),
 
     -- restarting and recompiling keybindings
@@ -83,26 +85,14 @@ clipBoardScreenshotCommand = "bash -c \"gnome-screenshot -af /tmp/screenshot && 
 ------------------------------------------------------------------------
 -- Mouse bindings: default actions bound to mouse events
 --
-myMouseBindings (XConfig {XMonad.modMask = modm}) =
-  M.fromList $
+myMouseBindings XConfig {XMonad.modMask = modm} =
+  M.fromList
     -- mod-button1, Set the window to floating mode and move by dragging
-    [ ( (modm, button1),
-        ( \w ->
-            focus w >> mouseMoveWindow w
-              >> windows W.shiftMaster
-        )
-      ),
+    [ ((modm, button1), \w -> focus w >> mouseMoveWindow w >> windows W.shiftMaster),
       -- mod-button2, Raise the window to the top of the stack
-      ((modm, button2), (\w -> focus w >> windows W.shiftMaster)),
+      ((modm, button2), \w -> focus w >> windows W.shiftMaster),
       -- mod-button3, Set the window to floating mode and resize by dragging
-      ( (modm, button3),
-        ( \w ->
-            focus w >> mouseResizeWindow w
-              >> windows W.shiftMaster
-        )
-      )
-      -- you may also bind events to the mouse scroll wheel (button4 and button5)
-    ]
+      ((modm, button3), \w -> focus w >> mouseResizeWindow w >> windows W.shiftMaster) ]
 
 
 
@@ -128,7 +118,7 @@ myStartupHook = do
 main = do
   xmproc0 <- spawnPipe "nitrogen --restore"
   xmproc1 <- spawnPipe "killall picom; picom &"
-  xmproc2 <- spawnPipe "killall xmobar; xmobar ~/.config/xmobar/xmobar.config"
+  xmproc2 <- spawnPipe "killall xmobar; xmobar ~/.config/xmobar/xmobar0.config; xmobar ~/.config/xmobar/xmobar1.config"
   xmonad $ docks defaults
 
 defaults = def {
@@ -140,10 +130,10 @@ defaults = def {
     workspaces = myWorkspaces,
     normalBorderColor = myNormalBorderColor,
     focusedBorderColor = myFocusedBorderColor,
-    
+
     -- bindings
     mouseBindings = myMouseBindings,
-    
+
     -- hooks
     layoutHook = myLayoutHook,
     manageHook = myManageHook,

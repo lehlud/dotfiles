@@ -6,7 +6,8 @@ source $BASEDIR/basic-setup
 mkdir -p ~/.xmonad
 mkdir -p ~/.config/xmobar
 cp $FILEDIR/.xmonad/xmonad-pc.hs ~/.xmonad/xmonad.hs
-cp $FILEDIR/.config/xmobar/xmobar-pc.config ~/.config/xmobar/xmobar.config
+cp $FILEDIR/.config/xmobar/xmobar-pc-0.config ~/.config/xmobar/xmobar0.config
+cp $FILEDIR/.config/xmobar/xmobar-pc-1.config ~/.config/xmobar/xmobar0.config
 
 # download nvidia driver
 mkdir -p ~/Downloads
