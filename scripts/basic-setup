@@ -39,14 +39,16 @@ ipkg gnome-keyring
 git config --global credential.helper /usr/lib/git-core/git-credential-libsecret
 
 # setup terminal stuff
-ipkg zsh
+ipkg fish
 ipkg kitty
 
-cp $FILEDIR/.zshrc ~
+mkdir -p ~/.config/fish
+cp -r $FILEDIR/.config/fish/* ~/.config/fish/
+
 mkdir -p ~/.config/kitty
 cp $FILEDIR/.config/kitty/kitty.conf ~/.config/kitty/
 
-sudo chsh -s `which zsh` $USER
+sudo chsh -s `which fish` $USER
 
 # setup snap support
 ipkg snapd
