@@ -74,7 +74,8 @@ cp -r $FILEDIR/.emacs.d ~
 
 sudo snap install code --classic
 
-# install brave
+# install brave and firefox
+ipkg firefox
 ipkg_yay brave-bin
 
 # enable ssh support (if not enabled)
