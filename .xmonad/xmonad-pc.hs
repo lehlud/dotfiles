@@ -118,7 +118,7 @@ myStartupHook = do
 main = do
   xmproc0 <- spawnPipe "nitrogen --restore"
   xmproc1 <- spawnPipe "killall picom; picom &"
-  xmproc2 <- spawnPipe "killall xmobar; xmobar ~/.config/xmobar/xmobar0.config; xmobar ~/.config/xmobar/xmobar1.config"
+  xmproc2 <- spawnPipe "killall xmobar; xmobar ~/.config/xmobar/xmobar0.config &; xmobar ~/.config/xmobar/xmobar1.config &"
   xmonad $ docks defaults
 
 defaults = def {
