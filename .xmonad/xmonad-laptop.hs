@@ -38,7 +38,10 @@ myWorkspaces = ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
 
 myBorderWidth = 5
 myNormalBorderColor = "#dddddd"
-myFocusedBorderColor = "#ff8700"
+
+myFocusedBorderColor1 = "#ff8700"
+myFocusedBorderColor2 = "#00ffa1"
+myFocusedBorderColor = myFocusedBorderColor1
 
 -- screen spacing, then window spacing
 mySpacing x y = spacingRaw False (Border x x x x) True (Border y y y y) True
@@ -130,7 +133,7 @@ myStartupHook = do
 
 main = do
   xmproc0 <- spawnPipe "nitrogen --restore"
-  xmproc1 <- spawnPipe "killall picom; picom --config ~/.config/picom/picom.conf --vsync &"
+  xmproc1 <- spawnPipe "killall picom; picom &"
   xmproc2 <- spawnPipe "killall xmobar; xmobar ~/.config/xmobar/xmobar.config"
   xmonad $ docks defaults
 
