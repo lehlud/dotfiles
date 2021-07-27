@@ -23,7 +23,7 @@ alias pacman="sudo pacman --color=auto"
 alias emacs="emacs -nw"
 
 function gc
-    git add -a
+    git add -A
     git commit -S -m $argv
 end
 
