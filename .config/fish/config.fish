@@ -38,6 +38,11 @@ end
 alias rr="curl -s -L http://bit.ly/10hA8iC | bash"
 
 function weather
-    curl wttr.in/$argv
+    curl wttr.in/
 end
 
+set -x ANDROID_SDK_ROOT $HOME/Android/Sdk
+set -x PATH $PATH $ANDROID_SDK_ROOT/tools/bin
+set -x PATH $PATH $ANDROID_SDK_ROOT/platform-tools
+set -x PATH $PATH $ANDROID_SDK_ROOT/emulator
+set -x PATH $PATH $HOME/.pub-cache/bin
