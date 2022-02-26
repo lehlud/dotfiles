@@ -18,7 +18,7 @@ alias fgrep="fgrep --color=auto"
 
 alias wget="wget -c"
 
-alias pacman="sudo pacman --color=auto"
+alias pacman="pacman --color=auto"
 
 alias emacs="emacs -nw"
 
