@@ -1,0 +1,16 @@
+#!/usr/bin/bash
+
+DIR=$(dirname $(realpath "$0"))
+cd $DIR
+
+# install config files
+for filename in $(ls -p | grep -v "install" | grep -v "/" | grep -v "README.md"); do
+	app=$(echo $filename | tr "-" "\n" | head -1)
+	appdir="$HOME/.config/$app"
+	mkdir -p $appdir
+	cp $filename "$appdir/${filename:${#app}+1:200}"
+done
+
+# install backrounds
+mkdir -p "$HOME/.local/share/wallpapers"
+cp ./backgrounds/* "$HOME/.local/share/wallpapers/"
