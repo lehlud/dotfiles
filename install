@@ -14,3 +14,10 @@ done
 # install backrounds
 mkdir -p "$HOME/.local/share/wallpapers"
 cp ./backgrounds/* "$HOME/.local/share/wallpapers/"
+
+mkdir -p "$HOME/.local/bin"
+
+# install pfetch
+curl -s https://raw.githubusercontent.com/dylanaraps/pfetch/master/pfetch > "$HOME/.local/bin/pfetch"
+chmod +x "$HOME/.local/bin/pfetch"
+
