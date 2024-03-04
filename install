@@ -1,15 +1,14 @@
 #!/usr/bin/bash
 
 DIR=$(dirname $(realpath "$0"))
-cd $DIR
 
 if [[ -f /etc/os-release && $1 == "packages" ]]; then
 	. /etc/os-release
 
-	distro=${$NAME,,}
+	distro=${NAME,,}
 
 		
-	if [ $distro == "ubuntu" ]; then
+	if [[ $distro == "ubuntu" ]]; then
 		export DEBIAN_FRONTEND=noninteractive
 
 		sudo apt-get update && sudo apt-get -y install --no-install-recommends wget curl
@@ -37,17 +36,10 @@ if [[ -f /etc/os-release && $1 == "packages" ]]; then
 
 		sudo apt-get upgrade -y
 				
-	elif [ $distro == "arch linux" ]; then
+	elif [[ $distro == "arch linux" ]]; then
 		sudo pacman -Sy --noconfirm
 
 		sudo pacman -S git base-devel curl wget --noconfirm
-
-		# install snapd
-		git clone https://aur.archlinux.org/snapd.git /tmp/snapd
-		cd /tmp/snapd && makepkg -si --noconfirm
-		sudo ln -s /var/lib/snapd/snap /snap
-		sudo systemctl enable snapd.socket
-		
 
 		# install yay AUR helper
 		git clone https://aur.archlinux.org/yay.git /tmp/yay
@@ -55,11 +47,14 @@ if [[ -f /etc/os-release && $1 == "packages" ]]; then
 		yay -Sy --noconfirm
 
 		sudo pacman --noconfirm -S \
-				fish pfetch grim slurp wl-clipboard sway swaylock swaybg alacritty rofi \
-				light networkmanager networkmanager-openvpn xournalpp \
-				php python helix jdk-openjdk jre-openjdk docker gdm gnome seahorse
+				fish grim slurp wl-clipboard sway swaylock swaybg alacritty rofi \
+				networkmanager networkmanager-openvpn xournalpp \
+				php python helix jdk-openjdk docker docker-buildx gdm gnome seahorse
 
-		yay -S google-chrome
+		yay -S google-chrome light snapd --noconfirm
+
+		sudo ln -s /var/lib/snapd/snap /snap
+		sudo systemctl enable snapd.socket
 
 		sudo systemctl enable gdm
 		sudo systemctl enable NetworkManager
@@ -70,9 +65,9 @@ if [[ -f /etc/os-release && $1 == "packages" ]]; then
 
 	sudo usermod -aG video $USER
 	sudo usermod -aG docker $USER
-	
 fi
 
+cd $DIR
 
 # install config files
 for filename in $(ls -p | grep -v "install" | grep -v "/" | grep -v "README.md"); do

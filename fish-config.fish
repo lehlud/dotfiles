@@ -1,4 +1,4 @@
-if status is-interactive
+if status is-interactive && type -q pfetch
     # Commands to run in interactive sessions can go here
     echo
     pfetch
@@ -8,3 +8,6 @@ set -q GHCUP_INSTALL_BASE_PREFIX[1]; or set GHCUP_INSTALL_BASE_PREFIX $HOME ; se
 # bun
 set --export BUN_INSTALL "$HOME/.bun"
 set --export PATH $BUN_INSTALL/bin $PATH
+
+
+
