@@ -1,2 +1,6 @@
-theme = "github_dark"
+theme = "onedark"
+
+[editor]
+line-number = "relative"
+mouse = false
 
