@@ -55,7 +55,7 @@ output * bg ~/.local/share/wallpapers/lambda-bg-dark.png fill
 
 input * {
     # keyboard options
-    xkb_layout de,us
+    xkb_layout us,de
     xkb_options "grp:win_space_toggle"
 
     # touchpad options
@@ -229,10 +229,10 @@ bindsym $mod+m exec sh -c "swaylock --color 101010 & systemctl suspend"
 exec gnome-keyring-daemon -r -d
 
 # Make Gnome Shell available
-bindsym $mod+Shift+g exec gnome-shell --nested
-
+bindsym $mod+Shift+g exec MUTTER_DEBUG_DUMMY_MODE_SPECS=1700x1080 gnome-shell --nested --wayland
 bindsym Print exec grim -g "$(slurp)" - | wl-copy
 
 include /etc/sway/config.d/*
 
+exec_always ~/.config/sway/clamshell.sh
 
