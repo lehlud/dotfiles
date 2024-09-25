@@ -13,10 +13,11 @@ if [[ -f /etc/os-release && $1 == "packages" ]]; then
 
 		sudo apt-get update && sudo apt-get -y install --no-install-recommends wget curl
 
-
 	  # install pfetch
 		curl -s https://raw.githubusercontent.com/dylanaraps/pfetch/master/pfetch > "$HOME/.local/bin/pfetch"
 		chmod +x "$HOME/.local/bin/pfetch"
+
+		# TODO: further setup
 		
 		
 		# add google chrome repository
