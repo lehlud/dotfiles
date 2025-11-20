@@ -23,3 +23,13 @@
 !/.config/kitty/
 
 /.config/fish/fish_variables
+
+!/.config/systemd/
+/.config/systemd/*
+!/.config/systemd/user/
+/.config/systemd/user/*
+!/.config/systemd/user/ssh-agent.service
+
+!/.config/environment.d/
+/.config/environment.d/*
+!/.config/environment.d/ssh_auth_socket.conf
