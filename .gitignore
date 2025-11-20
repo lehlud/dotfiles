@@ -4,7 +4,11 @@
 
 !/.local/
 /.local/*
+# wallpapers
+!/.local/share/
+/.local/share/*
 !/.local/share/wallpapers/
+# custom binaries
 !/.local/bin/
 /.local/bin/bunx
 
