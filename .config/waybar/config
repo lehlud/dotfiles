@@ -1,0 +1,92 @@
+{
+    "modules-left": ["hyprland/workspaces", "hyprland/window"],
+    "modules-center": ["clock", "custom/lock"],
+    "modules-right": ["custom/spotify", "custom/ram", "custom/cpu", "pulseaudio", "custom/brightness", "battery", "tray"],
+
+    "network": {
+        "format-wifi": "{essid} ({signalStrength}%) ",
+        "format-ethernet": "{ifname} ",
+        "format-disconnected": "", 
+        "max-length": 50,
+        "on-click": "kitty -e 'nmtui'"
+    },
+
+    "tray": {
+        "icon-size": 15,
+        "spacing": 2
+    },
+
+    "clock": {
+        // "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>",
+        // "format-alt": "{:%Y-%m-%d}",
+		"on-click": "gnome-calendar"
+    },
+
+    "pulseaudio": {
+        "format": "{volume}% {icon} ",
+        "format-bluetooth": "{volume}% {icon}  {format_source}",
+        "format-bluetooth-muted": " {icon}  {format_source}",
+        "format-muted": "0% {icon} ",
+        "format-source": "{volume}% ",
+        "format-source-muted": "",
+        "format-icons": {
+            "headphone": "",
+            "hands-free": "",
+            "headset": "",
+            "phone": "",
+            "portable": "",
+            "car": "",
+            "default": ["", "", ""]
+        },
+        "on-click": "pavucontrol"
+    },
+    
+	"custom/lock": {
+		"format": " ",
+		"on-click": "hyprlock"
+	},
+
+    "battery": {
+        	"states": {
+            		"warning": 30,
+            		"critical": 15
+        	},
+            "interval": 3,
+        	"format": "{capacity}% {icon}",
+        	"format-charging": "{capacity}%  ",
+        	"format-plugged": "{capacity}%  ",
+        	"format-alt": "{time} {icon}",
+        	"format-full": "{capacity}%  ",
+        	"format-icons": [" ", " ", " "]
+	},
+
+    "custom/ram": {
+        "return-type": "text",
+        "exec": "~/.config/waybar/ram.sh"
+    },
+
+    "custom/cpu": {
+        "return-type": "text",
+        "exec": "~/.config/waybar/cpu.sh"
+    },
+
+    // "custom/battery": {
+    //     "return-type": "text",
+    //     "exec": "~/.config/waybar/battery.sh"
+    // },
+
+    "custom/brightness": {
+        "return-type": "text",
+        "exec": "~/.config/waybar/brightness.sh",
+        "on-click": "light -S 0"
+    },
+
+    "custom/spotify": {
+        "return-type": "json",
+        "exec": "~/.config/waybar/media.py --player spotify_player",
+        "on-click": "playerctl --player spotify_player play-pause",
+        "on-scroll-up": "playerctl --player spotify_player next",
+        "on-scroll-down": "playerctl --player spotify_player previous",
+        "escape": true
+    }
+}

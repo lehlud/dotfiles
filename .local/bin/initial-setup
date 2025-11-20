@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+
+DIR="$(dirname $(realpath "$0"))"
+cd "$DIR"
+
+if [[ ! -f /etc/os-release ]]; then
+    echo "Could not determine distribution; exiting..."
+    exit 1
+fi
+
+. /etc/os-release
+distro=${NAME,,}
+
+if [[ $distro == "arch linux" ]]; then
+    pacman=(
+        # services
+        "networkmanager" "networkmanager-openvpn"
+        "bluez" "bluez-libs"
+        "pipewire" "pipewire-alsa" "pipewire-pulse" "pipewire-audio" "pipewire-jack" "wireplumber" "alsa-utils"
+        "cups"
+
+        # Hyprland core
+        "hyprland" "hypridle" "hyprpaper" "hyprlock" 
+        "hyprpolkitagent" "hyprutils"
+        "xdg-desktop-portal-hyprland" "xdg-desktop-portal-gtk"
+        # Hyprland extra
+        "qt6ct" "gnome-keyring"
+        "waybar" "mako" "wofi" "wl-clipboard" "grim" "slurp"
+        "adwaita-icon-theme" "adwaita-cursors" "dolphin"
+        "network-manager-applet" "blueman"
+        "playerctl" "pavucontrol"
+        "upower"
+
+        # terminal
+        "kitty" "fish" "ranger" "htop" "tmux" "psmisc" "terminus-font"
+        
+        # misc
+        "wget" "curl" "git" "entr" "zip" "base-devel"
+        "ninja" "make" "cmake"
+        "fastfetch" "fortune-mod" "cowsay"
+        "freerdp"
+        
+        # languages
+        "python" "php" "go" "clang"
+
+        # editors
+        "nano" "vim" "helix"
+
+        # container
+        "podman" "podman-compose" "podman-docker" "distrobox"
+
+        # VMs
+        "virtualbox" "virtualbox-host-modules-arch" "linux-headers"
+
+        # fonts
+        "adwaita-fonts"
+        "ttf-jetbrains-mono" "ttf-jetbrains-mono-nerd"
+        "noto-fonts" "noto-fonts-emoji" "noto-fonts-cjk"
+
+        # flatpak
+        "flatpak" "libportal"
+
+        # apps
+        "remmina" "nautilus"
+    )
+
+    aur=(
+        "light"
+        "snapd"
+    )
+
+    systemd=(
+        "NetworkManager"
+        "cups"
+        "snapd"
+        "snapd.apparmor"
+        "bluetooth"
+    )
+
+    snap_classic=(
+        "code"
+    )
+
+    flatpak=(
+        "org.signal.Signal"
+        "com.spotify.Client"
+        "net.ankiweb.Anki"
+        "org.gimp.GIMP"
+        "org.inkscape.Inkscape" 
+        "org.onlyoffice.desktopeditors"
+        "com.github.xournalpp.xournalpp"
+        "com.github.flxzt.rnote" # whiteboard app
+        "net.nokyan.Resources" # task manager
+        "org.gnome.Loupe" # image viewer
+        "com.github.rafostar.Clapper" # video viewer
+        "org.gnome.Papers" # pdf viewer
+        "app.devsuite.Ptyxis" # container-agnostic terminal
+        "org.mozilla.Thunderbird"
+        "org.mozilla.firefox"
+        "dev.qwery.AddWater" # gnome theme for firefox
+    )
+
+    # Update system
+    sudo pacman -Syu --noconfirm
+
+    # Install pacman packages
+    sudo pacman --noconfirm --needed -S "${pacman[@]}"
+
+    # Fix helix command
+    sudo ln -s "$(which helix)" /usr/local/bin/hx
+
+    # Install yet another yogurt (AUR helper)
+    if ! command -v yay &> /dev/null; then
+        git clone https://aur.archlinux.org/yay.git /tmp/yay
+        cd /tmp/yay && makepkg -si --noconfirm
+        yay -Sy --noconfirm
+        cd "$DIR"
+    fi
+
+    # Instal AUR packages
+    yay --noconfirm --needed -S "${aur[@]}"
+
+    # Install snaps
+    sudo systemctl start snapd.socket
+    if [[ ! -e /snap ]]; then sudo ln -s /var/lib/snapd/snap /snap; fi
+    while ! sudo snap refresh; do sleep 1; done
+    for prog in ${snap_classic[@]}; do
+        sudo snap install $prog --classic
+    done
+
+    # Install flatpaks
+    flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+    flatpak install -y "${flatpak[@]}"
+
+    # Set default shell
+    sudo chsh -s /usr/bin/fish $USER
+
+    # Add yourself to the corresponding groups
+    sudo usermod -aG video $USER
+    sudo usermod -aG kvm $USER
+
+    # Configure default applications
+    xdg-mime default org.gnome.Loupe.desktop image/png
+    xdg-mime default org.gnome.Loupe.desktop image/jpeg
+    xdg-mime default org.gnome.Loupe.desktop image/gif
+    xdg-mime default org.gnome.Loupe.desktop image/webp
+    xdg-mime default com.github.rafostar.Clapper.desktop video/mp4
+    xdg-mime default com.github.rafostar.Clapper.desktop video/x-matroska
+    xdg-mime default com.github.rafostar.Clapper.desktop video/x-msvideo
+    xdg-mime default com.github.rafostar.Clapper.desktop video/quicktime
+    xdg-mime default com.github.rafostar.Clapper.desktop video/webm
+    xdg-mime default com.github.rafostar.Clapper.desktop video/mpeg
+    # xdg-mime default org.gnome.Papers application/pdf
+
+    # Enable global systemd services
+    for item in ${systemd[@]}; do
+        sudo systemctl enable $item &> /dev/null
+    done
+else
+    echo "Unknown distribution '$distro'; exiting..."
+    exit 1
+fi
+
+# YAY!
+echo "-"
+echo "-"
+echo "Done!"

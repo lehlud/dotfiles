@@ -1,0 +1,4 @@
+inherits = "dracula_at_night"
+
+"ui.background" = { fg = "#ffffff", bg = "transparent" }
+"ui.virtual.whitespace" = { fg = "#a0a0a0" }
