@@ -62,6 +62,9 @@ if [[ $distro == "arch linux" ]]; then
 
         # apps
         "remmina" "nautilus"
+
+        # power management
+        "power-profiles-daemon"
     )
 
     aur=(
@@ -75,6 +78,7 @@ if [[ $distro == "arch linux" ]]; then
         "snapd"
         "snapd.apparmor"
         "bluetooth"
+        "power-profiles-daemon"
     )
 
     snap_classic=(

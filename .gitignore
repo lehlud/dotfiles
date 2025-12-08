@@ -10,7 +10,9 @@
 !/.local/share/wallpapers/
 # custom binaries
 !/.local/bin/
+/.local/bin/*
 /.local/bin/bunx
+/.local/bin/rickroll
 
 !/.config/
 /.config/*

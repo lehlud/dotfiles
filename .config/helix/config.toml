@@ -4,6 +4,9 @@ theme = "custom"
 line-number = "relative"
 whitespace.render = "all"
 soft-wrap.enable = true
+soft-wrap.max-wrap = 100
+lsp.display-inlay-hints = true
+lsp.inlay-hints-length-limit = 20
 
 [keys.normal.space]
 f = "file_picker_in_current_directory"
