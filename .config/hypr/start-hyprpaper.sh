@@ -7,9 +7,16 @@ filepath="${files[RANDOM % ${#files[@]}]}"
 
 configpath="/tmp/hyprpaper-$USER.conf"
 
-echo "preload = $filepath" > "$configpath"
-echo "wallpaper = , $filepath" >> "$configpath"
-echo "splash = false" >> "$configpath"
+{
+  echo "ipc = on"
+  echo "splash = false"
+  echo
+  echo "wallpaper {"
+  echo "  monitor = "
+  echo "  path = $filepath"
+  echo "}"
+  echo
+} > "$configpath"
 
 hyprpaper -c "$configpath"
 

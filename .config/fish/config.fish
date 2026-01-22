@@ -39,4 +39,13 @@ alias power-saver="run-on-host powerprofilesctl set power-saver"
 alias power-balanced="run-on-host powerprofilesctl set balanced"
 alias power-performance="run-on-host powerprofilesctl set performance"
 
-alias restart-hyprpaper="run-on-host bash -c \"~/.config/hypr/start-hyprpaper.sh &>/dev/null & disown\""
+alias restart-hyprpaper="echo 'bash -c \'~/.config/hypr/start-hyprpaper.sh & disown\'; exit' | run-on-host fish &>/dev/null"
+
+alias reboot="run-on-host systemctl reboot"
+alias hibernate="run-on-host systemctl hibernate"
+
+alias roh="run-on-host"
+
+# setup wasmtime
+set -gx WASMTIME_HOME "$HOME/.wasmtime"
+string match -r ".wasmtime" "$PATH" >/dev/null; or set -gx PATH "$WASMTIME_HOME/bin" $PATH

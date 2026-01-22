@@ -83,10 +83,10 @@
 
     "custom/spotify": {
         "return-type": "json",
-        "exec": "~/.config/waybar/media.py --player spotify_player",
-        "on-click": "playerctl --player spotify_player play-pause",
-        "on-scroll-up": "playerctl --player spotify_player next",
-        "on-scroll-down": "playerctl --player spotify_player previous",
+        "exec": "~/.config/waybar/media.py --player spotify",
+        "on-click": "playerctl --player spotify play-pause",
+        "on-scroll-up": "playerctl --player spotify next",
+        "on-scroll-down": "playerctl --player spotify previous",
         "escape": true
     }
 }

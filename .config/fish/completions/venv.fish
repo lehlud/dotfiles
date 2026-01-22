@@ -9,4 +9,4 @@ function _venv_options
     echo $venvs
 end
 
-complete -c venv -f -a (_venv_options)
+complete -c venv -f -n 'not __fish_seen_subcommand_from alpha beta gamma' -a "$(_venv_options)" -r
