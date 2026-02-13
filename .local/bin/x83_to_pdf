@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+x83_to_pdf.py — GAEB DA XML X83 (.x83) -> PDF
+
+Layout (Deutsch, schlicht):
+- Überschriften: "<OZ> <Unterüberschrift>"
+- Position:
+  "Position <OZ>"
+  "<Langtext>"
+  Tabelle: Menge | Einheit | Kurztext | Preis | Summe
+- Am Ende: Gesamtsumme
+
+Requirements:
+  pip install reportlab
+Usage:
+  python x83_to_pdf.py input.x83 output.pdf
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+from xml.etree import ElementTree as ET
+from xml.sax.saxutils import escape as xml_escape
+
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import (
+    SimpleDocTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    PageBreak,
+)
+
+
+# -----------------------------
+# Data structures
+# -----------------------------
+@dataclass
+class Heading:
+    oz: str
+    text: str
+
+
+@dataclass
+class Item:
+    oz: str
+    short_text: str
+    long_text: str
+    qty: Optional[Decimal]
+    unit: str
+    unit_price: Optional[Decimal]
+    total: Optional[Decimal]
+
+
+Node = Heading | Item
+
+
+# -----------------------------
+# Helpers: XML parsing
+# -----------------------------
+NEWLINE_TAGS = {"p", "br", "div", "li", "tr", "table", "ul", "ol"}
+
+
+def strip_namespaces(root: ET.Element) -> None:
+    """In-place: remove namespaces from all tags like {ns}Tag -> Tag."""
+    for el in root.iter():
+        if isinstance(el.tag, str) and "}" in el.tag:
+            el.tag = el.tag.split("}", 1)[1]
+
+
+def parse_decimal(text: Optional[str]) -> Optional[Decimal]:
+    if text is None:
+        return None
+    t = text.strip()
+    if not t:
+        return None
+    # GAEB typically uses dot as decimal separator; be defensive:
+    t = t.replace(",", ".")
+    try:
+        return Decimal(t)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def normalize_ws(s: str) -> str:
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    # collapse spaces but keep newlines
+    s = re.sub(r"[ \t\f\v]+", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+def extract_text_preserve_newlines(el: Optional[ET.Element]) -> str:
+    """
+    Extract text from mixed-content nodes (GAEB MLText / formatted text).
+    Tries to preserve some structure by inserting newlines around common block-ish tags.
+    """
+    if el is None:
+        return ""
+    parts: List[str] = []
+
+    def walk(node: ET.Element) -> None:
+        if node.text:
+            parts.append(node.text)
+        for ch in list(node):
+            tag = (ch.tag or "").lower()
+            if tag in NEWLINE_TAGS:
+                parts.append("\n")
+            walk(ch)
+            if ch.tail:
+                parts.append(ch.tail)
+            if tag in NEWLINE_TAGS:
+                parts.append("\n")
+
+    walk(el)
+    return normalize_ws("".join(parts))
+
+
+def find_first(el: ET.Element, path_candidates: List[str]) -> Optional[ET.Element]:
+    for p in path_candidates:
+        got = el.find(p)
+        if got is not None:
+            return got
+    return None
+
+
+def text_from_paths(el: ET.Element, path_candidates: List[str]) -> str:
+    node = find_first(el, path_candidates)
+    return extract_text_preserve_newlines(node)
+
+
+def build_parent_map(root: ET.Element) -> Dict[ET.Element, ET.Element]:
+    return {c: p for p in root.iter() for c in list(p)}
+
+
+def oz_join(parts: List[str]) -> str:
+    parts = [p for p in parts if p]
+    # GAEB OZ is often "1.2.3" style; keep it simple:
+    return ".".join(parts)
+
+
+def compute_oz_for_node(node: ET.Element, parent_map: Dict[ET.Element, ET.Element]) -> str:
+    """
+    Build OZ from RNoPart attributes of this node and its ancestors that also have RNoPart.
+    """
+    parts: List[str] = []
+    cur = node
+    while True:
+        r = cur.attrib.get("RNoPart")
+        if r:
+            parts.append(r)
+        if cur not in parent_map:
+            break
+        cur = parent_map[cur]
+    parts.reverse()
+    return oz_join(parts)
+
+
+# -----------------------------
+# GAEB extraction
+# -----------------------------
+def extract_title(root: ET.Element) -> Tuple[str, str]:
+    """
+    Returns (project_or_boq_title, currency_label).
+    Currency is often in PrjInfo/CurLbl or Cur. Fallback EUR.
+    """
+    title = ""
+    # Prefer BoQInfo/LblBoQ then PrjInfo/NamePrj
+    boq = root.find("./Award/BoQ")
+    if boq is not None:
+        title = (boq.findtext("./BoQInfo/LblBoQ") or "").strip() or (boq.findtext("./BoQInfo/Name") or "").strip()
+
+    if not title:
+        title = (root.findtext("./PrjInfo/NamePrj") or "").strip()
+
+    cur = (root.findtext("./PrjInfo/CurLbl") or "").strip()
+    if not cur:
+        cur = (root.findtext("./PrjInfo/Cur") or "").strip()
+    if not cur:
+        cur = "EUR"
+    return (title or "Leistungsverzeichnis", cur)
+
+
+def extract_nodes(root: ET.Element) -> List[Node]:
+    parent_map = build_parent_map(root)
+
+    # Find BoQBody for traversal
+    boq_body = root.find("./Award/BoQ/BoQBody")
+    if boq_body is None:
+        # be tolerant: search anywhere
+        boq_body = root.find(".//BoQBody")
+    if boq_body is None:
+        raise ValueError("Konnte kein <BoQBody> in der X83 finden (ist das GAEB DA XML?).")
+
+    nodes: List[Node] = []
+
+    def walk_boqbody(el: ET.Element) -> None:
+        for child in list(el):
+            tag = child.tag
+            if tag == "BoQCtgy":
+                oz = compute_oz_for_node(child, parent_map)
+                # Überschrift sitzt typischerweise in LblTx
+                text = extract_text_preserve_newlines(child.find("LblTx"))
+                if text:
+                    nodes.append(Heading(oz=oz, text=text))
+                inner = child.find("BoQBody")
+                if inner is not None:
+                    walk_boqbody(inner)
+            elif tag == "Itemlist":
+                walk_itemlist(child)
+            elif tag == "Item":
+                nodes.append(parse_item(child, parent_map))
+            else:
+                # Remark / PerfDescr etc. ignorieren wir fürs einfache Layout
+                continue
+
+    def walk_itemlist(el: ET.Element) -> None:
+        for child in list(el):
+            tag = child.tag
+            if tag == "Item":
+                nodes.append(parse_item(child, parent_map))
+            elif tag == "BoQCtgy":
+                oz = compute_oz_for_node(child, parent_map)
+                text = extract_text_preserve_newlines(child.find("LblTx"))
+                if text:
+                    nodes.append(Heading(oz=oz, text=text))
+                inner = child.find("BoQBody")
+                if inner is not None:
+                    walk_boqbody(inner)
+            else:
+                continue
+
+    walk_boqbody(boq_body)
+    return nodes
+
+
+def parse_item(item_el: ET.Element, parent_map: Dict[ET.Element, ET.Element]) -> Item:
+    oz = compute_oz_for_node(item_el, parent_map)
+
+    qty = parse_decimal(item_el.findtext("Qty"))
+    unit = (item_el.findtext("QU") or "").strip()
+
+    unit_price = parse_decimal(item_el.findtext("UP"))
+    total = parse_decimal(item_el.findtext("IT"))
+
+    # Fallback calculation if IT missing
+    if total is None and qty is not None and unit_price is not None:
+        total = (qty * unit_price)
+
+    # Texts: Description can contain CompleteText/DetailTxt (Langtext) and OutlineText (Kurztext)
+    desc = item_el.find("Description")
+    short_text = ""
+    long_text = ""
+    if desc is not None:
+        # Kurztext: Description/OutlineText/OutlTxt/TextOutlTxt (common)
+        short_text = text_from_paths(
+            desc,
+            [
+                "./OutlineText/OutlTxt/TextOutlTxt",
+                "./OutlineText/OutlTxt",
+                "./CompleteText/OutlineText/OutlTxt/TextOutlTxt",
+                "./CompleteText/OutlineText/OutlTxt",
+                "./CompleteText/OutlineText",
+                "./OutlineText",
+            ],
+        )
+        # Langtext: Description/CompleteText/DetailTxt (BoQText)
+        long_text = text_from_paths(
+            desc,
+            [
+                "./CompleteText/DetailTxt",
+                "./CompleteText/DetailTxt/p",  # if it’s structured
+                "./CompleteText",
+            ],
+        )
+
+    return Item(
+        oz=oz,
+        short_text=short_text,
+        long_text=long_text,
+        qty=qty,
+        unit=unit,
+        unit_price=unit_price,
+        total=total,
+    )
+
+
+# -----------------------------
+# Formatting (German numbers)
+# -----------------------------
+def fmt_de_decimal(x: Decimal, decimals: int) -> str:
+    q = Decimal(10) ** (-decimals)
+    y = x.quantize(q, rounding=ROUND_HALF_UP)
+    s = f"{y:.{decimals}f}"  # dot decimal
+    neg = s.startswith("-")
+    if neg:
+        s = s[1:]
+    intpart, frac = s.split(".")
+    # thousands with dot
+    intpart = f"{int(intpart):,}".replace(",", ".")
+    out = f"{intpart},{frac}"
+    return "-" + out if neg else out
+
+
+def fmt_qty(x: Optional[Decimal]) -> str:
+    if x is None:
+        return ""
+    # quantities often 3 decimals
+    return fmt_de_decimal(x, 3).rstrip("0").rstrip(",")
+
+
+def fmt_money(x: Optional[Decimal], cur: str) -> str:
+    if x is None:
+        return ""
+    return f"{fmt_de_decimal(x, 2)} {cur}"
+
+
+# -----------------------------
+# PDF generation
+# -----------------------------
+def build_pdf(nodes: List[Node], out_pdf: Path, title: str, currency: str) -> None:
+    doc = SimpleDocTemplate(
+        str(out_pdf),
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=16 * mm,
+        bottomMargin=16 * mm,
+        title=title,
+        author="x83_to_pdf.py",
+    )
+
+    styles = getSampleStyleSheet()
+    base = styles["BodyText"]
+    base.fontName = "Helvetica"
+    base.fontSize = 9
+    base.leading = 12
+
+    h1 = ParagraphStyle(
+        "H1",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=14,
+        leading=18,
+        spaceAfter=8,
+    )
+    h2 = ParagraphStyle(
+        "H2",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=11,
+        leading=14,
+        spaceBefore=8,
+        spaceAfter=4,
+    )
+    pos_hdr = ParagraphStyle(
+        "PosHdr",
+        parent=base,
+        fontName="Helvetica-Bold",
+        fontSize=10,
+        leading=13,
+        spaceBefore=6,
+        spaceAfter=2,
+    )
+    longtxt_style = ParagraphStyle(
+        "LongTxt",
+        parent=base,
+        fontSize=9,
+        leading=12,
+        spaceAfter=4,
+    )
+    small = ParagraphStyle(
+        "Small",
+        parent=base,
+        fontSize=8,
+        leading=10,
+    )
+
+    story: List = []
+    story.append(Paragraph(xml_escape(title), h1))
+    story.append(Spacer(1, 4))
+
+    total_sum = Decimal("0.00")
+
+    for node in nodes:
+        if isinstance(node, Heading):
+            oz = node.oz.strip()
+            txt = node.text.strip()
+            line = f"{oz} {txt}".strip() if oz else txt
+            story.append(Paragraph(xml_escape(line), h2))
+            continue
+
+        # Item
+        story.append(Paragraph(xml_escape(f"Position {node.oz}".strip()), pos_hdr))
+
+        if node.long_text:
+            lt = xml_escape(node.long_text).replace("\n", "<br/>")
+            story.append(Paragraph(lt, longtxt_style))
+
+        # row: Menge | Einheit | Kurztext | Preis | Summe
+        qty_s = fmt_qty(node.qty)
+        unit_s = node.unit or ""
+        short_s = node.short_text or ""
+        up_s = fmt_money(node.unit_price, currency)
+        it_s = fmt_money(node.total, currency)
+
+        if node.total is not None:
+            total_sum += node.total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        data = [
+            [
+                Paragraph("Menge", small),
+                Paragraph("Einheit", small),
+                Paragraph("Kurztext", small),
+                Paragraph("Preis", small),
+                Paragraph("Summe", small),
+            ],
+            [
+                Paragraph(xml_escape(qty_s), base),
+                Paragraph(xml_escape(unit_s), base),
+                Paragraph(xml_escape(short_s), base),
+                Paragraph(xml_escape(up_s), base),
+                Paragraph(xml_escape(it_s), base),
+            ],
+        ]
+
+        col_widths = [22 * mm, 16 * mm, 90 * mm, 28 * mm, 28 * mm]
+        tbl = Table(data, colWidths=col_widths, hAlign="LEFT")
+        tbl.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+                    ("LINEABOVE", (0, 0), (-1, 0), 0.5, colors.grey),
+                    ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.grey),
+                    ("LINEBELOW", (0, 1), (-1, 1), 0.3, colors.lightgrey),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("ALIGN", (0, 1), (0, 1), "RIGHT"),  # qty
+                    ("ALIGN", (3, 1), (4, 1), "RIGHT"),  # prices
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+        story.append(tbl)
+        story.append(Spacer(1, 6))
+
+    story.append(Spacer(1, 8))
+    story.append(Paragraph("Gesamtsumme", ParagraphStyle("TotalHdr", parent=h2, spaceBefore=10, spaceAfter=2)))
+
+    total_tbl = Table(
+        [[Paragraph("Gesamtsumme:", pos_hdr), Paragraph(xml_escape(fmt_money(total_sum, currency)), pos_hdr)]],
+        colWidths=[140 * mm, 44 * mm],
+        hAlign="LEFT",
+    )
+    total_tbl.setStyle(
+        TableStyle(
+            [
+                ("LINEABOVE", (0, 0), (-1, 0), 0.8, colors.black),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.8, colors.black),
+                ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    story.append(total_tbl)
+
+    doc.build(story)
+
+
+# -----------------------------
+# Main
+# -----------------------------
+def main() -> int:
+    ap = argparse.ArgumentParser(description="GAEB DA XML X83 (.x83) -> PDF")
+    ap.add_argument("input", type=Path, help="Eingabedatei (.x83)")
+    ap.add_argument("output", type=Path, help="Ausgabedatei (.pdf)")
+    args = ap.parse_args()
+
+    if not args.input.exists():
+        raise SystemExit(f"Eingabedatei nicht gefunden: {args.input}")
+
+    try:
+        tree = ET.parse(args.input)
+    except ET.ParseError as e:
+        raise SystemExit(f"XML-Parsefehler: {e}")
+
+    root = tree.getroot()
+    strip_namespaces(root)
+
+    title, currency = extract_title(root)
+    nodes = extract_nodes(root)
+
+    if not nodes:
+        raise SystemExit("Keine Positionen gefunden (keine <Item>-Elemente im LV).")
+
+    build_pdf(nodes, args.output, title=title, currency=currency)
+    print(f"OK: PDF geschrieben: {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

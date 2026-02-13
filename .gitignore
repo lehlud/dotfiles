@@ -11,8 +11,8 @@
 # custom binaries
 !/.local/bin/
 /.local/bin/*
-/.local/bin/bunx
-/.local/bin/rickroll
+!/.local/bin/rickroll
+!/.local/bin/x83_to_pdf
 
 !/.config/
 /.config/*
