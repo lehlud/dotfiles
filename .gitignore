@@ -13,6 +13,7 @@
 /.local/bin/*
 !/.local/bin/rickroll
 !/.local/bin/x83_to_pdf
+!/.local/bin/battery-mode
 !/.local/bin/battery-mode-docked
 !/.local/bin/battery-mode-mobile
 !/.local/bin/restore-dconf
