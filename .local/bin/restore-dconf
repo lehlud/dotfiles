@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+cat ~/.config/_custom/dconf-dump | dconf load /
+
+
