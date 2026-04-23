@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BAT="${BAT:-/sys/class/power_supply/BAT0}"
+
+require_file() {
+  local path="$1"
+  [[ -e "$path" ]] || {
+    printf 'Error: missing file: %s\n' "$path" >&2
+    exit 1
+  }
+}
+
+require_file "$BAT/charge_control_start_threshold"
+require_file "$BAT/charge_control_end_threshold"
+require_file "$BAT/charge_behaviour"
+
+start=$(<"$BAT/charge_control_start_threshold")
+end=$(<"$BAT/charge_control_end_threshold")
+behaviour=$(<"$BAT/charge_behaviour")
+
+printf "%s\n" "Battery mode information"
+printf "%s\n" "------------------------"
+printf "charge_behaviour : %s\n" "$behaviour"
+printf "charge window    : %s–%s %%\n" "$start" "$end"
+
+if [[ "$behaviour" == *inhibit-charge* ]]; then
+    printf "mode             : docked (charging inhibited)\n"
+elif [[ "$start" -eq 85 && "$end" -eq 92 ]]; then
+    printf "mode             : mobile\n"
+elif [[ "$start" -eq 40 && "$end" -eq 60 ]]; then
+    printf "mode             : docked (threshold mode)\n"
+else
+    printf "mode             : custom\n"
+fi

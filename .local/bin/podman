@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+if [ -n "${CONTAINER_ID:-}" ]; then
+  exec /usr/bin/distrobox-host-exec /usr/bin/podman "$@"
+else
+  exec /usr/bin/podman "$@"
+fi

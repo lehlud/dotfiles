@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build the Tuta Mail web release inside a container.
+#
+# Usage:
+#   ./build_release.sh /path/to/tutanota
+#
+# Optional environment variables:
+#   CONTAINER_ENGINE  Force container engine (docker or podman)
+#   BUILD_IMAGE       Override image (default: node:22.16-bullseye)
+
+BUILD_IMAGE="${BUILD_IMAGE:-node:22.16-bullseye}"
+
+usage() {
+	echo "Usage: $(basename "$0") /path/to/tutanota" >&2
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+	usage
+	exit 0
+fi
+
+if [[ $# -ne 1 ]]; then
+	usage
+	exit 1
+fi
+
+ROOT_DIR="$(realpath "$1")"
+
+if [[ ! -d "${ROOT_DIR}" ]]; then
+	echo "Error: project directory does not exist: ${ROOT_DIR}" >&2
+	exit 1
+fi
+
+detect_engine() {
+	if [[ -n "${CONTAINER_ENGINE:-}" ]]; then
+		echo "${CONTAINER_ENGINE}"
+		return
+	fi
+
+	if command -v podman >/dev/null 2>&1; then
+		echo "podman"
+	elif command -v docker >/dev/null 2>&1; then
+		echo "docker"
+	else
+		echo "Error: neither podman nor docker is installed." >&2
+		exit 1
+	fi
+}
+
+ENGINE="$(detect_engine)"
+
+if [[ "${ENGINE}" != "podman" && "${ENGINE}" != "docker" ]]; then
+	echo "Error: unsupported CONTAINER_ENGINE '${ENGINE}'. Use docker or podman." >&2
+	exit 1
+fi
+
+if [[ ! -f "${ROOT_DIR}/package.json" ]]; then
+	echo "Error: package.json not found in project directory: ${ROOT_DIR}" >&2
+	exit 1
+fi
+
+echo "Using container engine: ${ENGINE}"
+echo "Using image: ${BUILD_IMAGE}"
+
+VOLUME_SUFFIX=":rw"
+if [[ "${ENGINE}" == "podman" ]]; then
+	# SELinux label for host-mounted workspace on Podman hosts.
+	VOLUME_SUFFIX=":rw,Z"
+fi
+
+"${ENGINE}" run --rm -t \
+	-v "${ROOT_DIR}:/workspace${VOLUME_SUFFIX}" \
+	-w /workspace \
+	-e DEBIAN_FRONTEND=noninteractive \
+	"${BUILD_IMAGE}" \
+	bash -lc '
+		set -euo pipefail
+
+		echo "==> Installing build dependencies"
+		apt-get update
+		apt-get install -y --no-install-recommends \
+			binaryen \
+			build-essential \
+			ca-certificates \
+			curl \
+			git \
+			python3
+		rm -rf /var/lib/apt/lists/*
+
+		echo "==> Installing Rust toolchain"
+		curl --proto "=https" --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.84.0
+		source /root/.cargo/env
+		rustup target add wasm32-unknown-unknown
+
+		echo "==> Installing Emscripten 3.1.59"
+		git clone --depth 1 --branch 3.1.59 https://github.com/emscripten-core/emsdk.git /opt/emsdk
+		pushd /opt/emsdk >/dev/null
+		./emsdk install latest
+		./emsdk activate latest
+		source ./emsdk_env.sh
+		popd >/dev/null
+
+		echo "==> Initializing submodules"
+		git -c safe.directory=/workspace submodule init
+		git -c safe.directory=/workspace submodule sync --recursive
+		git -c safe.directory=/workspace submodule update --recursive
+
+		echo "==> Running web release build"
+		npm ci
+		npm run build-packages
+		node webapp prod
+
+		echo "==> Build complete. Artifacts are in /workspace/build"
+	'

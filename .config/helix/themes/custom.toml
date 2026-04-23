@@ -1,0 +1,7 @@
+inherits = "dracula_at_night"
+
+"ui.background" = { fg = "#ffffff", bg = "#101010" }
+"ui.virtual" = "#a0a0a0"
+# "ui.virtual.whitespace" = { fg = "#a0a0a0" }
+
+"diagnostic.hint" = { modifiers = ["dim"] }
