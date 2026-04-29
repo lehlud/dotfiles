@@ -51,3 +51,8 @@
 !/.config/environment.d/
 /.config/environment.d/*
 !/.config/environment.d/ssh_auth_socket.conf
+
+!/.agents/
+!/.config/opencode
+/.config/opencode/*
+!/.config/opencode/AGENTS.md
