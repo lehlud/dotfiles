@@ -1,6 +1,250 @@
-inherits = "ayu_dark"
+# custom.toml
+# Generated from your fish + terminal + zellij palette.
 
-"ui.background" = { fg = "#ffffff", bg = "#000000" }
-"ui.virtual" = "#a0a0a0"
+# ----------------------------
+# Syntax highlighting
+# ----------------------------
 
-"diagnostic.hint" = { modifiers = ["dim"] }
+"attribute" = "purple"
+"type" = "cyan"
+"type.builtin" = "blue"
+"type.parameter" = "purple"
+"type.enum.variant" = "purple"
+"constructor" = "cyan"
+
+"constant" = "yellow"
+"constant.builtin" = "orange"
+"constant.builtin.boolean" = "orange"
+"constant.character" = "green"
+"constant.character.escape" = "red"
+"constant.numeric" = "yellow"
+"constant.numeric.integer" = "yellow"
+"constant.numeric.float" = "yellow"
+
+"string" = "green"
+"string.regexp" = "cyan"
+"string.special" = "cyan"
+"string.special.path" = { fg = "green", modifiers = ["underlined"] }
+"string.special.url" = { fg = "blue", modifiers = ["underlined"] }
+"string.special.symbol" = "purple"
+
+"comment" = { fg = "gray", modifiers = ["italic"] }
+"comment.line" = { fg = "gray", modifiers = ["italic"] }
+"comment.block" = { fg = "gray", modifiers = ["italic"] }
+"comment.documentation" = { fg = "light-gray", modifiers = ["italic"] }
+"comment.unused" = { fg = "gray", modifiers = ["dim"] }
+
+"variable" = "foreground"
+"variable.builtin" = "orange"
+"variable.parameter" = "purple"
+"variable.other.member" = "cyan"
+"variable.other.member.private" = { fg = "cyan", modifiers = ["dim"] }
+
+"label" = "blue"
+
+"punctuation" = "gray"
+"punctuation.delimiter" = "gray"
+"punctuation.bracket" = "light-gray"
+"punctuation.special" = "cyan"
+
+"keyword" = "pink"
+"keyword.control" = "pink"
+"keyword.control.conditional" = "pink"
+"keyword.control.repeat" = "pink"
+"keyword.control.import" = "pink"
+"keyword.control.return" = "pink"
+"keyword.control.exception" = "pink"
+"keyword.operator" = "green"
+"keyword.directive" = "orange"
+"keyword.function" = "blue"
+"keyword.storage" = "pink"
+"keyword.storage.type" = "pink"
+"keyword.storage.modifier" = "orange"
+
+"operator" = "green"
+
+"function" = "blue"
+"function.builtin" = "blue"
+"function.method" = "blue"
+"function.method.private" = { fg = "blue", modifiers = ["dim"] }
+"function.macro" = "purple"
+"function.special" = "orange"
+
+"tag" = "pink"
+"tag.builtin" = "pink"
+"namespace" = "purple"
+"special" = "orange"
+
+# ----------------------------
+# Markup
+# ----------------------------
+
+"markup.heading" = { fg = "blue", modifiers = ["bold"] }
+"markup.heading.marker" = "gray"
+"markup.heading.1" = { fg = "blue", modifiers = ["bold"] }
+"markup.heading.2" = { fg = "purple", modifiers = ["bold"] }
+"markup.heading.3" = { fg = "green", modifiers = ["bold"] }
+"markup.heading.4" = { fg = "yellow", modifiers = ["bold"] }
+"markup.heading.5" = { fg = "cyan", modifiers = ["bold"] }
+"markup.heading.6" = { fg = "orange", modifiers = ["bold"] }
+
+"markup.list" = "orange"
+"markup.list.checked" = "green"
+"markup.list.unchecked" = "gray"
+
+"markup.bold" = { fg = "foreground", modifiers = ["bold"] }
+"markup.italic" = { fg = "foreground", modifiers = ["italic"] }
+"markup.strikethrough" = { modifiers = ["crossed_out"] }
+
+"markup.link.url" = { fg = "blue", modifiers = ["underlined"] }
+"markup.link.label" = "purple"
+"markup.link.text" = "blue"
+"markup.quote" = "green"
+"markup.raw" = "green"
+"markup.raw.inline" = "green"
+"markup.raw.block" = "green"
+
+# ----------------------------
+# Diff
+# ----------------------------
+
+"diff.plus" = "green"
+"diff.plus.gutter" = "green"
+"diff.minus" = "red"
+"diff.minus.gutter" = "red"
+"diff.delta" = "yellow"
+"diff.delta.gutter" = "yellow"
+"diff.delta.moved" = "blue"
+"diff.delta.conflict" = "orange"
+
+# ----------------------------
+# UI
+# ----------------------------
+
+"ui.background" = { bg = "background" }
+"ui.background.separator" = "border"
+
+"ui.text" = "foreground"
+"ui.text.focus" = { fg = "white", bg = "selection" }
+"ui.text.inactive" = "gray"
+"ui.text.info" = "blue"
+"ui.text.directory" = "blue"
+
+"ui.cursor" = { fg = "background", bg = "white" }
+"ui.cursor.normal" = { fg = "background", bg = "blue" }
+"ui.cursor.insert" = { fg = "background", bg = "green" }
+"ui.cursor.select" = { fg = "background", bg = "purple" }
+"ui.cursor.match" = { fg = "yellow", modifiers = ["bold"] }
+
+"ui.cursor.primary" = { fg = "background", bg = "white" }
+"ui.cursor.primary.normal" = { fg = "background", bg = "blue" }
+"ui.cursor.primary.insert" = { fg = "background", bg = "green" }
+"ui.cursor.primary.select" = { fg = "background", bg = "purple" }
+
+"ui.gutter" = { fg = "gray", bg = "background" }
+"ui.gutter.selected" = { fg = "foreground", bg = "background" }
+"ui.linenr" = "gray"
+"ui.linenr.selected" = { fg = "blue", modifiers = ["bold"] }
+
+"ui.statusline" = { fg = "light-gray", bg = "surface" }
+"ui.statusline.inactive" = { fg = "gray", bg = "surface" }
+"ui.statusline.normal" = { fg = "background", bg = "blue", modifiers = ["bold"] }
+"ui.statusline.insert" = { fg = "background", bg = "green", modifiers = ["bold"] }
+"ui.statusline.select" = { fg = "background", bg = "purple", modifiers = ["bold"] }
+"ui.statusline.separator" = "border"
+
+"ui.bufferline" = { fg = "light-gray", bg = "surface" }
+"ui.bufferline.active" = { fg = "background", bg = "blue", modifiers = ["bold"] }
+"ui.bufferline.background" = { bg = "surface" }
+
+"ui.popup" = { fg = "foreground", bg = "surface" }
+"ui.popup.info" = { fg = "foreground", bg = "surface" }
+"ui.help" = { fg = "foreground", bg = "surface" }
+"ui.window" = "border"
+
+"ui.picker.header" = { fg = "blue", modifiers = ["bold"] }
+"ui.picker.header.column" = { fg = "blue", modifiers = ["bold"] }
+"ui.picker.header.column.active" = { fg = "yellow", modifiers = ["bold"] }
+
+"ui.menu" = { fg = "foreground", bg = "surface" }
+"ui.menu.selected" = { fg = "white", bg = "selection", modifiers = ["bold"] }
+"ui.menu.scroll" = { fg = "blue", bg = "border" }
+
+"ui.selection" = { fg = "white", bg = "selection" }
+"ui.selection.primary" = { fg = "white", bg = "selection" }
+
+"ui.highlight" = { bg = "highlight" }
+"ui.highlight.frameline" = { bg = "highlight_yellow" }
+
+"ui.cursorline.primary" = { bg = "cursorline" }
+"ui.cursorline.secondary" = { bg = "surface" }
+"ui.cursorcolumn.primary" = { bg = "cursorline" }
+"ui.cursorcolumn.secondary" = { bg = "surface" }
+
+"ui.virtual.ruler" = { bg = "surface" }
+"ui.virtual.whitespace" = "border"
+"ui.virtual.indent-guide" = "border"
+"ui.virtual.inlay-hint" = { fg = "gray", modifiers = ["italic"] }
+"ui.virtual.inlay-hint.parameter" = { fg = "gray", modifiers = ["italic"] }
+"ui.virtual.inlay-hint.type" = { fg = "purple", modifiers = ["italic"] }
+"ui.virtual.wrap" = "gray"
+"ui.virtual.jump-label" = { fg = "yellow", modifiers = ["bold"] }
+
+"ui.debug.breakpoint" = "red"
+"ui.debug.active" = "yellow"
+
+# ----------------------------
+# Diagnostics
+# ----------------------------
+
+"warning" = "yellow"
+"error" = "red"
+"info" = "blue"
+"hint" = "cyan"
+
+"diagnostic" = { underline = { color = "gray", style = "curl" } }
+"diagnostic.hint" = { underline = { color = "cyan", style = "curl" } }
+"diagnostic.info" = { underline = { color = "blue", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "yellow", style = "curl" } }
+"diagnostic.error" = { underline = { color = "red", style = "curl" } }
+"diagnostic.unnecessary" = { modifiers = ["dim"] }
+"diagnostic.deprecated" = { modifiers = ["crossed_out"] }
+
+"tabstop" = { fg = "background", bg = "yellow" }
+
+# ----------------------------
+# Palette
+# ----------------------------
+
+[palette]
+background = "#05070a"
+foreground = "#f0f3f6"
+
+surface = "#0d1117"
+cursorline = "#0b1220"
+highlight = "#101826"
+highlight_yellow = "#3a3108"
+border = "#30363d"
+
+selection = "#1f6feb"
+
+black = "#05070a"
+red = "#ff6b7a"
+green = "#4ade80"
+yellow = "#facc15"
+blue = "#60a5fa"
+purple = "#c084fc"
+cyan = "#22d3ee"
+white = "#ffffff"
+
+pink = "#ff79c6"
+orange = "#fb923c"
+gray = "#8b949e"
+light-gray = "#c9d1d9"
+
+bright-red = "#ff4d6d"
+bright-green = "#22c55e"
+bright-yellow = "#eab308"
+bright-blue = "#3b82f6"
+bright-purple = "#a855f7"
+bright-cyan = "#06b6d4"

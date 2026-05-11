@@ -56,3 +56,9 @@
 !/.config/opencode
 /.config/opencode/*
 !/.config/opencode/AGENTS.md
+
+!/.vscode/
+/.vscode/*
+!/.vscode/extensions/
+/.vscode/extensions/*
+!/.vscode/extensions/custom-vscode-theme/
