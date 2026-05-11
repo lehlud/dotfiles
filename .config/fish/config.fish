@@ -3,6 +3,10 @@ source ~/.config/fish/functions/fish_prompt.fish
 fish_config theme choose custom
 
 if status is-interactive
+    if command -q distrobox; and set -q SSH_CONNECTION; and not set -q CONTAINER_ID; and set -q SSH_CONTAINER
+        exec distrobox enter "$SSH_CONTAINER"
+    end
+
     fortune -s | cowsay
     echo
     uptime | sed 's/^ //'
