@@ -1,6 +1,6 @@
 source ~/.config/fish/functions/fish_prompt.fish
 
-fish_config theme choose "Dracula Official"
+fish_config theme choose custom
 
 if status is-interactive
     fortune -s | cowsay
@@ -49,3 +49,5 @@ alias roh="run-on-host"
 # setup wasmtime
 set -gx WASMTIME_HOME "$HOME/.wasmtime"
 string match -r ".wasmtime" "$PATH" >/dev/null; or set -gx PATH "$WASMTIME_HOME/bin" $PATH
+
+set -gx LS_COLORS "di=38;2;74;222;128:$LS_COLORS"
