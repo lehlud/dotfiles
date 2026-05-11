@@ -1,0 +1,142 @@
+themes {
+    custom {
+        text_unselected {
+            base 201 209 217       // #c9d1d9
+            background 5 7 10      // #05070a
+            emphasis_0 96 165 250  // #60a5fa
+            emphasis_1 74 222 128  // #4ade80
+            emphasis_2 192 132 252 // #c084fc
+            emphasis_3 250 204 21  // #facc15
+        }
+
+        text_selected {
+            base 255 255 255       // #ffffff
+            background 31 111 235  // #1f6feb
+            emphasis_0 255 255 255
+            emphasis_1 74 222 128
+            emphasis_2 192 132 252
+            emphasis_3 250 204 21
+        }
+
+        ribbon_unselected {
+            base 201 209 217       // #c9d1d9
+            background 13 17 23    // #0d1117
+            emphasis_0 96 165 250
+            emphasis_1 139 148 158 // #8b949e
+            emphasis_2 192 132 252
+            emphasis_3 250 204 21
+        }
+
+        ribbon_selected {
+            base 5 7 10            // #05070a
+            background 96 165 250  // #60a5fa
+            emphasis_0 255 255 255
+            emphasis_1 74 222 128
+            emphasis_2 192 132 252
+            emphasis_3 250 204 21
+        }
+
+        table_title {
+            base 96 165 250        // #60a5fa
+            background 5 7 10
+            emphasis_0 255 255 255
+            emphasis_1 74 222 128
+            emphasis_2 192 132 252
+            emphasis_3 250 204 21
+        }
+
+        table_cell_unselected {
+            base 201 209 217
+            background 5 7 10
+            emphasis_0 96 165 250
+            emphasis_1 74 222 128
+            emphasis_2 192 132 252
+            emphasis_3 139 148 158
+        }
+
+        table_cell_selected {
+            base 255 255 255
+            background 31 111 235
+            emphasis_0 255 255 255
+            emphasis_1 74 222 128
+            emphasis_2 250 204 21
+            emphasis_3 192 132 252
+        }
+
+        list_unselected {
+            base 201 209 217
+            background 5 7 10
+            emphasis_0 96 165 250
+            emphasis_1 74 222 128
+            emphasis_2 192 132 252
+            emphasis_3 139 148 158
+        }
+
+        list_selected {
+            base 255 255 255
+            background 31 111 235
+            emphasis_0 255 255 255
+            emphasis_1 74 222 128
+            emphasis_2 250 204 21
+            emphasis_3 192 132 252
+        }
+
+        frame_unselected {
+            base 48 54 61          // #30363d
+            background 5 7 10
+            emphasis_0 139 148 158
+            emphasis_1 201 209 217
+            emphasis_2 96 165 250
+            emphasis_3 250 204 21
+        }
+
+        frame_selected {
+            base 96 165 250        // #60a5fa
+            background 5 7 10
+            emphasis_0 255 255 255
+            emphasis_1 74 222 128
+            emphasis_2 192 132 252
+            emphasis_3 250 204 21
+        }
+
+        frame_highlight {
+            base 250 204 21        // #facc15
+            background 5 7 10
+            emphasis_0 255 255 255
+            emphasis_1 96 165 250
+            emphasis_2 192 132 252
+            emphasis_3 255 107 122
+        }
+
+        exit_code_success {
+            base 74 222 128        // #4ade80
+            background 5 7 10
+            emphasis_0 255 255 255
+            emphasis_1 96 165 250
+            emphasis_2 192 132 252
+            emphasis_3 250 204 21
+        }
+
+        exit_code_error {
+            base 255 107 122       // #ff6b7a
+            background 5 7 10
+            emphasis_0 255 255 255
+            emphasis_1 250 204 21
+            emphasis_2 192 132 252
+            emphasis_3 96 165 250
+        }
+
+        multiplayer_user_colors {
+            player_1 96 165 250    // blue
+            player_2 74 222 128    // green
+            player_3 192 132 252   // purple
+            player_4 250 204 21    // yellow
+            player_5 34 211 238    // cyan
+            player_6 255 107 122   // red
+            player_7 251 146 60    // orange
+            player_8 255 255 255   // white
+            player_9 139 148 158   // gray
+            player_10 201 209 217  // light gray
+        }
+    }
+}

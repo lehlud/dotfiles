@@ -286,7 +286,7 @@ web_client {
 // Choose the theme that is specified in the themes section.
 // Default: default
 // 
-// theme "pencil-light"
+theme "custom"
  
 // Choose the base input mode of zellij.
 // Default: normal
@@ -366,7 +366,7 @@ web_client {
 // Examples:
 //
 // copy_command "xclip -selection clipboard" // x11
-copy_command "wl-copy"                    // wayland
+// copy_command "wl-copy"                    // wayland
 // copy_command "pbcopy"                     // osx
 // 
 // copy_command "pbcopy"
