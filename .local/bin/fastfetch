@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_fastfetch_download() {
+    local arch
+    local sys
+    local archive_dir
+
+    case "$(uname -m)" in
+        x86_64)
+            arch=amd64
+            ;;
+        aarch64 | arm64)
+            arch=aarch64
+            ;;
+        *)
+            printf 'fastfetch update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+            return 2
+            ;;
+    esac
+
+    case "$(uname -s)" in
+        Linux)
+            sys=linux
+            ;;
+        *)
+            printf 'fastfetch update failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    archive_dir="fastfetch-$sys-$arch"
+
+    AUTO_UPDATE_URL="https://github.com/fastfetch-cli/fastfetch/releases/latest/download/$archive_dir.tar.gz"
+    AUTO_UPDATE_SOURCE_REL="$archive_dir"
+    AUTO_UPDATE_SOURCE_BIN_REL="$archive_dir/usr/bin/fastfetch"
+}
+
+_fastfetch_cache_dir="$HOME/.local/cache/fastfetch"
+
+if auto_update_ensure_tar_app fastfetch "$_fastfetch_cache_dir" fastfetch fastfetch/usr/bin/fastfetch 7 _fastfetch_download; then
+    exec "$_fastfetch_cache_dir/fastfetch/usr/bin/fastfetch" "$@"
+fi
+
+exit 1

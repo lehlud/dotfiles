@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_zellij_download() {
+    local arch
+    local sys
+
+    case "$(uname -m)" in
+        x86_64 | aarch64)
+            arch="$(uname -m)"
+            ;;
+        arm64)
+            arch=aarch64
+            ;;
+        *)
+            printf 'zellij update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+            return 2
+            ;;
+    esac
+
+    case "$(uname -s)" in
+        Linux)
+            sys=unknown-linux-musl
+            ;;
+        Darwin)
+            sys=apple-darwin
+            ;;
+        *)
+            printf 'zellij update failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    AUTO_UPDATE_URL="https://github.com/zellij-org/zellij/releases/latest/download/zellij-$arch-$sys.tar.gz"
+    AUTO_UPDATE_SOURCE_REL=zellij
+    AUTO_UPDATE_SOURCE_BIN_REL=zellij
+}
+
+_zellij_cache_dir="$HOME/.local/cache/zellij"
+
+if auto_update_ensure_tar_app zellij "$_zellij_cache_dir" zellij zellij 7 _zellij_download; then
+    exec "$_zellij_cache_dir/zellij" "$@"
+fi
+
+exit 1

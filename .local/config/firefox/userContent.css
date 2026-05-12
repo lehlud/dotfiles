@@ -1,0 +1,52 @@
+*:not(:where(
+  /* site/custom */
+  fos-icon, fos-icon *,
+  .bwi, .bwi *, [class^="bwi-"], [class*=" bwi-"],
+
+  /* Nerd Fonts and bundled glyph sets */
+  .nf, .nf *, [class^="nf-"], [class*=" nf-"],
+  .devicon, .devicon *, [class^="devicon-"], [class*=" devicon-"],
+  .octicon, .octicon *, [class^="octicon-"], [class*=" octicon-"],
+  .codicon, .codicon *, [class^="codicon-"], [class*=" codicon-"],
+  .ai, .ai *, [class^="ai-"], [class*=" ai-"],
+
+  /* Font Awesome */
+  .fa, .fas, .far, .fal, .fad, .fab, .fat,
+  .fa-solid, .fa-regular, .fa-light, .fa-thin, .fa-duotone, .fa-brands,
+  .fass, .fasr, .fasl, .fast, .fasds,
+  [class^="fa-"], [class*=" fa-"],
+
+  /* Google Material Icons / Symbols */
+  .material-icons, .material-icons-outlined,
+  .material-icons-round, .material-icons-rounded,
+  .material-icons-sharp, .material-icons-two-tone,
+  .material-symbols-outlined, .material-symbols-rounded, .material-symbols-sharp,
+
+  /* Material Design Icons */
+  .mdi, .mdi *, [class^="mdi-"], [class*=" mdi-"],
+
+  /* Bootstrap Icons */
+  .bi, .bi *, [class^="bi-"], [class*=" bi-"],
+
+  /* Remix Icon */
+  .ri, .ri *, [class^="ri-"], [class*=" ri-"],
+
+  /* Tabler / Typicons */
+  .ti, .ti *, [class^="ti-"], [class*=" ti-"],
+  .typcn, .typcn *, [class^="typcn-"], [class*=" typcn-"],
+
+  /* Phosphor */
+  .ph, .ph *, [class^="ph-"], [class*=" ph-"],
+
+  /* Ionicons */
+  ion-icon, ion-icon *,
+  .ion, .ion *, [class^="ion-"], [class*=" ion-"],
+
+  /* Boxicons / Line Awesome / Weather Icons */
+  .bx, .bx *, [class^="bx-"], [class*=" bx-"],
+  .la, .la *, .lab, .lar, .las,
+  [class^="la-"], [class*=" la-"],
+  .wi, .wi *, [class^="wi-"], [class*=" wi-"]
+)) {
+  font-family: 'JetBrains Mono' !important;
+}

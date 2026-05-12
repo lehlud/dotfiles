@@ -1,6 +1,24 @@
 # .bashrc
 
-source "$HOME/.config/bash/fish-launcher.bash"
+case ":$PATH:" in
+    *":$HOME/.local/bin:"*)
+        ;;
+    *)
+        PATH="$PATH:$HOME/.local/bin"
+        ;;
+esac
+export PATH
+
+export EDITOR="$HOME/.local/bin/helix"
+
+if [[ "$-" == *i* ]] && [ -z "${I_WANT_BASH+x}" ] && [ -x "$HOME/.local/bin/fish" ]; then
+    "$HOME/.local/bin/fish"
+    fish_status=$?
+
+    if [ "$fish_status" -ne 125 ]; then
+        exit "$fish_status"
+    fi
+fi
 
 # Source global definitions
 if [ -f /etc/bashrc ]; then
@@ -8,8 +26,16 @@ if [ -f /etc/bashrc ]; then
 fi
 
 # User specific environment
-if ! [[ "$PATH" =~ "$HOME/.local/bin:$HOME/bin:" ]]; then
-    PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+case ":$PATH:" in
+    *":$HOME/bin:"*)
+        ;;
+    *)
+        PATH="$PATH:$HOME/bin"
+        ;;
+esac
+
+if [ -n "${I_WANT_BASH+x}" ] && [ -n "${BASH_VERSION:-}" ]; then
+    unset I_WANT_BASH
 fi
 export PATH
 

@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_fish_download() {
+    local arch
+    local release
+
+    case "$(uname -m)" in
+        x86_64)
+            arch=x86_64
+            ;;
+        aarch64 | arm64)
+            arch=aarch64
+            ;;
+        *)
+            printf 'fish update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+            return 2
+            ;;
+    esac
+
+    case "$(uname -s)" in
+        Linux)
+            ;;
+        *)
+            printf 'fish update failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    release="$(auto_update_latest_release_tag fish-shell/fish-shell)" || return 1
+
+    AUTO_UPDATE_URL="https://github.com/fish-shell/fish-shell/releases/download/$release/fish-$release-linux-$arch.tar.xz"
+    AUTO_UPDATE_SOURCE_REL=fish
+    AUTO_UPDATE_SOURCE_BIN_REL=fish
+}
+
+_fish_cache_dir="$HOME/.local/cache/fish"
+
+if auto_update_ensure_tar_app fish "$_fish_cache_dir" fish fish 7 _fish_download; then
+    exec "$_fish_cache_dir/fish" "$@"
+fi
+
+exit 125

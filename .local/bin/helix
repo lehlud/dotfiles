@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_helix_download() {
+    local arch
+    local sys
+    local release
+    local archive_dir
+
+    case "$(uname -m)" in
+        x86_64 | aarch64)
+            arch="$(uname -m)"
+            ;;
+        arm64)
+            arch=aarch64
+            ;;
+        *)
+            printf 'helix update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+            return 2
+            ;;
+    esac
+
+    case "$(uname -s)" in
+        Linux)
+            sys=linux
+            ;;
+        Darwin)
+            sys=macos
+            ;;
+        *)
+            printf 'helix update failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    release="$(auto_update_latest_release_tag helix-editor/helix)" || return 1
+    archive_dir="helix-$release-$arch-$sys"
+
+    AUTO_UPDATE_URL="https://github.com/helix-editor/helix/releases/download/$release/$archive_dir.tar.xz"
+    AUTO_UPDATE_SOURCE_REL="$archive_dir"
+    AUTO_UPDATE_SOURCE_BIN_REL="$archive_dir/hx"
+}
+
+_helix_cache_dir="$HOME/.local/cache/helix"
+
+if auto_update_ensure_tar_app helix "$_helix_cache_dir" helix helix/hx 7 _helix_download; then
+    export HELIX_RUNTIME="$_helix_cache_dir/helix/runtime"
+    exec "$_helix_cache_dir/helix/hx" "$@"
+fi
+
+exit 1

@@ -16,15 +16,12 @@ if status is-interactive
     echo
 end
 
-if set -qU EDITOR; and set -qg EDITOR
-    set -eg EDITOR
-end
-
+set -gx EDITOR "$(which helix)"
 set -x TERM xterm-256color
 set -x COLORTERM truecolor
 set -x SSH_AUTH_SOCK /run/user/1000/ssh-agent.socket
 
-alias bash="I_WANT_BASH= $(which bash)"
+alias bash="I_WANT_BASH=1 command bash"
 
 alias tmux="tmux -2 -u"
 
@@ -59,8 +56,4 @@ alias hibernate="run-on-host systemctl hibernate"
 
 alias roh="run-on-host"
 
-# setup wasmtime
-set -gx WASMTIME_HOME "$HOME/.wasmtime"
-string match -r ".wasmtime" "$PATH" >/dev/null; or set -gx PATH "$WASMTIME_HOME/bin" $PATH
-
-set -gx LS_COLORS "di=38;2;74;222;128:$LS_COLORS"
+set -gx LS_COLORS "di=38;2;74;222;128"
