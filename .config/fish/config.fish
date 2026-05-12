@@ -16,7 +16,10 @@ if status is-interactive
     echo
 end
 
-set -x EDITOR hx
+if set -qU EDITOR; and set -qg EDITOR
+    set -eg EDITOR
+end
+
 set -x TERM xterm-256color
 set -x COLORTERM truecolor
 set -x SSH_AUTH_SOCK /run/user/1000/ssh-agent.socket

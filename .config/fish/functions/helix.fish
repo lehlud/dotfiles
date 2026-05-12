@@ -53,5 +53,13 @@ function helix --description "better than vim"
         --max-age-days 7
     or return $status
 
-    env HELIX_RUNTIME="$dir/$release_dir/runtime" "$dir/$release_dir/hx" $argv
+    set --local exe_file "$dir/$release_dir/hx"
+
+    if set -qg EDITOR
+        set -eg EDITOR
+    end
+
+    set -Ux EDITOR "$exe_file"
+
+    env HELIX_RUNTIME="$dir/$release_dir/runtime" "$exe_file" $argv
 end
