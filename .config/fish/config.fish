@@ -7,8 +7,11 @@ if status is-interactive
         exec distrobox enter "$SSH_CONTAINER"
     end
 
-    fortune -s | cowsay
-    echo
+    if command -q fortune; and command -q cowsay
+        fortune -s | cowsay
+        echo
+    end
+
     uptime | sed 's/^ //'
     echo
 end
@@ -17,6 +20,8 @@ set -x EDITOR hx
 set -x TERM xterm-256color
 set -x COLORTERM truecolor
 set -x SSH_AUTH_SOCK /run/user/1000/ssh-agent.socket
+
+alias bash="I_WANT_BASH= $(which bash)"
 
 alias tmux="tmux -2 -u"
 
@@ -32,6 +37,7 @@ alias suspend="systemctl hybrid-sleep"
 
 alias z="zellij"
 alias ff="fastfetch"
+alias hx="helix"
 
 alias o="xdg-open"
 
