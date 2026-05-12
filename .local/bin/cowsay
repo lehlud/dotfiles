@@ -1,0 +1,466 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+COW_COUNT=47
+DEFAULT_COW='default'
+COW_MARKER="#__EMBEDDED_COWS_BELOW__"
+
+eyes="oo"
+tongue="  "
+cow="$DEFAULT_COW"
+wrap_column=40
+nowrap=0
+list_cows=0
+
+usage() {
+  cat <<'EOF'
+cowsay compatible subset
+
+Usage:
+  cowsay [-bdgpstwy] [-e eyes] [-f cowfile] [-l] [-n] [-T tongue] [-W column] [message]
+
+Supported options:
+  -b              Borg mode
+  -d              Dead mode
+  -g              Greedy mode
+  -p              Paranoid mode
+  -s              Stoned mode
+  -t              Tired mode
+  -w              Wired mode
+  -y              Youthful mode
+  -e eyes         Set eyes, usually two characters
+  -T tongue       Set tongue, usually two characters
+  -f cowfile      Select cow by name
+  -l              List embedded cows
+  -n              Do not word-wrap
+  -W column       Wrap column, default 40
+  -h, --help      Show this help
+
+Notes:
+  Incoming tabs are converted to exactly four spaces before wrapping and
+  bubble sizing.
+
+Not implemented:
+  Runtime Perl cowfile evaluation. Cow templates are embedded at generation time.
+EOF
+}
+
+set_preset() {
+  case "$1" in
+    -b) eyes="=="; tongue="  " ;;
+    -d) eyes="xx"; tongue="U " ;;
+    -g) eyes='$$'; tongue="  " ;;
+    -p) eyes="@@" ; tongue="  " ;;
+    -s) eyes="**"; tongue="U " ;;
+    -t) eyes="--"; tongue="  " ;;
+    -w) eyes="OO"; tongue="  " ;;
+    -y) eyes=".."; tongue="  " ;;
+  esac
+}
+
+need_arg() {
+  local opt="$1"
+  local arg="${2:-}"
+
+  if [[ -z "$arg" ]]; then
+    echo "cowsay: option '$opt' requires an argument" >&2
+    exit 2
+  fi
+}
+
+while (($# > 0)); do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+
+    -l)
+      list_cows=1
+      shift
+      ;;
+
+    -n)
+      nowrap=1
+      shift
+      ;;
+
+    -W)
+      need_arg "-W" "${2:-}"
+      wrap_column="$2"
+      shift 2
+      ;;
+
+    -W[0-9]*)
+      wrap_column="${1#-W}"
+      shift
+      ;;
+
+    -e)
+      need_arg "-e" "${2:-}"
+      eyes="$2"
+      shift 2
+      ;;
+
+    -e?*)
+      eyes="${1#-e}"
+      shift
+      ;;
+
+    -T)
+      need_arg "-T" "${2:-}"
+      tongue="$2"
+      shift 2
+      ;;
+
+    -T?*)
+      tongue="${1#-T}"
+      shift
+      ;;
+
+    -f)
+      need_arg "-f" "${2:-}"
+      cow="$2"
+      cow="${cow##*/}"
+      cow="${cow%.cow}"
+      shift 2
+      ;;
+
+    -f?*)
+      cow="${1#-f}"
+      cow="${cow##*/}"
+      cow="${cow%.cow}"
+      shift
+      ;;
+
+    -[bdgpstwy])
+      set_preset "$1"
+      shift
+      ;;
+
+    --)
+      shift
+      break
+      ;;
+
+    -*)
+      echo "cowsay: unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+
+    *)
+      break
+      ;;
+  esac
+done
+
+if ! [[ "$wrap_column" =~ ^[0-9]+$ ]] || ((wrap_column < 1)); then
+  echo "cowsay: -W requires a positive integer" >&2
+  exit 2
+fi
+
+# Cowsay is historically two-character oriented here. Normalize to exactly
+# two characters so embedded templates remain stable.
+eyes="${eyes:0:2}"
+tongue="${tongue:0:2}"
+
+while ((${#eyes} < 2)); do
+  eyes="${eyes} "
+done
+
+while ((${#tongue} < 2)); do
+  tongue="${tongue} "
+done
+
+decode_base64() {
+  if printf '' | base64 -d >/dev/null 2>&1; then
+    base64 -d
+  else
+    base64 -D
+  fi
+}
+
+marker_line() {
+  grep -anF "$COW_MARKER" "$0" |
+    tail -n 1 |
+    cut -d: -f1
+}
+
+cow_table() {
+  local m_line
+
+  m_line="$(marker_line)"
+
+  if [[ -z "$m_line" ]]; then
+    echo "cowsay: embedded cow section is corrupt" >&2
+    exit 1
+  fi
+
+  awk -v start="$((m_line + 1))" '
+    NR >= start
+  ' "$0"
+}
+
+list_embedded_cows() {
+  cow_table |
+    awk -F '\t' '{ print $1 }' |
+    sort |
+    awk '
+      BEGIN {
+        print "Cow files in standalone cowsay:"
+      }
+
+      {
+        next_piece = $0 " "
+
+        if (length(line) + length(next_piece) > 72) {
+          if (line != "") {
+            print line
+          }
+          line = next_piece
+        } else {
+          line = line next_piece
+        }
+      }
+
+      END {
+        if (line != "") {
+          print line
+        }
+      }
+    '
+}
+
+encoded_cow() {
+  local wanted="$1"
+
+  cow_table |
+    awk -F '\t' -v wanted="$wanted" '
+      $1 == wanted {
+        print $2
+        found = 1
+        exit
+      }
+
+      END {
+        if (!found) {
+          exit 2
+        }
+      }
+    '
+}
+
+render_cow_art() {
+  local encoded="$1"
+
+  printf '%s' "$encoded" |
+    decode_base64 |
+    gzip -dc |
+    while IFS= read -r line; do
+      line="${line//@@/$eyes}"
+      line="${line//##/$tongue}"
+      printf '%s\n' "$line"
+    done
+}
+
+read_message() {
+  if (($# > 0)); then
+    printf '%s\n' "$*"
+  else
+    cat
+  fi
+}
+
+normalize_input_tabs() {
+  # Deterministic width handling: replace every literal tab with exactly
+  # four spaces before any wrapping or bubble width calculation.
+  sed $'s/\t/    /g'
+}
+
+wrap_message() {
+  if ((nowrap)); then
+    cat
+    return
+  fi
+
+  awk -v width="$wrap_column" '
+    function emit_line(s) {
+      print s
+    }
+
+    function wrap(s) {
+      while (length(s) > width) {
+        cut = width
+
+        for (i = width; i >= 1; i--) {
+          if (substr(s, i, 1) ~ /[[:space:]]/) {
+            cut = i
+            break
+          }
+        }
+
+        part = substr(s, 1, cut)
+        sub(/[[:space:]]+$/, "", part)
+
+        if (part == "") {
+          part = substr(s, 1, width)
+          cut = width
+        }
+
+        emit_line(part)
+
+        s = substr(s, cut + 1)
+        sub(/^[[:space:]]+/, "", s)
+      }
+
+      emit_line(s)
+    }
+
+    {
+      if ($0 == "") {
+        print ""
+      } else {
+        wrap($0)
+      }
+    }
+  '
+}
+
+make_bubble() {
+  local lines_file="$1"
+  local width
+  local n
+  local line
+  local len
+  local pad
+
+  width="$(
+    awk '
+      {
+        len = length($0)
+        if (len > max) {
+          max = len
+        }
+      }
+
+      END {
+        print max + 0
+      }
+    ' "$lines_file"
+  )"
+
+  n="$(wc -l < "$lines_file" | tr -d '[:space:]')"
+
+  printf ' '
+  printf '%*s' "$((width + 2))" '' | tr ' ' '_'
+  printf '\n'
+
+  if ((n <= 1)); then
+    line="$(cat "$lines_file")"
+    len="${#line}"
+    pad="$((width - len))"
+    printf '< %s%*s >\n' "$line" "$pad" ''
+  else
+    local i=0
+
+    while IFS= read -r line; do
+      i=$((i + 1))
+      len="${#line}"
+      pad="$((width - len))"
+
+      if ((i == 1)); then
+        printf '/ %s%*s \\\n' "$line" "$pad" ''
+      elif ((i == n)); then
+        printf '\\ %s%*s /\n' "$line" "$pad" ''
+      else
+        printf '| %s%*s |\n' "$line" "$pad" ''
+      fi
+    done < "$lines_file"
+  fi
+
+  printf ' '
+  printf '%*s' "$((width + 2))" '' | tr ' ' '-'
+  printf '\n'
+}
+
+if ((list_cows)); then
+  list_embedded_cows
+  exit 0
+fi
+
+if ! encoded="$(encoded_cow "$cow")"; then
+  echo "cowsay: unknown cow: $cow" >&2
+  echo >&2
+  list_embedded_cows >&2
+  exit 1
+fi
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+message_file="$tmpdir/message"
+lines_file="$tmpdir/lines"
+
+read_message "$@" |
+  normalize_input_tabs > "$message_file"
+
+if [[ ! -s "$message_file" ]]; then
+  printf '\n' > "$message_file"
+fi
+
+wrap_message < "$message_file" > "$lines_file"
+
+make_bubble "$lines_file"
+render_cow_art "$encoded"
+
+exit 0
+
+#__EMBEDDED_COWS_BELOW__
+actually	H4sICCDvAmoCA2FydACFUsENwzAI/HsKFrCdN68OYokRugCyqi6Vf1bpIgUDaZxEKrJkcb7jMDZAREtwiHZMoGCOwDLxDsyC8wFcqM7bViAqpXcHei+FCLb1wqf/cbFgMZZNWvWUx265nHCaDAZFBRUedhdXRI6TotqFmyqa2FfDDPQcqwjIF4OVa1ONE5AEa7aCjxAT32k7gMnLMhBT8CWe08wCUX6jqot9Qib4vN6wjJTZ8MVAM7A2KQSA2RHSYnZXbcvZ4RnKkm8eP+sbt30M9fAt8h11uGndevpb+ReYvgQeOybGAgAA
+alpaca	H4sICCDvAmoCA2FydABTUICBGCB+1DAjThcI4oAMLgUFJDmNR9OnagBFn+zaBSQ1gTxNZAVAoKGgYAGiNWECh7dgqgCr0YyHAA0FTDMsIAwLmAiGinh0gK5CQaGmBpmNLq2BJA1kcwEA/UEOJAIBAAA=
+beavis.zen	H4sICCDvAmoCA2FydACNkUsKwzAMBfc5xdulhdjeFww9iOH1BrmA0Nkr20kaNUnpbGQ0GP0AFKyQoaEapqEmFjWN2NFVJ8FThkuFx+YEB8ZfUv6TzdoI55KCHGJ7xhZlJ2dJ89owo/9oed1N+FE3Gs973Rv1qxqEOWdVjS9n2Im2ZN9gWQyPnW+VTwWZAuvlYME7dwLacd6yIpFt7gEAAA==
+blowfish	H4sICCDvAmoCA2FydABdUTGKxDAM7POK6bzhkPSBcGWKvcB2CwcC+SF6/EmyHZZzYZKZkWYkA9ANWPfH8bz4E+VEL0B8oRaYK8yhRF9s4neFwF0dv3gC+/hPVgYdoO/tMUzydJydW7F0BHrermbDnI5t5pKVhxqjRyohxmVmq7cO/qi5ssLxUg95Cqx4piIFr6JTdQbb6MwAxpi1aRLp4rqyv0U1MtBUfCe7c/159u/k3HLcKRhHLQdNA0g5879lR78cT1qtrjp87D0T1PvINTUuq4waaVU+730FSNR0vJLXsBHznYuIbfUBS37SyNHZ9vWkEmqOju+fsYHH8p5K3bY/rZQjOTQCAAA=
+bud-frogs	H4sICCDvAmoCA2FydABtjrsNwCAMRHumuA67MEzADCxg6bJBFkCZPYZICUVOlvy5Z8tAyBOw56mzqxX8q5j082MrCdB/0TotbocDcwHGakQv0deKmdZY2b5wcvgDi5E0/eA6yJ3NEWZ5lq0dllt7nTXO6QZ9Y6SO7QAAAA==
+bunny	H4sICCDvAmoCA2FydABTUIjhUlBQiAFhEAMMYhT0ERwNBU0oW09DIV9BU48LAGMvDhk0AAAA
+cheese	H4sICCDvAmoCA2FydAB9T1sKwCAM+/cUAf+EkR1gRyl4kR5+tep07pGPBhLStAAkAH0CuaBzQdXpU3LlAnVDsUL/DddjjGI7jVwZBnYroVM3+LKpGBwVx2WI/aEfEQtpy0j7jbV3tu4hgoH6dEzzo7cFGubC8ZwjpdSoS7QbpFE4AVh2rJmLAQAA
+cower	H4sICCDvAmoCA2FydABTUACCGC4FBWRaQUEnPl5HoQbEqlGAC2rk52vGQATj4+MRwvHxMGEg1oxByCjABIEaykGMGGxSQARiaHGhSjrnl6cW6QEBFwDn/iCRpAAAAA==
+cupcake	H4sICCDvAmoCA2FydACllt2N7CAMhd+pAglxZCFkt5BCtv86FnAg/E5m7/XDjEjg49jYJtbe9mPsY8MgDe1sxn5pQCz/zEA4T3vjXQBcRXrbkP8ERF0HSB7kkRfOyAt/ByqNiMa1QVTjn4Hgs2LLDuCYRccvgAwAS5TS07oFBxu9BnMNp1mW0fDAj2Mu1JACYQ8HZEaf8nTo9heF0LmNbQrEhWjmY0B0m4DSo1NcTSINYPabfYvRADyeeL8HZNiRWZFZKQZgGvstLSUdXlMhBMdMKV8VSNslEBF8XZkhZpVkWgr3EdskYQnv9Qmpbpubl8Q0yFAb6TyovEkKVojwTDS21P4l+8157x49JdMVoQL7KHFfSELnmDo6uFwU2j0RoRMd30+FawzPvQ33rPrHHO+sO/Ny2uCy/201tTWxB42pOyQhkSVsTfRHJFB3E/DTd0zrWJckh2KM/cpwwNY5ndUye0rPIQmTiXIGyohsXpqhecX9sneRT9TG9sUdQfbRmzxQ8zg12Fti1FsAJ1Z7rbzQtfUBGJJEnX/fyDdy0qWNuNjs8HynqERCZyvQ9a9n3nxJKWDiTeGUT7zlGk0IytaHMOijZD70MS6P5h5s1ta0OVtdS042OYMXIKFAZDrg6BG3Ofhy0bcwDqGTWfNTJkuvMvuvrlGO7AvE7y5K8/Fr7mxjyzPmF/lmyW3vCgAA
+default	H4sICCDvAmoCA2FydABTUICAGCCOi4+P41JQQIhoODhoxsRDAEICCDTi4zVjoGzNGP0YFEkFZWWFmhpdIChXqEGVAYKaGijFBQClGqQ+ewAAAA==
+dragon	H4sICCDvAmoCA2FydAClk0GOgzAMRfecwjtAInH3I416EAtzj6acvd9xHKDDbhwUwDx/O04gMhO6MTY3swztvUJFVJVLEPAyZumQ+x9EuIA6Q8YUCFSJ4ZKjzcLaSaBGyhV96qrP0VNqkIZWVbnKMmDXNtjRynoJR7kTPs5U4hWrcba5vDGBAybQWrQWPkcRHW+8eoBpGz/yooTB5vqhlHsAnJLTHtnxuO9ryoieai6aZ1rSK76r37aUC1DXidAuQhviJ89t8Ugv52afzTSUegV4WE1VmoDHuyam1zn0fXtiogkSS2gCOcGQrR80SeOf8NMapKYU78VlY7lK5fxL52NJR4uOdvbK17TZpMN3vcwp162J8V4ptbHf/RPoWKIFfRro38Ym8wGf93NGgAMAAA==
+dragon-and-cow	H4sICCDvAmoCA2FydACNk0tygzAMhvecQt2RTGyxbxf0BL2ABjGTZY8Qh7NXkpFrCHgiMx5G8H/WywCHRkfOSTecOoC3RahOlP1UZKpEzIzJNeIUDcSGyrg/APKINov0IEjypQ7kGsSuDdCq1Z2QC0dAyqFdoE3QKFmMs/2L7BwFmfYfRUitigAMOHg1DJVBRsoYqqM6RSmmRmlZMymjVozD0ll+zhmQE1u5ek+uoFYKk/uwa3AGnPHGIEsoF/iEEAtKnBTDUjUHm1WHW3j6K3vTYxJEhq4Wjbh0rxMrA+S5wIxUD0VtimMoke2C0gnmfhwv9ezp+c/6r8fR+G1BvW0hVKCoMyzHl65TmF8wcZua9IeZKF+P7/vvh7nQUDF+Hd9ZhrCl5CbT/mYLKERrn6/HBGFdS/cHAiP4DlUEAAA=
+elephant	H4sICCDvAmoCA2FydACFi8ENwDAIA/+Zws/kxShdAIkJqi7A8LVLUKV+aqTDuQg4FOOKCJUByJnBjZtwOWZO8eAwa5XkL6wKb7Z7TpOj0k7PLPw6XPi6bL7uzOa4AdDmwzvIAAAA
+elephant-in-snake	H4sICCDvAmoCA2FydABTUFCI4VIAghgFFKAHBFAmF5owTEoPQ1oPxQR0aT0FbNJ6yEZiWISQxgq4uFxzUgsyEvNKFDLzijNTUhUcg509PRWK8xKzU7kAZibKWdwAAAA=
+eyes	H4sICCDvAmoCA2FydAB9kDEKwzAMRfecQrEFBRc0ZTKdeoBSAsYeQoeSPTfo2Stbcu1Amr/IX3rfMgYAWAaAVs5F3o8iT8yTHv/jYycOfFhi6AwOMUZEBH2SR3zExIsO6BQKKnrWRHHWckgzdJN7c9/oPCO7QCkh5Y2V1T5M5eAq/mJzl9TS8g1fEWcDvx81Dt+rjlgX19Hb1Xak4Ky9y43hC6QEwQmtAQAA
+flaming-sheep	H4sICCDvAmoCA2FydABtzjEKwzAMBdA9p/ibG0h+d3fxJTIYDNGqO4ievY7cqgnkI3+E3yKg4RRGeU/9tRB+RYDFl4OH83VYBlOvMRzsrqRkqPRFuWj/CHaXZV1pClPTMfnHnq2UrTEVj9AsXbjt+/NRInPChT3hc1x+jtT67qk13TLM/o3pAyrSUz82AQAA
+fox	H4sICCDvAmoCA2FydAB1kFEOwyAIht97ij996ZYIHMB1JzGBI2zPtXcftU3jrP2NoHyAQeBQKjYQ71emMAB/MBMnqEKYcsUK9G3b2Y3UrEi0OEVq0MuD9gU+zvBuIbPO4q1n5Qt0LZYeT7HVUoftbgU6MC8H69KEiWgqP9AtpmOmm/J8rk3xJoEjBx9PkdsEpnGMdl6tTZC9RxVoEoyYRV3+APkkNvwAhvib1uMBAAA=
+ghostbusters	H4sICCDvAmoCA2FydAB1k00OhCAMhfeeomEzuqg9wXgFVzNx0aS3mPMPhQIW8CUalO/ZPwQo4gVg/gDcliKIKOK26x7aghRR9Zi6VyD76HY18W/38I7x7RoXZ77usAodTgarPum+la0SYPF0401bTLrSnSMbCMxy1giZ1Gp6iznAqnXJKC9ins5yidCEt0Gk9uOxQJpCzvfRoDFqBRqG44DUR2kUQjwEyPmKhqF3yoyRwfBJQkmvmIxtlGKiS3vGU953tdXPtfX+zPUOuo2S7wGO8UiOjuIpjeiOJ4w8YD10XqUdOPwOfD2KJv9OCN8R/Iaw/AGzTAKtnwMAAA==
+hellokitty	H4sICCDvAmoCA2FydABTUIjhUlCAEECgHxOvmW8D4dRAhGJgPH8FPQX/GqjCmHgQ0OcCAFlbM1lAAAAA
+kiss	H4sICCDvAmoCA2FydABtkU0OxSAIhPc9xexqE3/2z6uY2IMQz15AmuJrZ6EJX4ABAFbbAP+bYp2KS7g+WoBG9i6q+x8I5WBRCEuHzkBFQh0poN6cJsopjcAmMQ6nbSaofeBsKTyyTJrPyRwHqN1dyHoax5nRuVLTGdiDOVIcOX34NZTbL1nr9gFJaoor+mLASEpfNdXCyL0MpB454BZHSaRTaOJe62JFvp+cYjkp2ZLIz7BM+IYXRbqIRBwCAAA=
+kitty	H4sICCDvAmoCA2FydABNjj0OwzAIhXef4msW7MjgpVtPUqkSXiPl/nPBadWyAI/3A0S9Cvx36jZVQHRsDXN3Mw1ACNz8y4LJ7uzQ1qKW0usSsqS6MduPX/3p1sLHnEs1zSeP6JOQm8qHHIlhqJLJPgIY+YBjQr+XlXNw0rqK5HJytL6myi190qS8ATij8PDeAAAA
+koala	H4sICCDvAmoCA2FydABTUIjhUlCAECAQHx+voADhVNfpxevV1UJlNBQiFTQhbA3NOq06DU0FmEKNeE1dIAbxAc1/PkNPAAAA
+kosh	H4sICCDvAmoCA2FydAB9jdERgDAIQ/+ZIhtkgm7SOwYRd7cglXr25CMJPEoBoAtQFq6qd+Mp83ABfSFahlimLhZTe4jHnBWjXyMWFloLVv55bDjOIcSO+WEjdmxIa+t3k6FrFfFmm/pnFwJNn4NLAQAA
+llama	H4sICCDvAmoCA2FydABTUIjhUlCAECCgEaOvCWVrxOcr1MDE9RUQ7BggigcDmAhICAI08+FiCvo1uiCA0AhUVwOV4QIAi8tMjnkAAAA=
+luke-koala	H4sICCDvAmoCA2FydABTUIjhUlBQiFGAAz0uKCM+Ph5I6utD+NV1evF6dbX6+gpQeQ2FSAVNb30FKF9Ds06rTkNTAc6P19QFYjjfpzQ7VQHOC64sT8zJTi2C8LLzE3MSQXIA5iK+pI4AAAA=
+mech-and-cow	H4sICCDvAmoCA2FydACFkjEOgzAMRXdOYcFgkGiyg5B6gA5dkSKcNSfo4sM3dggqFMKXSCT0bP/8BOAod/zRP0SmArhlOa1n6I6NLVf0vG8SkY7mre9FZ2k4DkN24EmE17A3lKRtwxIuPe+qkheOKzKYEp8Si5nFCTxNwGxtiee8E7+9AbBYxP3aHgFnmCOMt+ZVZpocWHJCL0RLEbbyocQZhG+fz86tsZ3RmEo4R9kSdfnGO2fdP60ThE8DoGliTnKsz5ZHegTUj3pilGt7xTeBPjrJR2b+3VRBXY5S4/SqQ12rd1d9Aec2VBXvAgAA
+meow	H4sICCDvAmoCA2FydABFkNGJBDEMQ/+nCrE/noXYbuHaODA4hbj4lTLHHgHFOE8aMUBdAAqL2ujucDezLc305e3eIUbYfhk2ZlBFT1WCR7K8aq9+uLStyBL4C5CeL+iYbmxfB82fV4GJhU1a6MwB6UllkIwm3XEM3LFgYIfXYtksdE5nV5duZeAxRb+vM9reeZx8Y3LJxQraaH5+wJ/NuPY6rCtKIEtg+DJfjiX05YTc1F4y4o1l6LF/7r5vktIwaO4INw3Lrg/ubVgRewEAAA==
+milk	H4sICCDvAmoCA2FydABljssNgDAMQ++ZwgsgL0BZgQUisUiGp3GBfrDUNnpyHcORugbBANHoLEw2EF10+7P6VZRDYM5sCdGtbfxwKQ6WsmKc7USt5BhD9mesXJhLtqsJZWk1hAlaXrM7gTHCJ5yAWrmNSo91V7zPy/bcBa097AYwneHeYQEAAA==
+moofasa	H4sICCDvAmoCA2FydABTUACDGBARDwRcCgpwEX0wDRdRUKhRiIuPj1OoQRHScHDQVKiJj0fRDZaIjwdKQHiaMfrIBinEgFTr1+gCQTmKeVDNNVCKi4sTLuibn5+WWJzIBQCWH/jAswAAAA==
+moose	H4sICCDvAmoCA2FydABVi7EJADEMA/tMIUjzLh6vkEEEGuMbD/+OcZEcGKETBjgAcJ+oDMjl25Us37151rJ0xeUl6xcYneeGORHxJh/iGpKIjvEDF6vCH44AAAA=
+ren	H4sICCDvAmoCA2FydABNjsEJgDAUQ++dIuBFT1ko8EfoAsHZTX8VLKU80kcIAA3geysHWMgDLFXQuZya2iwViwOEo65kLMMq3H7ZEL+8rVSKbLvr7T/H0GZV0ulmKmPYObvI2dYrz3xcdY0HtMMQCb0AAAA=
+sheep	H4sICCDvAmoCA2FydABTUIjhUlCAECAQHw+moNxQB4fQGD11BzBI0IOKxsTH62s4wIEmTC8IaGAVTYiMrAOCyEh1ZFGFmhoIyQUA1T0aDIYAAAA=
+skeleton	H4sICCDvAmoCA2FydABTUICBGAilER+vCWFxKSigSeo7ONSgioMlNOKV4jW1tGFAC0UBFOjreyrHQIFnDDYVntGeNZ41IOCp4KmQgFVJgqe6vr6+ujpQgSdWBUAIZ2FTUAeEcBY2BQoKwcn55TmpJfl5XADt2+mIHAEAAA==
+small	H4sICCDvAmoCA2FydABTUACDGCDWiY/X4VJQgAtoODhoxgMBXAwINOLjNUG0ZgyyqIKyck2Nrm5NjYIWFwBfuc1AUQAAAA==
+stegosaurus	H4sICCDvAmoCA2FydAB9UssRxCAIvVMFs5fsIUgDO2lhG3CWFGKofcFPJiYm6EQR3hOeifhkoa2A8SGNcfXMMOELAUepgYgs5eP7pS3l1AADRMJyHJFQbZBd4tMisCeJ2+GSQNqRKPkRdJz5G1U1WrkDWwNbkBuImjlKhO8k8FjFOO8X9674IlZFYFHL7J0bmcv1cqkr7bvNYMfyViq6nrm3HsenChs49Pw8dO1pZ9UE545NXJGay5Kf6ddcQmngQN4ODEVLvUBHV2txXqRx+bzhyNqlGzf/Oc5QxwJ/zm8ewfECAAA=
+stimpy	H4sICCDvAmoCA2FydACFj7sNxDAMQ/tMoTJpjqPcAgK4CIc/MrGMdCf5+0BLdFVX4pOFaz88b6ymQEJDE3A2IugNLdJXHqTpA/2ymvAodmm0cp50XDlu3BYyassLWPTMbYW0mqn+sH657cFAag2udEtDDLFzu/E/puRt8nF6/ADGePlvJwEAAA==
+supermilker	H4sICCDvAmoCA2FydABTUIhRUFCIi4+P4wLSQLaGg4NmTDwEKEABlBvPBeFqxMdrxkClNGP0wcya4NKC1CKFGqgSBWVlhZoaXSAIV6iBCtX4ZuZkpxbBlYCEwHKhLjBQA7GnhgsAXILRUJcAAAA=
+surgery	H4sICCHvAmoCA2FydACFkk0KwjAQhfc9xezaCM2cQKiICzdGRHDRwfEGXiCHN5OkxKFp81qaZN778kcBFhHAfx+h04XSR1CeaGA20mIJriLTJBEX33qECVkmwcokhziHfEwJdGqHA8XVay5QQJNtYFdqT7JepIw+W41i5pk4Ct9JYYgGvqNh3qB8iMzHpMwiZwWK6hR51iqQyG+fy/tshhYxD0Jx7U62uI27WgLyY1hCXWzccJQNT0srqre9/TQphZ3da3T3y+P0vLrbHvUDscUcVhYDAAA=
+sus	H4sICCHvAmoCA2FydABTUFCI4VIAghgFBb1HDVPQkB5YDllKD6wYIqyh4OCgoKAJZGlDJKHiCglw5Ye2gPg1QASVqlFWhjKQxIA4Ph5hjD5UPCY+Xh9CcgEAJbf5FqgAAAA=
+three-eyes	H4sICCHvAmoCA2FydABTUICAGAWFuPj4+DguBQW4iIaDg4NmTDwEICQUFDSAfM0YKEczRj8GWVJBWVlBoaZGFwjKFWpQZECgpgZKcQEA9DqKxXsAAAA=
+turkey	H4sICCHvAmoCA2FydACFkz1uxCAQhXufYkoGjOiTVZRLpEPzutxgq1Xunhn+ghG7ARsw8PGGBybK9G86gxfxAUAIAYf2vIJOnSxy7WODnlIIftsv3le5J2joKtAlgs618M5FdJYpu7CmG/uiKdJcBzfso3c39KwlQoz6NEnhVufjyrrPMvJD3w09QxQCvGadLhmF2kk/3t5jKhGrSTGYs6I79beyZTBaVK0gShPtKLV43TgcPcRqbTDXDbpRL9SBWfuLkGgs7WO8WVNytKTi4EV7cc0Nz+CERZjLB+eyC2aNoayfaBc6tSEHZhjbaO60FmgBqi/Hgp7VNZvYdTtb6R4z5qDtko/LaMpSwYF2ebURfhJdLmiGkuBJcrAXjxyuFz4DIiuxQnUe9uCfIOd8bP4pS/l+v6dRaeOaj/1fagf+gVFV2SnzltPlU8oZverd7iVVOCqPvscvI1IZMqcEAAA=
+turtle	H4sICCHvAmoCA2FydACFU1EShSAI/PcUfNYHcYLO8C7gxEUYzv7QtKTUdqZykF0XIQCACJ9gZjxhq5BDcxajqguoYiFOmMbqhenm1sgRme3VpPR1KR/YkkkAfiL2uBzLYg+q+y1dQGxL7CWOfH0vNG68gM+gAf1DYikmV6CH25fIVdDABzWHD1rjxN1t3oR4xDjToW5xFAYVi3RraGtl5KpNaRweWreaSJldTFMI2MKSENP0gMZyrkmFl33N2SK7gc4pzWuPalpIE94y1rglF7DRpO9cnMctDP+VLDRue7mzldfwB3kSpB7kAwAA
+tux	H4sICCHvAmoCA2FydABTUFCI4VJQgJEgoKerqwfj1OTH5yvUwHlW8fpwnr4+SBdMn0YNRIWCJpivrx4TD6Ti9ROgpsfHx2vaagBJfS4uAN1UpQx0AAAA
+udder	H4sICCHvAmoCA2FydABTUIjhUlBQiAFiBY34eE0FVMAFYzgoOMTgkNNQV9dUiNGFAVR9ysrI2mJQ5ICgBokZgy5XAzRNQ0FBM76mRkELXQ5EhobCWMhytraoLC4AdMhfKuQAAAA=
+vader	H4sICCHvAmoCA2FydABTUICAGBChoxunq8eloIAkppgfma+IEAKK6evp28boxcSDAZIMGCgrw1iaMfox6LIKNTW6IFBeU4NFCkZzocs555eXZCiEJaakFnEBAH3J7K6wAAAA
+vader-koala	H4sICCHvAmoCA2FydABTUFCI4VIAghgFKNDjglC6urp6Cgr6+mBuZE2+Qn5NpL6+AoirH6+RaZup6Q3h1Wlo1mmBCAUwV0EjXlMXiIEsLohRLolFJRkQOYWwxJTUIhADws3OT8xJhNnMBQCnybo7jQAAAA==
+www	H4sICCHvAmoCA2FydABTUICAGCCOi4+P41JQQIhoODhoxsRDAEICCDTi4zVjoGzNGP0YFEkFZWWFmhpd3fDwcIUaVBkgqKmBUlwA5m052nsAAAA=
