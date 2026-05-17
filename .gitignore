@@ -11,6 +11,7 @@
 !/.local/share/
 /.local/share/*
 !/.local/share/wallpapers/
+!/.local/share/_help/
 # custom binaries
 !/.local/bin/
 /.local/bin/*

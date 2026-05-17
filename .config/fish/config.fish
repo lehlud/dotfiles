@@ -56,4 +56,6 @@ alias hibernate="run-on-host systemctl hibernate"
 
 alias roh="run-on-host"
 
+alias neohelp="o ~/.local/share/_help/neo2-mapping.pdf"
+
 set -gx LS_COLORS "di=38;2;74;222;128"

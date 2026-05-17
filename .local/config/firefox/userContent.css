@@ -46,7 +46,13 @@
   .bx, .bx *, [class^="bx-"], [class*=" bx-"],
   .la, .la *, .lab, .lar, .las,
   [class^="la-"], [class*=" la-"],
-  .wi, .wi *, [class^="wi-"], [class*=" wi-"]
+  .wi, .wi *, [class^="wi-"], [class*=" wi-"],
+
+  /* Microsoft FluidUI */
+  .fui-Icon-font,
+
+  /* Microsoft other */
+  .ms-RibbonButton-icon
 )) {
   font-family: 'JetBrains Mono' !important;
 }

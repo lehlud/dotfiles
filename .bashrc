@@ -51,3 +51,5 @@ if [ -d ~/.bashrc.d ]; then
     done
 fi
 unset rc
+
+. "$HOME/.local/share/../bin/env"
