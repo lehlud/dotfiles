@@ -63,7 +63,7 @@
 !/.config/opencode
 /.config/opencode/*
 !/.config/opencode/AGENTS.md
-°/.config/opencode/themes/
+!/.config/opencode/themes/
 
 !/.vscode/
 /.vscode/*
