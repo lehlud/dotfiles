@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+
+FLUTTER_CONTAINER_COMMAND=dart exec "$HOME/.local/bin/flutter" "$@"

@@ -19,6 +19,9 @@
 !/.local/bin/helix
 !/.local/bin/fastfetch
 !/.local/bin/zellij
+!/.local/bin/auto-update-app.bash
+!/.local/bin/flutter
+!/.local/bin/dart
 !/.local/bin/podman
 !/.local/bin/rickroll
 !/.local/bin/x83_to_pdf
