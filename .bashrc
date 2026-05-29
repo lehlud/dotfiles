@@ -53,3 +53,4 @@ fi
 unset rc
 
 . "$HOME/.local/share/../bin/env"
+. "/var/home/gunter/.deno/env"

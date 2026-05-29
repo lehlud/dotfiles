@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_sendme_download() {
+    local arch
+    local sys
+    local release
+    local archive_name
+
+    case "$(uname -m)" in
+        x86_64 | aarch64)
+            arch="$(uname -m)"
+            ;;
+        arm64)
+            arch=aarch64
+            ;;
+        *)
+            printf 'sendme update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+            return 2
+            ;;
+    esac
+
+    case "$(uname -s)" in
+        Linux)
+            sys=linux
+            ;;
+        Darwin)
+            sys=darwin
+            ;;
+        *)
+            printf 'sendme update failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    release="$(auto_update_latest_release_tag n0-computer/sendme)" || return 1
+    archive_name="sendme-$release-$sys-$arch.tar.gz"
+
+    AUTO_UPDATE_URL="https://github.com/n0-computer/sendme/releases/download/$release/$archive_name"
+    AUTO_UPDATE_SOURCE_REL=sendme
+    AUTO_UPDATE_SOURCE_BIN_REL=sendme
+}
+
+_sendme_cache_dir="$HOME/.local/cache/sendme"
+
+if auto_update_ensure_tar_app sendme "$_sendme_cache_dir" sendme sendme 7 _sendme_download; then
+    exec "$_sendme_cache_dir/sendme" "$@"
+fi
+
+exit 1

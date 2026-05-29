@@ -22,6 +22,7 @@
 !/.local/bin/auto-update-app.bash
 !/.local/bin/flutter
 !/.local/bin/dart
+!/.local/bin/sendme
 !/.local/bin/podman
 !/.local/bin/rickroll
 !/.local/bin/x83_to_pdf
