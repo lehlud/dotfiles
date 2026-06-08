@@ -50,7 +50,7 @@ HOSTEXEC_MAX_PORT = 65535
 CONTROL_MAX = 1024 * 1024
 FRAME_MAX = 64 * 1024 * 1024
 KEEPALIVE_COMMAND = 'trap "exit 0" TERM INT; while :; do sleep 86400 & wait $!; done'
-FORWARDABLE_LUBOX_COMMANDS = {"doctor", "list", "create", "destroy", "start", "stop", "enter", "exec", "code-server", "enable"}
+FORWARDABLE_LUBOX_COMMANDS = {"doctor", "list", "create", "destroy", "start", "stop", "enter", "exec", "code-server", "enable", "socket-proxy"}
 GPG_SOCKET_BASENAMES = {
     "agent-socket": "S.gpg-agent",
     "agent-extra-socket": "S.gpg-agent.extra",
@@ -545,6 +545,28 @@ def env_flag_disabled(value: str) -> bool:
     return value.lower() in ("0", "false", "no", "off", "never")
 
 
+def engine_unavailable_error(engine_name: str, stderr: object, stdout: object = "") -> bool:
+    text = f"{_decode_output(stderr)}\n{_decode_output(stdout)}".lower()
+    if not text.strip():
+        return False
+    patterns = [
+        "cannot connect to podman",
+        "unable to connect to podman",
+        "is podman machine running",
+        "cannot connect to the docker daemon",
+        "docker daemon is not running",
+        "error during connect",
+        "connection refused",
+    ]
+    if any(pattern in text for pattern in patterns):
+        return True
+    if "no such file or directory" in text and ("podman" in text or "docker" in text) and ".sock" in text:
+        return True
+    if engine_name == "podman" and "machine" in text and "not running" in text:
+        return True
+    return False
+
+
 def host_lubox_path() -> str:
     return str(pathlib.Path(__file__).resolve())
 
@@ -947,6 +969,8 @@ class Engine:
     def inspect_container(self, cname: str, *, required: bool = False) -> Optional[Dict[str, Any]]:
         cp = self.run(["inspect", cname], check=False, capture=True)
         if cp.returncode != 0:
+            if engine_unavailable_error(self.name, cp.stderr, cp.stdout):
+                raise CommandError(self.argv(["inspect", cname]), cp.returncode, cp.stderr or cp.stdout)
             if required:
                 die(f"lubox: container not found: {cname}\nTry: lubox create {cname.removeprefix('lubox-')}")
             return None
@@ -1144,6 +1168,30 @@ class ContainerInfo:
     base_image: str
 
 
+@dataclasses.dataclass(frozen=True)
+class SocketForward:
+    key: str
+    source: pathlib.Path
+    target: str
+    readonly: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class SocketForwardGroup:
+    kind: str
+    name: str
+    label: str
+    forwards: Tuple[SocketForward, ...]
+    pid_file: str = ""
+    marker_text: str = ""
+    proxy_command: Tuple[str, ...] = ()
+    proxy_env: Tuple[Tuple[str, str], ...] = ()
+    check_command: Tuple[str, ...] = ()
+
+    def socket_paths(self) -> List[str]:
+        return [forward.target for forward in self.forwards]
+
+
 class ContainerManager:
     def __init__(self, engine: Engine, ident: HostIdentity, paths: LuboxPaths):
         self.engine = engine
@@ -1213,9 +1261,18 @@ class ContainerManager:
     ) -> List[str]:
         cname = container_name(name)
         host_ssh_sock = current_ssh_auth_sock()
-        _host_gpg_home, host_gpg_sockets = current_gpg_info()
+        host_gpg_home, host_gpg_sockets = current_gpg_info()
         ssh_agent = host_ssh_sock is not None and (is_linux() or host_exec)
         gpg_agent = bool(host_gpg_sockets) and (is_linux() or host_exec)
+        socket_forwards = self.socket_forward_groups(
+            ssh_agent=ssh_agent,
+            ssh_sock=host_ssh_sock,
+            gpg_agent=gpg_agent,
+            gpg_home=host_gpg_home,
+            gpg_sockets=host_gpg_sockets,
+        )
+        if host_exec and not is_linux():
+            self.seed_socket_forward_config(name, mount_dir, socket_forwards, host_gpg_home)
         if host_ssh_sock is not None and not is_linux() and not host_exec:
             eprint("lubox: SSH_AUTH_SOCK not forwarded because --no-host-exec disables macOS socket proxy")
         if host_gpg_sockets and not is_linux() and not host_exec:
@@ -1264,11 +1321,8 @@ class ContainerManager:
         args += ["--workdir", str(self.ident.home)]
         args += ["--mount", f"type=bind,src={self.ident.home},dst={self.ident.home}"]
         args += ["--mount", f"type=bind,src={mount_dir},dst=/run/lubox,readonly"]
-        if ssh_agent and is_linux() and host_ssh_sock is not None:
-            args += ["--mount", f"type=bind,src={host_ssh_sock},dst={container_ssh_auth_sock(self.ident.uid)}"]
-        if gpg_agent and is_linux():
-            for sock in sorted({str(path) for path in host_gpg_sockets.values()}):
-                args += ["--mount", f"type=bind,src={sock},dst={sock}"]
+        if is_linux():
+            args += self.socket_forward_mount_args(socket_forwards)
         if self.engine.name == "podman" and host_exec:
             args += [
                 "--secret",
@@ -1286,6 +1340,233 @@ class ContainerManager:
                     args += ["--group-add", str(gid)]
         args += [tag, "/bin/sh", "-lc", KEEPALIVE_COMMAND]
         return args
+
+    def socket_forward_groups(
+        self,
+        *,
+        ssh_agent: bool,
+        ssh_sock: Optional[pathlib.Path],
+        gpg_agent: bool,
+        gpg_home: Optional[pathlib.Path],
+        gpg_sockets: Dict[str, pathlib.Path],
+        container_id: str = "",
+    ) -> List[SocketForwardGroup]:
+        groups: List[SocketForwardGroup] = []
+        if ssh_agent and ssh_sock is not None:
+            socket_path = container_ssh_auth_sock(self.ident.uid)
+            pid_file = container_ssh_agent_pid(self.ident.uid)
+            groups.append(
+                SocketForwardGroup(
+                    kind="ssh",
+                    name="ssh-agent",
+                    label="SSH agent",
+                    forwards=(SocketForward("agent", ssh_sock, socket_path),),
+                    pid_file=pid_file,
+                    marker_text=f"{container_id}:{ssh_sock}",
+                    proxy_command=(
+                        "/usr/local/bin/lubox",
+                        "__ssh-agent-proxy-client",
+                        "--socket-path",
+                        socket_path,
+                        "--pid-file",
+                        pid_file,
+                    ),
+                    check_command=(
+                        "/usr/local/bin/lubox",
+                        "__ssh-agent-proxy-client",
+                        "--check",
+                        "--socket-path",
+                        socket_path,
+                        "--pid-file",
+                        pid_file,
+                    ),
+                )
+            )
+        if gpg_agent and gpg_sockets:
+            pid_file = container_gpg_agent_pid(self.ident.uid)
+            proxy_home = container_gpg_home(self.ident.uid)
+            socket_text = ",".join(f"{key}={gpg_sockets[key]}" for key in sorted(gpg_sockets))
+            groups.append(
+                SocketForwardGroup(
+                    kind="gpg",
+                    name="gpg-agent",
+                    label="GPG agent",
+                    forwards=tuple(
+                        SocketForward(key, gpg_sockets[key], container_gpg_proxy_socket_path(key, self.ident.uid))
+                        for key in sorted(gpg_sockets)
+                    ),
+                    pid_file=pid_file,
+                    marker_text=f"{container_id}:{gpg_home or ''}:{socket_text}",
+                    proxy_command=(
+                        "/usr/local/bin/lubox",
+                        "__gpg-agent-proxy-client",
+                        "--home",
+                        proxy_home,
+                        "--pid-file",
+                        pid_file,
+                    ),
+                    proxy_env=(("GNUPGHOME", proxy_home),),
+                    check_command=(
+                        "/usr/local/bin/lubox",
+                        "__gpg-agent-proxy-client",
+                        "--check",
+                        "--home",
+                        proxy_home,
+                        "--pid-file",
+                        pid_file,
+                    ),
+                )
+            )
+        return groups
+
+    def current_socket_forward_groups(self, name: str, info: Dict[str, Any]) -> List[SocketForwardGroup]:
+        ssh_agent = self.ssh_agent_enabled(name, info)
+        gpg_agent = self.gpg_agent_enabled(name, info)
+        ssh_sock = current_ssh_auth_sock() if ssh_agent else None
+        gpg_home: Optional[pathlib.Path] = None
+        gpg_sockets: Dict[str, pathlib.Path] = {}
+        if gpg_agent:
+            gpg_home, gpg_sockets = current_gpg_info()
+        return self.socket_forward_groups(
+            ssh_agent=ssh_agent,
+            ssh_sock=ssh_sock,
+            gpg_agent=gpg_agent,
+            gpg_home=gpg_home,
+            gpg_sockets=gpg_sockets,
+            container_id=self.container_id_from_info(info),
+        )
+
+    def socket_forward_mount_args(self, groups: Iterable[SocketForwardGroup]) -> List[str]:
+        args: List[str] = []
+        for group in groups:
+            for forward in group.forwards:
+                suffix = ",readonly" if forward.readonly else ""
+                args += ["--mount", f"type=bind,src={forward.source},dst={forward.target}{suffix}"]
+        return args
+
+    def seed_socket_forward_config(
+        self,
+        name: str,
+        mount_dir: pathlib.Path,
+        groups: Iterable[SocketForwardGroup],
+        gpg_home: Optional[pathlib.Path],
+    ) -> None:
+        cfg_path = mount_dir / "hostexec.json"
+        try:
+            cfg = load_json_file(cfg_path)
+        except (OSError, json.JSONDecodeError, LuboxError):
+            return
+        for group in groups:
+            if group.kind == "ssh" and group.forwards:
+                forward = group.forwards[0]
+                cfg["ssh_agent"] = {
+                    "enabled": False,
+                    "host": self.hostexec_host(),
+                    "port": 0,
+                    "socket_path": forward.target,
+                    "host_path": str(forward.source),
+                    "token_path": "",
+                }
+            elif group.kind == "gpg":
+                cfg["gpg_agent"] = {
+                    "enabled": False,
+                    "host": self.hostexec_host(),
+                    "port": 0,
+                    "home": str(gpg_home or ""),
+                    "proxy_home": container_gpg_home(self.ident.uid),
+                    "token_path": "",
+                    "sockets": {
+                        forward.key: {
+                            "socket_path": forward.target,
+                            "host_path": str(forward.source),
+                        }
+                        for forward in group.forwards
+                    },
+                }
+        atomic_write_json(cfg_path, cfg, 0o644)
+
+    def socket_forward_groups_from_config(self, cfg: Dict[str, Any]) -> List[SocketForwardGroup]:
+        groups: List[SocketForwardGroup] = []
+        container_id = str(cfg.get("container_id") or "")
+        ssh_cfg = cfg.get("ssh_agent")
+        if isinstance(ssh_cfg, dict) and ssh_cfg.get("enabled"):
+            socket_path = str(ssh_cfg.get("socket_path") or container_ssh_auth_sock(self.ident.uid))
+            pid_file = container_ssh_agent_pid(self.ident.uid)
+            host_path = str(ssh_cfg.get("host_path") or "")
+            groups.append(
+                SocketForwardGroup(
+                    kind="ssh",
+                    name="ssh-agent",
+                    label="SSH agent",
+                    forwards=(SocketForward("agent", pathlib.Path(host_path or socket_path), socket_path),),
+                    pid_file=pid_file,
+                    marker_text=f"{container_id}:{host_path}",
+                    proxy_command=(
+                        "/usr/local/bin/lubox",
+                        "__ssh-agent-proxy-client",
+                        "--socket-path",
+                        socket_path,
+                        "--pid-file",
+                        pid_file,
+                    ),
+                    check_command=(
+                        "/usr/local/bin/lubox",
+                        "__ssh-agent-proxy-client",
+                        "--check",
+                        "--socket-path",
+                        socket_path,
+                        "--pid-file",
+                        pid_file,
+                    ),
+                )
+            )
+        gpg_cfg = cfg.get("gpg_agent")
+        if isinstance(gpg_cfg, dict) and gpg_cfg.get("enabled"):
+            sockets = gpg_cfg.get("sockets")
+            if isinstance(sockets, dict) and sockets:
+                pid_file = container_gpg_agent_pid(self.ident.uid)
+                proxy_home = str(gpg_cfg.get("proxy_home") or container_gpg_home(self.ident.uid))
+                host_home = str(gpg_cfg.get("home") or "")
+                forwards: List[SocketForward] = []
+                host_parts: List[str] = []
+                for key in sorted(sockets):
+                    item = sockets.get(key)
+                    if not isinstance(item, dict):
+                        continue
+                    socket_path = str(item.get("socket_path") or container_gpg_proxy_socket_path(key, self.ident.uid))
+                    host_path = str(item.get("host_path") or "")
+                    forwards.append(SocketForward(str(key), pathlib.Path(host_path or socket_path), socket_path))
+                    host_parts.append(f"{key}={host_path}")
+                if forwards:
+                    groups.append(
+                        SocketForwardGroup(
+                            kind="gpg",
+                            name="gpg-agent",
+                            label="GPG agent",
+                            forwards=tuple(forwards),
+                            pid_file=pid_file,
+                            marker_text=f"{container_id}:{host_home}:{','.join(host_parts)}",
+                            proxy_command=(
+                                "/usr/local/bin/lubox",
+                                "__gpg-agent-proxy-client",
+                                "--home",
+                                proxy_home,
+                                "--pid-file",
+                                pid_file,
+                            ),
+                            proxy_env=(("GNUPGHOME", proxy_home),),
+                            check_command=(
+                                "/usr/local/bin/lubox",
+                                "__gpg-agent-proxy-client",
+                                "--check",
+                                "--home",
+                                proxy_home,
+                                "--pid-file",
+                                pid_file,
+                            ),
+                        )
+                    )
+        return groups
 
     def linux_session_args(self) -> List[str]:
         args: List[str] = []
@@ -1374,6 +1655,29 @@ class ContainerManager:
             cfg["token_path"] = ""
         atomic_write_json(mount_dir / "hostexec.json", cfg, 0o644)
 
+    def write_disabled_config_preserving_sockets(self, name: str, mount_dir: pathlib.Path) -> None:
+        cfg_path = mount_dir / "hostexec.json"
+        try:
+            cfg = load_json_file(cfg_path)
+        except (OSError, json.JSONDecodeError, LuboxError):
+            self.write_initial_config(name, False, mount_dir)
+            return
+        cfg["enabled"] = False
+        cfg["container_id"] = ""
+        cfg["port"] = 0
+        cfg["token_path"] = ""
+        ssh_cfg = cfg.get("ssh_agent")
+        if isinstance(ssh_cfg, dict):
+            ssh_cfg["enabled"] = False
+            ssh_cfg["port"] = 0
+            ssh_cfg["token_path"] = ""
+        gpg_cfg = cfg.get("gpg_agent")
+        if isinstance(gpg_cfg, dict):
+            gpg_cfg["enabled"] = False
+            gpg_cfg["port"] = 0
+            gpg_cfg["token_path"] = ""
+        atomic_write_json(cfg_path, cfg, 0o644)
+
     def create_podman_secret(self, name: str, token: bytes) -> None:
         sec = secret_name(name)
         self.engine.run(["secret", "rm", sec], check=False, capture=True)
@@ -1422,6 +1726,10 @@ class ContainerManager:
         if configured is not None:
             return configured == "true"
         return self.hostexec_enabled(name, info) and bool(current_gpg_info()[1])
+
+    def gpg_agent_label_enabled(self, info: Dict[str, Any]) -> bool:
+        labels = self.labels_from_info(info or {})
+        return labels.get(f"{LABEL_PREFIX}.gpg_agent") == "true"
 
     def labels_from_info(self, info: Dict[str, Any]) -> Dict[str, str]:
         config = info.get("Config", {})
@@ -1472,8 +1780,17 @@ class ContainerManager:
         validate_box_name(name)
         return self.engine.inspect_container(container_name(name), required=True) or {}
 
-    def start(self, name: str, *, start_server: bool = True, announce: bool = True) -> Dict[str, Any]:
-        self.engine.ensure_ready(start_machine=True)
+    def start(
+        self,
+        name: str,
+        *,
+        start_server: bool = True,
+        announce: bool = True,
+        ensure_engine_ready: bool = True,
+        start_socket_proxies: bool = True,
+    ) -> Dict[str, Any]:
+        if ensure_engine_ready:
+            self.engine.ensure_ready(start_machine=True)
         info = self.require_container(name)
         running = self.running_from_info(info)
         host_exec = self.hostexec_enabled(name, info)
@@ -1487,8 +1804,8 @@ class ContainerManager:
         self.sync_container_lubox(cname, name)
         if start_server and host_exec:
             self.ensure_hostexec_server(name, host_exec, ssh_agent, gpg_agent)
-            self.ensure_ssh_agent_proxy(name, ssh_agent, self.container_id_from_info(info))
-            self.ensure_gpg_agent_proxy(name, gpg_agent, self.container_id_from_info(info))
+            if start_socket_proxies:
+                self.ensure_socket_forward_proxies(name, self.current_socket_forward_groups(name, info))
         if announce:
             print(f"started {cname}")
         return info
@@ -1552,8 +1869,28 @@ class ContainerManager:
             print(f"destroyed {cname}; image kept: {image_name(name)}")
 
     def enter(self, name: str, cmd: Sequence[str], *, xquartz: bool = False) -> int:
-        info = self.start(name, start_server=True, announce=False)
+        try:
+            info = self.require_container(name)
+        except CommandError as exc:
+            if not self.should_start_machine_after_error(exc):
+                raise
+            eprint("lubox: Podman machine is not running; starting it")
+            self.engine.ensure_ready(start_machine=True)
+            info = self.require_container(name)
         cname = container_name(name)
+        if not self.running_from_info(info):
+            self.ensure_enter_runtime(name, info)
+        if self.enter_preflight_needed(name, info):
+            preflight = self.enter_preflight(name, cname, info)
+            if preflight.returncode != 0:
+                if engine_unavailable_error(self.engine.name, preflight.stderr, preflight.stdout):
+                    eprint("lubox: Podman machine is not running; starting it")
+                    self.engine.ensure_ready(start_machine=True)
+                self.ensure_enter_runtime(name, info)
+                preflight = self.enter_preflight(name, cname, info)
+                if preflight.returncode != 0:
+                    detail = _decode_output(preflight.stderr).strip() or _decode_output(preflight.stdout).strip() or f"exit {preflight.returncode}"
+                    die(f"lubox: enter preflight failed for {name}: {detail}")
         cwd = self.container_cwd(cname)
         shell_path = self.read_container_shell(cname, info)
         exec_args = ["exec"]
@@ -1562,13 +1899,141 @@ class ContainerManager:
         elif sys.stdin.isatty():
             exec_args.append("-i")
         exec_args += ["--user", f"{self.ident.uid}:{self.ident.gid}", "-w", cwd]
-        exec_args += self.exec_env_args(cname, name, auto_start_xquartz=xquartz)
+        exec_args += self.exec_env_args(cname, name, info=info, auto_start_xquartz=xquartz)
         run_cmd = strip_dashdash(cmd)
         if run_cmd:
             exec_args += [cname, shell_path, "-l", "-c", shlex.join(run_cmd)]
         else:
             exec_args += [cname, shell_path, "-l"]
         return subprocess.call(self.engine.argv(exec_args))
+
+    def should_start_machine_after_error(self, exc: CommandError) -> bool:
+        if not (is_macos() and self.engine.name == "podman"):
+            return False
+        return engine_unavailable_error(self.engine.name, exc.stderr)
+
+    def enter_preflight_needed(self, name: str, info: Dict[str, Any]) -> bool:
+        return self.hostexec_enabled(name, info) or ((self.ssh_agent_enabled(name, info) or self.gpg_agent_label_enabled(info)) and not is_linux())
+
+    def enter_preflight(self, name: str, cname: str, info: Dict[str, Any]) -> subprocess.CompletedProcess:
+        host_exec = self.hostexec_enabled(name, info)
+        ssh_agent = self.ssh_agent_enabled(name, info)
+        gpg_agent = self.gpg_agent_label_enabled(info)
+        script = r'''
+import json, os, pathlib, stat, subprocess, sys
+
+uid = int(sys.argv[1])
+want_host = sys.argv[2] == "1"
+want_ssh = sys.argv[3] == "1"
+want_gpg = sys.argv[4] == "1"
+cfg_path = pathlib.Path(os.environ.get("LUBOX_HOSTEXEC_CONFIG", "/run/lubox/hostexec.json"))
+
+def fail(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+def is_socket(path):
+    try:
+        return stat.S_ISSOCK(pathlib.Path(path).stat().st_mode)
+    except OSError:
+        return False
+
+def pid_running(pid_file):
+    try:
+        text = pathlib.Path(pid_file).read_text(encoding="utf-8").strip()
+        pid = int(text)
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+cfg = {}
+if want_host or want_ssh or want_gpg:
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"hostexec config unavailable: {exc}")
+
+if want_host:
+    if not cfg.get("enabled"):
+        fail("hostexec server disabled")
+    cp = subprocess.run(["/usr/local/bin/lubox", "__hostexec-probe"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if cp.returncode != 0:
+        fail(cp.stderr.strip() or f"hostexec probe failed: {cp.returncode}")
+
+if want_ssh:
+    ssh = cfg.get("ssh_agent")
+    if not isinstance(ssh, dict) or not ssh.get("enabled"):
+        fail("SSH agent proxy disabled")
+    sock = str(ssh.get("socket_path") or f"/tmp/lubox-{uid}/ssh-agent.sock")
+    pid = f"/tmp/lubox-{uid}/ssh-agent.pid"
+    if not pid_running(pid) or not is_socket(sock):
+        fail("SSH agent proxy not running")
+
+if want_gpg:
+    gpg = cfg.get("gpg_agent")
+    sockets = gpg.get("sockets") if isinstance(gpg, dict) else None
+    if not isinstance(gpg, dict) or not gpg.get("enabled") or not isinstance(sockets, dict) or not sockets:
+        fail("GPG agent proxy disabled")
+    pid = f"/tmp/lubox-{uid}/gpg-agent-proxy.pid"
+    if not pid_running(pid):
+        fail("GPG agent proxy not running")
+    for key in sorted(sockets):
+        item = sockets.get(key)
+        if not isinstance(item, dict):
+            fail(f"GPG proxy socket config invalid: {key}")
+        sock = str(item.get("socket_path") or "")
+        if not sock or not is_socket(sock):
+            fail(f"GPG proxy socket missing: {key}")
+'''
+        return self.engine.run(
+            [
+                "exec",
+                "--user",
+                f"{self.ident.uid}:{self.ident.gid}",
+                "--env",
+                f"LUBOX_NAME={name}",
+                "--env",
+                f"LUBOX_CONTAINER_NAME={name}",
+                "--env",
+                f"LUBOX_ENGINE_CONTAINER_NAME={cname}",
+                "--env",
+                f"LUBOX_HOST_EXEC={'1' if host_exec else '0'}",
+                "--env",
+                f"LUBOX_HOSTEXEC_CONFIG={CONTAINER_CONFIG_PATH}",
+                "--env",
+                f"PATH={self.container_path_value()}",
+                cname,
+                "python3",
+                "-c",
+                script,
+                str(self.ident.uid),
+                "1" if host_exec else "0",
+                "1" if ssh_agent and not is_linux() else "0",
+                "1" if gpg_agent and not is_linux() else "0",
+            ],
+            check=False,
+            capture=True,
+            timeout=20,
+        )
+
+    def ensure_enter_runtime(self, name: str, info: Dict[str, Any]) -> None:
+        host_exec = self.hostexec_enabled(name, info)
+        cname = container_name(name)
+        self.ensure_runtime_mount_files(name, host_exec, running=self.running_from_info(info))
+        if not self.running_from_info(info):
+            self.engine.run(["start", cname], capture=True)
+            self.sync_container_lubox(cname, name)
+        if not host_exec:
+            return
+        self.restart_hostexec_server_from_config(name, info)
+        cfg = self.load_hostexec_config_if_present(name) or {}
+        self.ensure_socket_forward_proxies(name, self.socket_forward_groups_from_config(cfg))
 
     def exec(self, name: str, cmd: Sequence[str]) -> int:
         run_cmd = strip_dashdash(cmd)
@@ -2165,16 +2630,25 @@ class ContainerManager:
                     pass
             safe_unlink(pid_file)
 
-    def exec_env_args(self, cname: str, name: str, *, auto_start_xquartz: bool = False) -> List[str]:
+    def exec_env_args(
+        self,
+        cname: str,
+        name: str,
+        *,
+        info: Optional[Dict[str, Any]] = None,
+        auto_start_xquartz: bool = False,
+    ) -> List[str]:
         args: List[str] = []
+        host_exec = self.hostexec_enabled(name, info) if info is not None else self.hostexec_enabled(name)
+        gpg_agent = self.gpg_agent_label_enabled(info) if info is not None else self.gpg_agent_enabled(name)
         args += ["--env", f"LUBOX_NAME={name}"]
         args += ["--env", f"LUBOX_CONTAINER_NAME={name}"]
         args += ["--env", f"LUBOX_ENGINE_CONTAINER_NAME={cname}"]
         args += ["--env", f"LUBOX_HOST_LUBOX={host_lubox_path()}"]
-        args += ["--env", f"LUBOX_HOST_EXEC={'1' if self.hostexec_enabled(name) else '0'}"]
+        args += ["--env", f"LUBOX_HOST_EXEC={'1' if host_exec else '0'}"]
         args += ["--env", f"LUBOX_HOSTEXEC_CONFIG={CONTAINER_CONFIG_PATH}"]
         args += ["--env", f"PATH={self.container_path_value()}"]
-        if self.gpg_agent_enabled(name) and not is_linux():
+        if gpg_agent and not is_linux():
             args += ["--env", f"GNUPGHOME={container_gpg_home(self.ident.uid)}"]
             args += ["--env", "LUBOX_GPG_AGENT_PROXY=1"]
         for key, value in self.xquartz_env(auto_start=auto_start_xquartz).items():
@@ -2433,7 +2907,7 @@ class ContainerManager:
         try:
             mount_dir = self.paths.mount_dir(name, self.engine.name)
             if (mount_dir / "hostexec.json").exists():
-                self.write_initial_config(name, False, mount_dir)
+                self.write_disabled_config_preserving_sockets(name, mount_dir)
         except LuboxError:
             pass
 
@@ -2473,8 +2947,8 @@ class ContainerManager:
                 port = self.choose_port(bind_addr)
                 ssh_auth_sock = self.ssh_agent_host_socket(name, ssh_agent_enabled)
                 ssh_port = self.choose_port(bind_addr) if ssh_auth_sock is not None else 0
-                gpg_sockets = self.gpg_agent_host_sockets(name, gpg_agent_enabled)
-                proc = self.start_server_process(name, bind_addr, port, ssh_auth_sock, ssh_port, gpg_sockets)
+                gpg_home, gpg_sockets = self.gpg_agent_host_info(name, gpg_agent_enabled)
+                proc = self.start_server_process(name, bind_addr, port, ssh_auth_sock, ssh_port, gpg_sockets, gpg_home)
                 try:
                     self.wait_server_config(name, port, proc)
                     probe = self.probe_hostexec(name)
@@ -2500,25 +2974,33 @@ class ContainerManager:
             ssh_agent_enabled = self.ssh_agent_enabled(name)
         if gpg_agent_enabled is None:
             gpg_agent_enabled = self.gpg_agent_enabled(name)
-        if is_linux() or ((not ssh_agent_enabled or current_ssh_auth_sock() is None) and (not gpg_agent_enabled or not current_gpg_info()[1])):
+        ssh_sock = current_ssh_auth_sock() if ssh_agent_enabled else None
+        gpg_sockets: Dict[str, pathlib.Path] = {}
+        if gpg_agent_enabled:
+            _home, gpg_sockets = current_gpg_info()
+        if is_linux() or (ssh_sock is None and not gpg_sockets):
             return False
         cfg_path = self.paths.mount_dir(name, self.engine.name) / "hostexec.json"
         try:
             cfg = load_json_file(cfg_path)
         except (OSError, json.JSONDecodeError, LuboxError):
             return True
-        if ssh_agent_enabled and current_ssh_auth_sock() is not None:
+        if ssh_agent_enabled and ssh_sock is not None:
             ssh_cfg = cfg.get("ssh_agent")
             if not (isinstance(ssh_cfg, dict) and ssh_cfg.get("enabled")):
                 return True
-        if gpg_agent_enabled:
-            _home, gpg_sockets = current_gpg_info()
-            if gpg_sockets:
-                gpg_cfg = cfg.get("gpg_agent")
-                cfg_sockets = gpg_cfg.get("sockets") if isinstance(gpg_cfg, dict) else None
-                if not (isinstance(gpg_cfg, dict) and gpg_cfg.get("enabled") and isinstance(cfg_sockets, dict)):
-                    return True
-                if not set(gpg_sockets).issubset(set(cfg_sockets)):
+            if str(ssh_cfg.get("host_path") or "") != str(ssh_sock):
+                return True
+        if gpg_sockets:
+            gpg_cfg = cfg.get("gpg_agent")
+            cfg_sockets = gpg_cfg.get("sockets") if isinstance(gpg_cfg, dict) else None
+            if not (isinstance(gpg_cfg, dict) and gpg_cfg.get("enabled") and isinstance(cfg_sockets, dict)):
+                return True
+            if not set(gpg_sockets).issubset(set(cfg_sockets)):
+                return True
+            for key, path in gpg_sockets.items():
+                item = cfg_sockets.get(key)
+                if not isinstance(item, dict) or str(item.get("host_path") or "") != str(path):
                     return True
         return False
 
@@ -2533,164 +3015,193 @@ class ContainerManager:
             return None
         return sock
 
-    def gpg_agent_host_sockets(self, name: str, gpg_agent_enabled: Optional[bool] = None) -> Dict[str, pathlib.Path]:
+    def gpg_agent_host_info(self, name: str, gpg_agent_enabled: Optional[bool] = None) -> Tuple[Optional[pathlib.Path], Dict[str, pathlib.Path]]:
         if gpg_agent_enabled is None:
             gpg_agent_enabled = self.gpg_agent_enabled(name)
         if is_linux() or not gpg_agent_enabled:
-            return {}
-        _home, sockets = current_gpg_info()
+            return None, {}
+        home, sockets = current_gpg_info()
         if not sockets:
             eprint("lubox: GPG agent was requested for this container, but no host GPG sockets are available")
-        return sockets
+        return home, sockets
 
-    def ensure_ssh_agent_proxy(self, name: str, ssh_agent_enabled: Optional[bool] = None, container_id: str = "") -> None:
-        if ssh_agent_enabled is None:
-            ssh_agent_enabled = self.ssh_agent_enabled(name)
-        if is_linux() or not ssh_agent_enabled:
-            return
-        ssh_sock = current_ssh_auth_sock()
-        if ssh_sock is None:
-            return
-        marker = self.paths.runtime_dir(name) / "ssh-agent-proxy.stamp"
-        marker_text = f"{container_id}:{ssh_sock}"
-        cname = container_name(name)
+    def load_hostexec_config_if_present(self, name: str) -> Optional[Dict[str, Any]]:
+        cfg_path = self.paths.mount_dir(name, self.engine.name) / "hostexec.json"
         try:
-            if marker.read_text(encoding="utf-8").strip() == marker_text:
-                if self.container_ssh_agent_proxy_healthy(cname):
-                    return
-        except OSError:
-            pass
-        self.stop_container_ssh_agent_proxy(cname)
-        self.engine.run(
-            [
-                "exec",
-                "-d",
-                "--user",
-                f"{self.ident.uid}:{self.ident.gid}",
-                "--env",
-                f"LUBOX_NAME={name}",
-                "--env",
-                f"LUBOX_CONTAINER_NAME={name}",
-                "--env",
-                f"LUBOX_ENGINE_CONTAINER_NAME={cname}",
-                "--env",
-                "LUBOX_HOST_EXEC=1",
-                "--env",
-                f"LUBOX_HOSTEXEC_CONFIG={CONTAINER_CONFIG_PATH}",
-                cname,
-                "/usr/local/bin/lubox",
-                "__ssh-agent-proxy-client",
-                "--socket-path",
-                container_ssh_auth_sock(self.ident.uid),
-                "--pid-file",
-                container_ssh_agent_pid(self.ident.uid),
-            ],
-            check=False,
-            capture=True,
-        )
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            cp = self.engine.run(
-                ["exec", cname, "test", "-S", container_ssh_auth_sock(self.ident.uid)],
-                check=False,
-                capture=True,
-            )
-            if cp.returncode == 0 and self.container_ssh_agent_proxy_healthy(cname):
-                atomic_write_text(marker, marker_text + "\n", 0o600)
-                return
-            time.sleep(0.1)
-        self.append_server_log(name, "WARNING: SSH agent proxy socket did not appear in container\n")
+            return load_json_file(cfg_path)
+        except (OSError, json.JSONDecodeError, LuboxError):
+            return None
 
-    def container_ssh_agent_proxy_healthy(self, cname: str) -> bool:
-        script = r'''
-import socket, struct, sys
-path = sys.argv[1]
-try:
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.settimeout(3)
-    sock.connect(path)
-    sock.sendall(struct.pack(">I", 1) + b"\x0b")
-    header = sock.recv(5)
-    sock.close()
-except OSError:
-    raise SystemExit(1)
-if len(header) == 5 and header[4] == 12:
-    raise SystemExit(0)
-raise SystemExit(1)
-'''
+    def cached_hostexec_socket_sources(self, cfg: Dict[str, Any]) -> Tuple[Optional[pathlib.Path], Optional[pathlib.Path], Dict[str, pathlib.Path]]:
+        ssh_sock: Optional[pathlib.Path] = None
+        ssh_cfg = cfg.get("ssh_agent")
+        if isinstance(ssh_cfg, dict):
+            host_path = str(ssh_cfg.get("host_path") or "")
+            if host_path:
+                ssh_sock = socket_path_if_socket(pathlib.Path(host_path))
+        gpg_home: Optional[pathlib.Path] = None
+        gpg_sockets: Dict[str, pathlib.Path] = {}
+        gpg_cfg = cfg.get("gpg_agent")
+        if isinstance(gpg_cfg, dict):
+            home_value = str(gpg_cfg.get("home") or "")
+            if home_value:
+                gpg_home = pathlib.Path(home_value)
+            sockets = gpg_cfg.get("sockets")
+            if isinstance(sockets, dict):
+                for key, item in sockets.items():
+                    if key not in GPG_SOCKET_BASENAMES or not isinstance(item, dict):
+                        continue
+                    host_path = str(item.get("host_path") or "")
+                    if not host_path:
+                        continue
+                    sock = socket_path_if_socket(pathlib.Path(host_path))
+                    if sock is not None:
+                        gpg_sockets[str(key)] = sock
+        return ssh_sock, gpg_home, gpg_sockets
+
+    def restart_hostexec_server_from_config(self, name: str, info: Dict[str, Any]) -> None:
+        cfg = self.load_hostexec_config_if_present(name) or {}
+        ssh_sock, gpg_home, gpg_sockets = self.cached_hostexec_socket_sources(cfg)
+        if ssh_sock is None and self.ssh_agent_enabled(name, info):
+            ssh_sock = current_ssh_auth_sock()
+        self.stop_server(name)
+        self.ensure_runtime_mount_files(name, True, running=True)
+        bind_addr = str(cfg.get("bind_address") or "")
+        if not bind_addr:
+            bind_addr = "0.0.0.0" if is_macos() and self.engine.name == "podman" else "127.0.0.1"
+        port = self.choose_port(bind_addr)
+        ssh_port = self.choose_port(bind_addr) if ssh_sock is not None else 0
+        proc = self.start_server_process(name, bind_addr, port, ssh_sock, ssh_port, gpg_sockets, gpg_home)
+        self.wait_server_config(name, port, proc)
+
+    def socket_proxy_marker(self, name: str, proxy_name: str) -> pathlib.Path:
+        return self.paths.runtime_dir(name) / f"{proxy_name}-proxy.stamp"
+
+    def container_socket_proxy_running(self, cname: str, group: SocketForwardGroup) -> bool:
+        socket_paths = group.socket_paths()
+        if not group.pid_file or not socket_paths:
+            return False
+        checks = [
+            f"test -f {shlex.quote(group.pid_file)} || exit 1",
+            f"pid=$(cat {shlex.quote(group.pid_file)}) || exit 1",
+            "case \"$pid\" in ''|*[!0-9]*) exit 1;; esac",
+            "kill -0 \"$pid\" 2>/dev/null || exit 1",
+        ]
+        checks.extend(f"test -S {shlex.quote(path)} || exit 1" for path in socket_paths)
+        cp = self.engine.run(["exec", cname, "sh", "-lc", "; ".join(checks)], check=False, capture=True, timeout=5)
+        return cp.returncode == 0
+
+    def stop_socket_forward_proxy(self, cname: str, group: SocketForwardGroup) -> None:
+        if not group.pid_file:
+            return
+        paths = [group.pid_file] + group.socket_paths()
+        script = (
+            f"if [ -f {shlex.quote(group.pid_file)} ]; then "
+            f"pid=$(cat {shlex.quote(group.pid_file)}) || pid=; "
+            "case \"$pid\" in ''|*[!0-9]*) ;; *) kill \"$pid\" 2>/dev/null || true ;; esac; "
+            "fi; "
+            f"rm -f {' '.join(shlex.quote(path) for path in paths)}"
+        )
+        self.engine.run(["exec", cname, "sh", "-lc", script], check=False, capture=True)
+
+    def start_socket_forward_proxy(self, name: str, cname: str, group: SocketForwardGroup) -> None:
+        if not group.proxy_command:
+            return
+        argv = [
+            "exec",
+            "-d",
+            "--user",
+            f"{self.ident.uid}:{self.ident.gid}",
+            "--env",
+            f"LUBOX_NAME={name}",
+            "--env",
+            f"LUBOX_CONTAINER_NAME={name}",
+            "--env",
+            f"LUBOX_ENGINE_CONTAINER_NAME={cname}",
+            "--env",
+            "LUBOX_HOST_EXEC=1",
+            "--env",
+            f"LUBOX_HOSTEXEC_CONFIG={CONTAINER_CONFIG_PATH}",
+        ]
+        for key, value in group.proxy_env:
+            argv += ["--env", f"{key}={value}"]
+        argv += [cname] + list(group.proxy_command)
+        self.engine.run(argv, check=False, capture=True)
+
+    def socket_forward_proxy_healthy(self, cname: str, group: SocketForwardGroup) -> bool:
+        if not group.check_command:
+            return True
         cp = self.engine.run(
-            ["exec", cname, "python3", "-c", script, container_ssh_auth_sock(self.ident.uid)],
+            ["exec", cname] + list(group.check_command),
             check=False,
             capture=True,
             timeout=8,
         )
         return cp.returncode == 0
 
-    def stop_container_ssh_agent_proxy(self, cname: str) -> None:
-        sock = container_ssh_auth_sock(self.ident.uid)
-        pid_file = container_ssh_agent_pid(self.ident.uid)
-        script = f"if [ -f {shlex.quote(pid_file)} ]; then kill $(cat {shlex.quote(pid_file)}) 2>/dev/null || true; fi; rm -f {shlex.quote(sock)} {shlex.quote(pid_file)}"
-        self.engine.run(["exec", cname, "sh", "-lc", script], check=False, capture=True)
-
-    def ensure_gpg_agent_proxy(self, name: str, gpg_agent_enabled: Optional[bool] = None, container_id: str = "") -> None:
-        if gpg_agent_enabled is None:
-            gpg_agent_enabled = self.gpg_agent_enabled(name)
-        if is_linux() or not gpg_agent_enabled:
-            return
-        host_home, sockets = current_gpg_info()
-        if not sockets:
-            return
-        marker = self.paths.runtime_dir(name) / "gpg-agent-proxy.stamp"
-        socket_text = ",".join(f"{key}={sockets[key]}" for key in sorted(sockets))
-        marker_text = f"{container_id}:{host_home}:{socket_text}"
-        try:
-            if marker.read_text(encoding="utf-8").strip() == marker_text:
-                return
-        except OSError:
-            pass
-        cname = container_name(name)
-        self.engine.run(
-            [
-                "exec",
-                "-d",
-                "--user",
-                f"{self.ident.uid}:{self.ident.gid}",
-                "--env",
-                f"LUBOX_NAME={name}",
-                "--env",
-                f"LUBOX_CONTAINER_NAME={name}",
-                "--env",
-                f"LUBOX_ENGINE_CONTAINER_NAME={cname}",
-                "--env",
-                "LUBOX_HOST_EXEC=1",
-                "--env",
-                f"LUBOX_HOSTEXEC_CONFIG={CONTAINER_CONFIG_PATH}",
-                "--env",
-                f"GNUPGHOME={container_gpg_home(self.ident.uid)}",
-                cname,
-                "/usr/local/bin/lubox",
-                "__gpg-agent-proxy-client",
-                "--home",
-                container_gpg_home(self.ident.uid),
-                "--pid-file",
-                container_gpg_agent_pid(self.ident.uid),
-            ],
-            check=False,
-            capture=True,
-        )
-        wait_socket = container_gpg_proxy_socket_path(next(iter(sorted(sockets))))
+    def wait_socket_forward_proxy(
+        self,
+        name: str,
+        cname: str,
+        group: SocketForwardGroup,
+    ) -> bool:
         deadline = time.time() + 5
         while time.time() < deadline:
-            cp = self.engine.run(
-                ["exec", cname, "test", "-S", wait_socket],
-                check=False,
-                capture=True,
-            )
-            if cp.returncode == 0:
-                atomic_write_text(marker, marker_text + "\n", 0o600)
-                return
+            if self.container_socket_proxy_running(cname, group):
+                if self.socket_forward_proxy_healthy(cname, group):
+                    return True
             time.sleep(0.1)
-        self.append_server_log(name, "WARNING: GPG agent proxy socket did not appear in container\n")
+        self.append_server_log(name, f"WARNING: {group.label} socket proxy did not appear in container\n")
+        return False
+
+    def ensure_socket_forward_proxies(self, name: str, groups: Iterable[SocketForwardGroup]) -> None:
+        if is_linux():
+            return
+        cname = container_name(name)
+        for group in groups:
+            self.ensure_socket_forward_proxy(name, cname, group)
+
+    def ensure_socket_forward_proxy(self, name: str, cname: str, group: SocketForwardGroup) -> None:
+        marker = self.socket_proxy_marker(name, group.name)
+        try:
+            if marker.read_text(encoding="utf-8").strip() == group.marker_text:
+                if self.container_socket_proxy_running(cname, group):
+                    return
+        except OSError:
+            pass
+        self.stop_socket_forward_proxy(cname, group)
+        self.start_socket_forward_proxy(name, cname, group)
+        if self.wait_socket_forward_proxy(name, cname, group):
+            atomic_write_text(marker, group.marker_text + "\n", 0o600)
+
+    def restart_socket_proxies(self, name: str, kind: str) -> None:
+        validate_box_name(name)
+        if is_linux():
+            die("lubox: socket proxies are not used on Linux; SSH/GPG sockets are bind-mounted")
+        if kind not in ("all", "ssh", "gpg"):
+            die(f"lubox: unsupported socket proxy kind: {kind}")
+        info = self.start(
+            name,
+            start_server=True,
+            announce=False,
+            ensure_engine_ready=True,
+            start_socket_proxies=False,
+        )
+        if not self.hostexec_enabled(name, info):
+            die(f"lubox: host-exec is disabled for {name}; socket proxies are unavailable")
+        cname = container_name(name)
+        groups = [group for group in self.current_socket_forward_groups(name, info) if kind == "all" or group.kind == kind]
+        if not groups:
+            die(f"lubox: {kind} socket proxy is not available for {name}" if kind != "all" else f"lubox: no socket proxies are available for {name}")
+        restarted: List[str] = []
+        for group in groups:
+            self.stop_socket_forward_proxy(cname, group)
+            safe_unlink(self.socket_proxy_marker(name, group.name))
+            self.ensure_socket_forward_proxy(name, cname, group)
+            restarted.append(group.kind)
+        if not restarted:
+            die(f"lubox: no socket proxies are available for {name}")
+        print(f"restarted {','.join(restarted)} socket proxy for {cname}")
 
     def choose_port(self, bind_addr: str) -> int:
         attempts = HOSTEXEC_MAX_PORT - HOSTEXEC_MIN_PORT + 1
@@ -2715,6 +3226,7 @@ raise SystemExit(1)
         ssh_auth_sock: Optional[pathlib.Path],
         ssh_port: int,
         gpg_sockets: Dict[str, pathlib.Path],
+        gpg_home: Optional[pathlib.Path] = None,
     ) -> subprocess.Popen:
         if bind_addr == "0.0.0.0":
             self.append_server_log(
@@ -2751,6 +3263,8 @@ raise SystemExit(1)
             "--pid-file",
             str(pid_file),
         ]
+        if gpg_home is not None:
+            argv += ["--gpg-home", str(gpg_home)]
         if ssh_auth_sock is not None and ssh_port > 0:
             argv += [
                 "--ssh-auth-sock",
@@ -3106,8 +3620,10 @@ class SSHAgentProxyClient:
     def run(self) -> int:
         if self.check:
             try:
-                sock = self.connect_bridge()
-                sock.close()
+                if self.existing_proxy_running():
+                    return self.check_local_proxy()
+                with self.connect_bridge():
+                    pass
                 return 0
             except LuboxError as exc:
                 eprint(str(exc))
@@ -3152,6 +3668,26 @@ class SSHAgentProxyClient:
         except (OSError, ValueError):
             return False
         return looks_like_pid_running(pid)
+
+    def check_local_proxy(self) -> int:
+        sock: Optional[socket.socket] = None
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            sock.connect(str(self.socket_path))
+            sock.sendall(struct.pack(">I", 1) + b"\x0b")
+            header = sock.recv(5)
+        except OSError as exc:
+            raise LuboxError(f"lubox: SSH agent proxy healthcheck failed: {exc}")
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        if len(header) == 5 and header[4] == 12:
+            return 0
+        raise LuboxError("lubox: SSH agent proxy healthcheck failed")
 
     def load_bridge_config(self) -> Dict[str, Any]:
         env_container = os.environ.get("LUBOX_CONTAINER_NAME")
@@ -3238,9 +3774,13 @@ class GPGAgentProxyClient:
             cfg, gpg_cfg = self.load_bridge_config()
             socket_keys = self.socket_keys(gpg_cfg)
             if self.check:
-                for key in socket_keys:
-                    sock = self.connect_bridge(cfg, gpg_cfg, key)
-                    sock.close()
+                if self.existing_proxy_running(gpg_cfg, socket_keys):
+                    for key in socket_keys:
+                        self.check_local_proxy(gpg_cfg, key)
+                else:
+                    for key in socket_keys:
+                        with self.connect_bridge(cfg, gpg_cfg, key):
+                            pass
                 return 0
             if self.existing_proxy_running(gpg_cfg, socket_keys):
                 return 0
@@ -3338,6 +3878,26 @@ class GPGAgentProxyClient:
                 os.symlink(str(child), str(dest))
             except OSError:
                 pass
+
+    def check_local_proxy(self, gpg_cfg: Dict[str, Any], key: str) -> None:
+        socket_path = self.socket_path(gpg_cfg, key)
+        sock: Optional[socket.socket] = None
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            sock.connect(str(socket_path))
+            data = sock.recv(16)
+        except OSError as exc:
+            raise LuboxError(f"lubox: GPG agent proxy healthcheck failed for {key}: {exc}")
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        if data:
+            return
+        raise LuboxError(f"lubox: GPG agent proxy healthcheck failed for {key}")
 
     def load_bridge_config(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         env_container = os.environ.get("LUBOX_CONTAINER_NAME")
@@ -3541,6 +4101,7 @@ class HostExecServer:
         self.ssh_port = int(args.ssh_port or 0)
         self.ssh_socket_path = args.ssh_socket_path or container_ssh_auth_sock()
         self.gpg_sockets = self.parse_gpg_sockets(args.gpg_socket or [])
+        self.gpg_home = pathlib.Path(args.gpg_home) if args.gpg_home else None
         self.stop = threading.Event()
         self.token = read_token(self.token_file)
 
@@ -3648,6 +4209,7 @@ class HostExecServer:
             "container_name": self.container,
             "container_id": cid if enabled else "",
             "host": self.host,
+            "bind_address": self.bind_address,
             "port": self.port if enabled else 0,
             "token_path": self.token_path if enabled else "",
             "pty_default": True,
@@ -3656,13 +4218,14 @@ class HostExecServer:
                 "host": self.host,
                 "port": self.ssh_port if enabled and self.ssh_auth_sock is not None else 0,
                 "socket_path": self.ssh_socket_path,
+                "host_path": str(self.ssh_auth_sock) if enabled and self.ssh_auth_sock is not None else "",
                 "token_path": self.token_path if enabled and self.ssh_auth_sock is not None else "",
             },
             "gpg_agent": {
                 "enabled": bool(enabled and self.gpg_sockets),
                 "host": self.host,
                 "port": self.port if enabled and self.gpg_sockets else 0,
-                "home": str(current_gpg_info()[0] or ""),
+                "home": str(self.gpg_home or ""),
                 "proxy_home": container_gpg_home(),
                 "token_path": self.token_path if enabled and self.gpg_sockets else "",
                 "sockets": {
@@ -4117,6 +4680,7 @@ def command_fish_complete(args: argparse.Namespace) -> int:
             ("exec", "execute command in lubox container"),
             ("code-server", "start code-server in container"),
             ("enable", "enable optional feature"),
+            ("socket-proxy", "manage socket proxies"),
             ("host-exec", "run command on host"),
         ]
         for value, desc in rows:
@@ -4188,6 +4752,12 @@ destroy keeps lubox/NAME:latest by default; destroy --force also removes it.
     add_engine(p)
     p.add_argument("name", metavar="NAME")
 
+    p = sub.add_parser("socket-proxy", help="manage SSH/GPG socket proxies")
+    add_engine(p)
+    p.add_argument("action", choices=["restart"], metavar="ACTION")
+    p.add_argument("name", metavar="NAME")
+    p.add_argument("kind", nargs="?", choices=["all", "ssh", "gpg"], default="all", metavar="KIND")
+
     p = sub.add_parser("enter", help="enter container login shell, or run command after --")
     add_engine(p)
     p.add_argument("--xquartz", action="store_true", help="enable XQuartz DISPLAY forwarding on macOS")
@@ -4234,6 +4804,7 @@ destroy keeps lubox/NAME:latest by default; destroy --force also removes it.
     p.add_argument("--host", required=True)
     p.add_argument("--token-path", required=True)
     p.add_argument("--pid-file", required=True)
+    p.add_argument("--gpg-home")
     p.add_argument("--ssh-auth-sock")
     p.add_argument("--ssh-port", type=int, default=0)
     p.add_argument("--ssh-socket-path", default=container_ssh_auth_sock())
@@ -4307,6 +4878,10 @@ def dispatch(args: argparse.Namespace) -> int:
     if args.command == "stop":
         manager.stop(args.name)
         return 0
+    if args.command == "socket-proxy":
+        if args.action == "restart":
+            manager.restart_socket_proxies(args.name, args.kind)
+            return 0
     if args.command == "enter":
         return manager.enter(args.name, args.cmd, xquartz=args.xquartz)
     if args.command == "exec":
