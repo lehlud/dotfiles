@@ -1,0 +1,38 @@
+# murat: standalone JMAP-only TUI mail user agent
+
+[ui]
+split = "vertical" # vertical = top/bottom, horizontal = side-by-side
+page_size = 50
+show_help = true
+editor = "" # empty = $EDITOR, then vi
+
+[theme]
+header = "reverse"
+selected = "reverse"
+unread = "bold"
+status = "reverse"
+error = "bold"
+
+[keys]
+quit = "q"
+force_quit = "Q"
+sync = "s"
+compose = "c"
+reply = "r"
+search = "/"
+clear_search = "esc"
+toggle_spam = "z"
+open = "enter"
+next = "j"
+prev = "k"
+down = "down"
+up = "up"
+page_down = "pagedown"
+page_up = "pageup"
+top = "g"
+bottom = "G"
+cycle_account = "a"
+help = "?"
+
+[crypto]
+gpg_recipient = "0A12120F017001CDABDFDC468874D17B49BF1763"

@@ -1,0 +1,2551 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import base64
+import binascii
+import curses
+import email.header
+import email.utils
+import getpass
+import hashlib
+import hmac
+import html
+import json
+import os
+import queue
+import re
+import secrets
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import threading
+import textwrap
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from html.parser import HTMLParser
+from pathlib import Path
+from typing import Any
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+    tomllib = None  # type: ignore[assignment]
+
+
+APP = "murat"
+CAP_MAIL = "urn:ietf:params:jmap:mail"
+CAP_SUBMISSION = "urn:ietf:params:jmap:submission"
+BOX_INFO = b"murat encrypted json v1"
+MAC_PREFIX = b"MURAT1"
+_READLINE: Any = None
+_PROMPT_EDITING_READY = False
+
+DEFAULT_CONFIG = """# murat: standalone JMAP-only TUI mail user agent
+
+[ui]
+split = "vertical" # vertical = top/bottom, horizontal = side-by-side
+page_size = 50
+show_help = true
+editor = "" # empty = $EDITOR, then vi
+
+[theme]
+header = "reverse"
+selected = "reverse"
+unread = "bold"
+status = "reverse"
+error = "bold"
+
+[keys]
+quit = "q"
+force_quit = "Q"
+sync = "s"
+compose = "c"
+reply = "r"
+search = "/"
+clear_search = "esc"
+toggle_spam = "z"
+open = "enter"
+next = "j"
+prev = "k"
+down = "down"
+up = "up"
+page_down = "pagedown"
+page_up = "pageup"
+top = "g"
+bottom = "G"
+cycle_account = "a"
+help = "?"
+
+[crypto]
+gpg_recipient = ""
+"""
+
+
+class MuratError(Exception):
+    pass
+
+
+def enable_prompt_editing() -> None:
+    global _PROMPT_EDITING_READY, _READLINE
+    if _PROMPT_EDITING_READY:
+        return
+    _PROMPT_EDITING_READY = True
+    try:
+        import readline
+    except ImportError:
+        return
+    _READLINE = readline
+    for binding in (
+        '"\\e[D": backward-char',
+        '"\\e[C": forward-char',
+        '"\\e[H": beginning-of-line',
+        '"\\e[F": end-of-line',
+    ):
+        try:
+            readline.parse_and_bind(binding)
+        except Exception:
+            pass
+
+
+@dataclass(frozen=True)
+class Paths:
+    config_dir: Path
+    config_file: Path
+    data_dir: Path
+    key_file: Path
+    accounts_file: Path
+    mail_file: Path
+
+
+@dataclass
+class Account:
+    id: str
+    name: str
+    email: str
+    username: str
+    session_url: str
+    auth_kind: str
+    secret: str
+    primary_mail_account_id: str | None = None
+    created_at: str = ""
+    updated_at: str = ""
+
+    def auth_header(self) -> str:
+        if self.auth_kind == "basic":
+            token = base64.b64encode(f"{self.username}:{self.secret}".encode()).decode()
+            return f"Basic {token}"
+        return f"Bearer {self.secret}"
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "email": self.email,
+            "username": self.username,
+            "session_url": self.session_url,
+            "auth_kind": self.auth_kind,
+            "secret": self.secret,
+            "primary_mail_account_id": self.primary_mail_account_id,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_json(cls, value: dict[str, Any]) -> "Account":
+        return cls(
+            id=str(value.get("id", "")),
+            name=str(value.get("name", "")),
+            email=str(value.get("email", "")),
+            username=str(value.get("username", "")),
+            session_url=str(value.get("session_url", "")),
+            auth_kind=str(value.get("auth_kind", "bearer")),
+            secret=str(value.get("secret", "")),
+            primary_mail_account_id=value.get("primary_mail_account_id") or None,
+            created_at=str(value.get("created_at", "")),
+            updated_at=str(value.get("updated_at", "")),
+        )
+
+
+@dataclass
+class ComposeDraft:
+    account_id: str
+    to: str
+    cc: str
+    bcc: str
+    subject: str
+    body: str
+    reply_to_message_id: str | None = None
+    references: list[str] | None = None
+
+
+@dataclass
+class SendIdentity:
+    id: str
+    email: str
+    name: str
+
+
+@dataclass
+class JmapSession:
+    api_url: str
+    download_url: str | None
+    capabilities: set[str]
+    accounts: dict[str, dict[str, Any]]
+    primary_accounts: dict[str, str]
+
+    @property
+    def primary_mail_account_id(self) -> str | None:
+        if self.primary_accounts.get(CAP_MAIL):
+            return self.primary_accounts[CAP_MAIL]
+        for account_id, account in self.accounts.items():
+            if CAP_MAIL in account_capabilities(account):
+                return account_id
+        return None
+
+
+@dataclass(frozen=True)
+class SrvRecord:
+    priority: int
+    weight: int
+    port: int
+    target: str
+
+
+@dataclass
+class SyncResult:
+    account_id: str
+    mailboxes: list[dict[str, Any]]
+    messages: list[dict[str, Any]]
+    search_docs: dict[str, str]
+
+
+def now_utc() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def die(message: str, code: int = 1) -> None:
+    print(f"{APP}: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def xdg_paths() -> Paths:
+    home = Path.home()
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
+    data_home = Path(os.environ.get("XDG_DATA_HOME", home / ".local" / "share"))
+    config_dir = config_home / APP
+    data_dir = data_home / APP
+    return Paths(
+        config_dir=config_dir,
+        config_file=config_dir / "config.toml",
+        data_dir=data_dir,
+        key_file=data_dir / "key.gpg",
+        accounts_file=data_dir / "accounts.enc.json",
+        mail_file=data_dir / "mail.enc.json",
+    )
+
+
+def ensure_dirs(paths: Paths) -> None:
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
+    if not paths.config_file.exists():
+        atomic_write(paths.config_file, DEFAULT_CONFIG.encode(), mode=0o600)
+
+
+def atomic_write(path: Path, data: bytes, mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as tmp:
+            tmp.write(data)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.chmod(tmp_name, mode)
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def load_config(paths: Paths) -> dict[str, Any]:
+    ensure_dirs(paths)
+    defaults = parse_toml(DEFAULT_CONFIG.encode())
+    user = parse_toml(paths.config_file.read_bytes())
+    return merge_dicts(defaults, user)
+
+
+def merge_dicts(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def parse_toml(data: bytes) -> dict[str, Any]:
+    if tomllib is not None:
+        return tomllib.loads(data.decode())
+    return parse_toml_fallback(data.decode())
+
+
+def parse_toml_fallback(text: str) -> dict[str, Any]:
+    current: dict[str, Any] | None = None
+    root: dict[str, Any] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = root.setdefault(line[1:-1].strip(), {})
+            continue
+        if current is None or "=" not in line:
+            continue
+        key, raw_value = [item.strip() for item in line.split("=", 1)]
+        current[key] = parse_toml_scalar(raw_value)
+    return root
+
+
+def parse_toml_scalar(value: str) -> Any:
+    if value.startswith('"') and value.endswith('"'):
+        return value[1:-1].replace('\\"', '"').replace("\\n", "\n")
+    if value in ("true", "false"):
+        return value == "true"
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def set_toml_value(path: Path, section: str, key: str, value: str) -> None:
+    lines = path.read_text().splitlines() if path.exists() else DEFAULT_CONFIG.splitlines()
+    output: list[str] = []
+    in_section = False
+    section_seen = False
+    key_written = False
+    section_header = f"[{section}]"
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    assignment = f'{key} = "{escaped}"'
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if in_section and not key_written:
+                output.append(assignment)
+                key_written = True
+            in_section = stripped == section_header
+            section_seen = section_seen or in_section
+        if in_section and stripped.startswith(f"{key} "):
+            output.append(assignment)
+            key_written = True
+            continue
+        output.append(line)
+
+    if not section_seen:
+        output.extend(["", section_header, assignment])
+    elif in_section and not key_written:
+        output.append(assignment)
+    atomic_write(path, ("\n".join(output).rstrip() + "\n").encode(), mode=0o600)
+
+
+def config_value(config: dict[str, Any], section: str, key: str, default: Any) -> Any:
+    value = config.get(section, {})
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return default
+
+
+def b64e(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+def b64d(text: str) -> bytes:
+    padding = "=" * ((4 - len(text) % 4) % 4)
+    return base64.urlsafe_b64decode(text + padding)
+
+
+def hkdf_sha256(secret: bytes, salt: bytes, info: bytes, length: int) -> bytes:
+    prk = hmac.new(salt, secret, hashlib.sha256).digest()
+    output = b""
+    block = b""
+    counter = 1
+    while len(output) < length:
+        block = hmac.new(prk, block + info + bytes([counter]), hashlib.sha256).digest()
+        output += block
+        counter += 1
+    return output[:length]
+
+
+def rotl32(value: int, count: int) -> int:
+    return ((value << count) & 0xFFFFFFFF) | (value >> (32 - count))
+
+
+def quarter_round(state: list[int], a: int, b: int, c: int, d: int) -> None:
+    state[a] = (state[a] + state[b]) & 0xFFFFFFFF
+    state[d] = rotl32(state[d] ^ state[a], 16)
+    state[c] = (state[c] + state[d]) & 0xFFFFFFFF
+    state[b] = rotl32(state[b] ^ state[c], 12)
+    state[a] = (state[a] + state[b]) & 0xFFFFFFFF
+    state[d] = rotl32(state[d] ^ state[a], 8)
+    state[c] = (state[c] + state[d]) & 0xFFFFFFFF
+    state[b] = rotl32(state[b] ^ state[c], 7)
+
+
+def chacha20_block(key: bytes, counter: int, nonce: bytes) -> bytes:
+    constants = struct.unpack("<4I", b"expand 32-byte k")
+    key_words = struct.unpack("<8I", key)
+    nonce_words = struct.unpack("<3I", nonce)
+    initial = list(constants + key_words + (counter,) + nonce_words)
+    state = initial.copy()
+    for _ in range(10):
+        quarter_round(state, 0, 4, 8, 12)
+        quarter_round(state, 1, 5, 9, 13)
+        quarter_round(state, 2, 6, 10, 14)
+        quarter_round(state, 3, 7, 11, 15)
+        quarter_round(state, 0, 5, 10, 15)
+        quarter_round(state, 1, 6, 11, 12)
+        quarter_round(state, 2, 7, 8, 13)
+        quarter_round(state, 3, 4, 9, 14)
+    return struct.pack("<16I", *[(state[i] + initial[i]) & 0xFFFFFFFF for i in range(16)])
+
+
+def chacha20_xor(key: bytes, nonce: bytes, data: bytes) -> bytes:
+    output = bytearray()
+    counter = 1
+    for offset in range(0, len(data), 64):
+        block = chacha20_block(key, counter, nonce)
+        chunk = data[offset : offset + 64]
+        output.extend(byte ^ block[i] for i, byte in enumerate(chunk))
+        counter = (counter + 1) & 0xFFFFFFFF
+    return bytes(output)
+
+
+class CryptoBox:
+    def __init__(self, master_key: bytes):
+        if len(master_key) != 32:
+            master_key = hashlib.sha256(master_key).digest()
+        self.master_key = master_key
+
+    def seal(self, plaintext: bytes) -> bytes:
+        salt = secrets.token_bytes(16)
+        nonce = secrets.token_bytes(12)
+        material = hkdf_sha256(self.master_key, salt, BOX_INFO, 64)
+        enc_key, mac_key = material[:32], material[32:]
+        ciphertext = chacha20_xor(enc_key, nonce, plaintext)
+        tag = hmac.new(mac_key, MAC_PREFIX + salt + nonce + ciphertext, hashlib.sha256).digest()
+        return json.dumps(
+            {
+                "v": 1,
+                "alg": "chacha20-hmac-sha256",
+                "salt": b64e(salt),
+                "nonce": b64e(nonce),
+                "ct": b64e(ciphertext),
+                "mac": b64e(tag),
+            },
+            separators=(",", ":"),
+        ).encode()
+
+    def open(self, envelope: bytes) -> bytes:
+        try:
+            payload = json.loads(envelope.decode())
+            salt = b64d(payload["salt"])
+            nonce = b64d(payload["nonce"])
+            ciphertext = b64d(payload["ct"])
+            expected = b64d(payload["mac"])
+        except (KeyError, ValueError, TypeError, binascii.Error) as error:
+            raise MuratError("encrypted file is corrupt") from error
+        material = hkdf_sha256(self.master_key, salt, BOX_INFO, 64)
+        enc_key, mac_key = material[:32], material[32:]
+        actual = hmac.new(mac_key, MAC_PREFIX + salt + nonce + ciphertext, hashlib.sha256).digest()
+        if not hmac.compare_digest(actual, expected):
+            raise MuratError("encrypted file authentication failed")
+        return chacha20_xor(enc_key, nonce, ciphertext)
+
+
+class SymmetricKeyProvider:
+    def get_key(self) -> bytes:
+        raise NotImplementedError
+
+    def ensure_key(self) -> bytes:
+        return self.get_key()
+
+
+class MemoryKeyProvider(SymmetricKeyProvider):
+    def __init__(self, key: bytes):
+        self.key = key
+
+    def get_key(self) -> bytes:
+        return self.key
+
+
+class GpgWrappedKeyProvider(SymmetricKeyProvider):
+    def __init__(self, key_path: Path, recipient: str):
+        self.key_path = key_path
+        self.recipient = recipient.strip()
+        self._cached_key: bytes | None = None
+        self._lock = threading.Lock()
+
+    def ensure_key(self) -> bytes:
+        if self._cached_key is not None:
+            return self._cached_key
+        if self.key_path.exists():
+            return self.get_key()
+        if not self.recipient:
+            raise MuratError("set [crypto].gpg_recipient or run `murat init --gpg-key KEY`")
+        check_gpg()
+        ensure_gpg_secret(self.recipient)
+        key = secrets.token_bytes(32)
+        self.key_path.parent.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            [
+                "gpg",
+                "--batch",
+                "--yes",
+                "--encrypt",
+                "--recipient",
+                self.recipient,
+                "--output",
+                str(self.key_path),
+                "-",
+            ],
+            input=key,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise MuratError(f"gpg key wrap failed: {stderr_text(proc)}")
+        os.chmod(self.key_path, 0o600)
+        self._cached_key = key
+        return key
+
+    def get_key(self) -> bytes:
+        with self._lock:
+            if self._cached_key is not None:
+                return self._cached_key
+            if not self.key_path.exists():
+                return self.ensure_key()
+            check_gpg()
+            proc = subprocess.run(
+                ["gpg", "--quiet", "--decrypt", str(self.key_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if proc.returncode != 0:
+                raise MuratError(f"gpg key unwrap failed: {stderr_text(proc)}")
+            if len(proc.stdout) < 16:
+                raise MuratError("unwrapped symmetric key is invalid")
+            self._cached_key = proc.stdout
+            return self._cached_key
+
+
+def stderr_text(proc: subprocess.CompletedProcess[bytes]) -> str:
+    return proc.stderr.decode(errors="replace").strip() or "unknown error"
+
+
+def check_gpg() -> None:
+    if not shutil.which("gpg"):
+        raise MuratError("gpg not found")
+
+
+def ensure_gpg_secret(recipient: str) -> None:
+    proc = subprocess.run(
+        ["gpg", "--batch", "--list-secret-keys", "--with-colons", recipient],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0 or b"sec" not in proc.stdout:
+        raise MuratError(f"gpg secret key not found for {recipient}")
+
+
+class EncryptedJsonFile:
+    def __init__(self, path: Path, key_provider: SymmetricKeyProvider, default: dict[str, Any]):
+        self.path = path
+        self.key_provider = key_provider
+        self.default = default
+
+    def load(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return json.loads(json.dumps(self.default))
+        box = CryptoBox(self.key_provider.get_key())
+        plaintext = box.open(self.path.read_bytes())
+        value = json.loads(plaintext.decode())
+        if not isinstance(value, dict):
+            raise MuratError(f"{self.path} did not contain JSON object")
+        return value
+
+    def save(self, value: dict[str, Any]) -> None:
+        key = self.key_provider.ensure_key()
+        plaintext = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2).encode()
+        envelope = CryptoBox(key).seal(plaintext)
+        atomic_write(self.path, envelope, mode=0o600)
+
+
+class AccountsStore:
+    def __init__(self, encrypted_file: EncryptedJsonFile):
+        self.file = encrypted_file
+
+    def all(self) -> list[Account]:
+        data = self.file.load()
+        return [Account.from_json(item) for item in data.get("accounts", []) if isinstance(item, dict)]
+
+    def save_all(self, accounts: list[Account]) -> None:
+        self.file.save({"version": 1, "accounts": [account.to_json() for account in accounts]})
+
+    def upsert(self, account: Account) -> None:
+        accounts = [item for item in self.all() if item.id != account.id]
+        accounts.append(account)
+        accounts.sort(key=lambda item: item.email)
+        self.save_all(accounts)
+
+    def remove(self, account_id: str) -> bool:
+        accounts = self.all()
+        kept = [item for item in accounts if item.id != account_id]
+        if len(kept) == len(accounts):
+            return False
+        self.save_all(kept)
+        return True
+
+
+class MailStore:
+    def warm_crypto(self) -> None:
+        raise NotImplementedError
+
+    def messages(self, include_spam: bool = False) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def save_sync(self, result: SyncResult) -> None:
+        raise NotImplementedError
+
+    def search(self, query: str, include_spam: bool = False) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def write_message_eml(self, message: dict[str, Any], body: str) -> str:
+        raise NotImplementedError
+
+    def body(self, message_key: str) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    def body_from_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    def save_body(self, message_key: str, body: dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    def save_draft(self, draft: ComposeDraft) -> None:
+        raise NotImplementedError
+
+
+class EncryptedJsonMailStore(MailStore):
+    def __init__(self, encrypted_file: EncryptedJsonFile, key_provider: SymmetricKeyProvider, eml_dir: Path):
+        self.file = encrypted_file
+        self.key_provider = key_provider
+        self.eml_dir = eml_dir
+        self._box: CryptoBox | None = None
+        self._data_cache: dict[str, Any] | None = None
+        self._cache_lock = threading.RLock()
+
+    def warm_crypto(self) -> None:
+        self.box()
+        self.data()
+
+    def data(self) -> dict[str, Any]:
+        with self._cache_lock:
+            if self._data_cache is None:
+                self._data_cache = self.normalize_data(self.file.load())
+            return self._data_cache
+
+    def normalize_data(self, data: dict[str, Any]) -> dict[str, Any]:
+        data.setdefault("version", 1)
+        data.setdefault("mailboxes", {})
+        data.setdefault("messages", {})
+        data.setdefault("bodies", {})
+        data.setdefault("search_index", {})
+        data.setdefault("drafts", [])
+        return data
+
+    def save_data(self, data: dict[str, Any]) -> None:
+        with self._cache_lock:
+            data = self.normalize_data(data)
+            self.file.save(data)
+            self._data_cache = data
+
+    def messages(self, include_spam: bool = False) -> list[dict[str, Any]]:
+        values = self.data().get("messages", {}).values()
+        messages = [
+            item
+            for item in values
+            if isinstance(item, dict) and self.message_has_eml(item) and (include_spam or not item.get("spam"))
+        ]
+        messages.sort(key=lambda item: item.get("received_at") or item.get("sent_at") or "", reverse=True)
+        return messages
+
+    def save_sync(self, result: SyncResult) -> None:
+        data = self.data()
+        data["mailboxes"][result.account_id] = result.mailboxes
+        new_keys = {message["key"] for message in result.messages}
+        old_keys = {key for key, value in data["messages"].items() if value.get("account_id") == result.account_id}
+        stale_keys = old_keys - new_keys
+        for key in stale_keys:
+            old_message = data["messages"].get(key)
+            if isinstance(old_message, dict):
+                self.remove_eml(old_message)
+            del data["messages"][key]
+            data["bodies"].pop(key, None)
+        for message in result.messages:
+            if not self.message_has_eml(message):
+                raise MuratError(f"message missing encrypted EML: {message.get('key')}")
+            data["messages"][message["key"]] = message
+        data["bodies"] = {}
+        data["search_index"] = update_search_index(data.get("search_index", {}), old_keys, result.search_docs)
+        data["updated_at"] = now_utc()
+        self.save_data(data)
+
+    def search(self, query: str, include_spam: bool = False) -> list[dict[str, Any]]:
+        data = self.data()
+        tokens = tokenize(query)
+        if not tokens:
+            return []
+        index = data.get("search_index") if isinstance(data.get("search_index"), dict) else {}
+        posting_sets = []
+        for token in tokens:
+            keys = set(index.get(token, [])) if isinstance(index.get(token), list) else set()
+            if not keys:
+                return []
+            posting_sets.append(keys)
+        posting_sets.sort(key=len)
+        candidates = posting_sets[0]
+        for keys in posting_sets[1:]:
+            candidates &= keys
+        messages_by_key = data.get("messages") if isinstance(data.get("messages"), dict) else {}
+        messages = [messages_by_key[key] for key in sorted(candidates) if isinstance(messages_by_key.get(key), dict)]
+        messages = [item for item in messages if self.message_has_eml(item) and (include_spam or not item.get("spam"))]
+        messages.sort(key=lambda item: item.get("received_at") or item.get("sent_at") or "", reverse=True)
+        return messages
+
+    def body(self, message_key: str) -> dict[str, Any] | None:
+        message = self.data().get("messages", {}).get(message_key)
+        return self.body_from_message(message) if isinstance(message, dict) else None
+
+    def body_from_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(message, dict) or not self.message_has_eml(message):
+            return None
+        plaintext = self.box().open(self.eml_path(str(message["eml_rel"])).read_bytes())
+        return {"body": eml_body_text(plaintext), "fetched_at": str(message.get("updated_at") or ""), "eml": plaintext.decode(errors="replace")}
+
+    def save_body(self, message_key: str, body: dict[str, Any]) -> None:
+        data = self.data()
+        data["bodies"][message_key] = body
+        data["search_index"] = build_search_index(data)
+        self.save_data(data)
+
+    def write_message_eml(self, message: dict[str, Any], body: str) -> str:
+        eml = message_to_eml(message, body)
+        rel = eml_rel(message)
+        message["eml_rel"] = rel
+        atomic_write(self.eml_path(rel), self.box().seal(eml), mode=0o600)
+        return eml.decode(errors="replace")
+
+    def box(self) -> CryptoBox:
+        if self._box is None:
+            self._box = CryptoBox(self.key_provider.ensure_key())
+        return self._box
+
+    def eml_path(self, rel: str) -> Path:
+        return self.eml_dir / rel
+
+    def message_has_eml(self, message: dict[str, Any]) -> bool:
+        rel = message.get("eml_rel")
+        return isinstance(rel, str) and self.eml_path(rel).is_file()
+
+    def remove_eml(self, message: dict[str, Any]) -> None:
+        rel = message.get("eml_rel")
+        if not isinstance(rel, str):
+            return
+        try:
+            self.eml_path(rel).unlink()
+        except FileNotFoundError:
+            pass
+
+    def save_draft(self, draft: ComposeDraft) -> None:
+        data = self.data()
+        data["drafts"].append(
+            {
+                "created_at": now_utc(),
+                "account_id": draft.account_id,
+                "to": draft.to,
+                "cc": draft.cc,
+                "bcc": draft.bcc,
+                "subject": draft.subject,
+                "body": draft.body,
+                "reply_to_message_id": draft.reply_to_message_id,
+                "references": draft.references or [],
+            }
+        )
+        self.save_data(data)
+
+
+def tokenize(text: str) -> list[str]:
+    seen = set()
+    tokens = []
+    for token in re.findall(r"[a-z0-9][a-z0-9_.+-]{1,}", text.lower()):
+        if token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+    return tokens
+
+
+def build_search_index(data: dict[str, Any], eml_text_by_key: dict[str, str] | None = None) -> dict[str, list[str]]:
+    eml_text_by_key = eml_text_by_key or {}
+    messages = data.get("messages") if isinstance(data.get("messages"), dict) else {}
+    bodies = data.get("bodies") if isinstance(data.get("bodies"), dict) else {}
+    index: dict[str, set[str]] = {}
+    for key, message in messages.items():
+        if not isinstance(key, str) or not isinstance(message, dict):
+            continue
+        body = bodies.get(key) if isinstance(bodies.get(key), dict) else {}
+        haystack = "\n".join(
+            [
+                str(message.get("subject") or ""),
+                str(message.get("from") or ""),
+                " ".join(str(item) for item in message.get("to", []) if isinstance(item, str)),
+                " ".join(str(item) for item in message.get("cc", []) if isinstance(item, str)),
+                " ".join(str(item) for item in message.get("tags", []) if isinstance(item, str)),
+                eml_text_by_key.get(key, ""),
+                str(body.get("body") or ""),
+            ]
+        )
+        for token in tokenize(haystack):
+            index.setdefault(token, set()).add(key)
+    return {token: sorted(keys) for token, keys in sorted(index.items())}
+
+
+def update_search_index(existing: Any, remove_keys: set[str], add_docs: dict[str, str]) -> dict[str, list[str]]:
+    index: dict[str, set[str]] = {}
+    if isinstance(existing, dict):
+        for token, keys in existing.items():
+            if not isinstance(token, str) or not isinstance(keys, list):
+                continue
+            kept = {key for key in keys if isinstance(key, str) and key not in remove_keys}
+            if kept:
+                index[token] = kept
+    for key, text in add_docs.items():
+        for token in tokenize(text):
+            index.setdefault(token, set()).add(key)
+    return {token: sorted(keys) for token, keys in sorted(index.items()) if keys}
+
+
+def report_progress(progress: Any, message: str) -> None:
+    if progress is not None:
+        progress(message)
+
+
+def eml_rel(message: dict[str, Any]) -> str:
+    message_hash = hashlib.sha256(str(message.get("key") or message.get("id") or secrets.token_hex(8)).encode()).hexdigest()
+    return f"{message_hash[:2]}/{message_hash[2:]}.eml.enc"
+
+
+def message_to_eml(message: dict[str, Any], body: str) -> bytes:
+    headers = [
+        ("From", str(message.get("from") or "")),
+        ("To", ", ".join(str(item) for item in message.get("to", []) if isinstance(item, str))),
+        ("Cc", ", ".join(str(item) for item in message.get("cc", []) if isinstance(item, str))),
+        ("Subject", str(message.get("subject") or "")),
+        ("Date", str(message.get("received_at") or message.get("sent_at") or "")),
+        ("Message-Id", " ".join(str(item) for item in message.get("message_ids", []) if isinstance(item, str))),
+        ("X-Murat-Key", str(message.get("key") or "")),
+        ("X-Murat-Tags", ", ".join(str(item) for item in message.get("tags", []) if isinstance(item, str))),
+        ("X-Murat-Spam", "yes" if message.get("spam") else "no"),
+        ("Content-Type", "text/plain; charset=utf-8"),
+    ]
+    rendered = [f"{name}: {sanitize_header(value)}" for name, value in headers if value]
+    return ("\n".join(rendered) + "\n\n" + body).encode()
+
+
+def sanitize_header(value: str) -> str:
+    return re.sub(r"[\r\n]+", " ", value).strip()
+
+
+def eml_body_text(value: bytes) -> str:
+    text = value.decode(errors="replace")
+    parts = re.split(r"\r?\n\r?\n", text, maxsplit=1)
+    return parts[1] if len(parts) == 2 else text
+
+
+def account_capabilities(account: dict[str, Any]) -> set[str]:
+    caps = account.get("accountCapabilities")
+    return set(caps.keys()) if isinstance(caps, dict) else set()
+
+
+class JmapClient:
+    def __init__(self, timeout: float = 25.0):
+        self.timeout = timeout
+
+    def fetch_session(self, account: Account) -> JmapSession:
+        return self.fetch_session_url(account.session_url, account.auth_header())
+
+    def fetch_session_url(self, session_url: str, auth_header: str | None = None) -> JmapSession:
+        body = self.http_json("GET", session_url, auth_header)
+        api_url = require_str(body.get("apiUrl"), "session apiUrl")
+        capabilities = set(body.get("capabilities", {}).keys()) if isinstance(body.get("capabilities"), dict) else set()
+        primary = body.get("primaryAccounts") if isinstance(body.get("primaryAccounts"), dict) else {}
+        accounts = body.get("accounts") if isinstance(body.get("accounts"), dict) else {}
+        clean_accounts = {str(key): value for key, value in accounts.items() if isinstance(value, dict)}
+        return JmapSession(
+            api_url=api_url,
+            download_url=body.get("downloadUrl") if isinstance(body.get("downloadUrl"), str) else None,
+            capabilities=capabilities,
+            accounts=clean_accounts,
+            primary_accounts={str(key): str(value) for key, value in primary.items() if isinstance(value, str)},
+        )
+
+    def discover_session_url(self, email_addr: str) -> str:
+        errors = []
+        candidates = jmap_discovery_candidates(email_addr)
+        for session_url in candidates:
+            try:
+                self.fetch_session_url(session_url)
+                return session_url
+            except MuratError as error:
+                message = str(error)
+                if "HTTP 401" in message or "HTTP 403" in message:
+                    return session_url
+                errors.append(f"{session_url}: {message}")
+        tried = ", ".join(candidates) if candidates else "none"
+        detail = f" Last error: {errors[-1]}" if errors else ""
+        raise MuratError(f"could not discover JMAP session. Tried: {tried}.{detail}")
+
+    def discover_session(self, account: Account) -> tuple[str, JmapSession]:
+        session_url = self.discover_session_url(account.email)
+        probe = Account(
+            id=account.id,
+            name=account.name,
+            email=account.email,
+            username=account.username,
+            session_url=session_url,
+            auth_kind=account.auth_kind,
+            secret=account.secret,
+            primary_mail_account_id=account.primary_mail_account_id,
+            created_at=account.created_at,
+            updated_at=account.updated_at,
+        )
+        return session_url, self.fetch_session(probe)
+
+    def call(
+        self,
+        account: Account,
+        session: JmapSession,
+        using: list[str],
+        name: str,
+        arguments: dict[str, Any],
+        call_id: str,
+    ) -> dict[str, Any]:
+        response = self.request(account, session, using, [[name, arguments, call_id]])
+        return response_args(response, call_id)
+
+    def request(self, account: Account, session: JmapSession, using: list[str], calls: list[list[Any]]) -> dict[str, Any]:
+        payload = {"using": using, "methodCalls": calls}
+        return self.http_json("POST", session.api_url, account.auth_header(), payload)
+
+    def http_json(self, method: str, url: str, auth_header: str | None, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        data = None if payload is None else json.dumps(payload).encode()
+        headers = {"Accept": "application/json"}
+        if auth_header:
+            headers["Authorization"] = auth_header
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as error:
+            raise MuratError(http_error_message(error, url)) from error
+        except urllib.error.URLError as error:
+            raise MuratError(f"JMAP request failed for {url}: {error.reason}") from error
+        try:
+            decoded = json.loads(raw.decode())
+        except json.JSONDecodeError as error:
+            raise MuratError("JMAP server returned invalid JSON") from error
+        if not isinstance(decoded, dict):
+            raise MuratError("JMAP server returned non-object JSON")
+        return decoded
+
+    def sync_account(self, account: Account, page_size: int, progress: Any = None, message_sink: Any = None) -> SyncResult:
+        session = self.fetch_session(account)
+        mail_account_id = account.primary_mail_account_id or session.primary_mail_account_id
+        if not mail_account_id or CAP_MAIL not in session.capabilities:
+            raise MuratError(f"{account.email}: server does not advertise JMAP Mail")
+        report_progress(progress, f"{account.email}: fetching tags")
+        mailboxes = self.call(
+            account,
+            session,
+            [CAP_MAIL],
+            "Mailbox/get",
+            {
+                "accountId": mail_account_id,
+                "ids": None,
+                "properties": ["id", "name", "parentId", "role", "sortOrder", "totalEmails", "unreadEmails", "myRights"],
+            },
+            "murat-mailbox-get",
+        ).get("list", [])
+        if not isinstance(mailboxes, list):
+            mailboxes = []
+        clean_mailboxes = [box for box in mailboxes if isinstance(box, dict)]
+        paths = mailbox_paths(clean_mailboxes)
+        spam_ids = spam_mailbox_ids(clean_mailboxes)
+        messages = []
+        search_docs: dict[str, str] = {}
+        position = 0
+        seen_ids: set[str] = set()
+        page_size = max(1, page_size)
+
+        while True:
+            report_progress(progress, f"{account.email}: querying messages at {position}")
+            query_args = self.call(
+                account,
+                session,
+                [CAP_MAIL],
+                "Email/query",
+                {
+                    "accountId": mail_account_id,
+                    "position": position,
+                    "limit": page_size,
+                    "sort": [{"property": "receivedAt", "isAscending": False}],
+                },
+                f"murat-email-query-{position}",
+            )
+            ids = [item for item in query_args.get("ids", []) if isinstance(item, str)] if isinstance(query_args.get("ids"), list) else []
+            if not ids:
+                break
+            new_ids = [message_id for message_id in ids if message_id not in seen_ids]
+            if not new_ids:
+                break
+            for message_id in new_ids:
+                seen_ids.add(message_id)
+            total = query_args.get("total") if isinstance(query_args.get("total"), int) else None
+            suffix = f"/{total}" if total is not None else ""
+            report_progress(progress, f"{account.email}: downloading {position + 1}-{position + len(new_ids)}{suffix}")
+            email_args = self.call(
+                account,
+                session,
+                [CAP_MAIL],
+                "Email/get",
+                {
+                    "accountId": mail_account_id,
+                    "ids": new_ids,
+                    "properties": [
+                        "id",
+                        "mailboxIds",
+                        "receivedAt",
+                        "sentAt",
+                        "subject",
+                        "header:subject",
+                        "header:subject:asRaw",
+                        "keywords",
+                        "from",
+                        "to",
+                        "cc",
+                        "replyTo",
+                        "messageId",
+                        "references",
+                        "hasAttachment",
+                        "attachments",
+                        "bodyValues",
+                        "textBody",
+                        "htmlBody",
+                    ],
+                    "bodyProperties": ["partId", "type", "charset", "name", "size", "disposition", "blobId", "cid"],
+                    "fetchTextBodyValues": True,
+                    "fetchHTMLBodyValues": True,
+                    "maxBodyValueBytes": 300000,
+                },
+                f"murat-email-get-{position}",
+            )
+            for item in email_args.get("list", []):
+                if not isinstance(item, dict):
+                    continue
+                message = normalize_message(account, mail_account_id, item, paths, spam_ids)
+                body = body_text(item)
+                if message_sink is not None:
+                    search_docs[message["key"]] = message_sink(message, body)
+                else:
+                    message["eml_rel"] = eml_rel(message)
+                    search_docs[message["key"]] = message_to_eml(message, body).decode(errors="replace")
+                messages.append(message)
+                report_progress(progress, f"{account.email}: encrypted {len(messages)} messages")
+            position += len(ids)
+            if len(ids) < page_size or (total is not None and position >= total):
+                break
+
+        report_progress(progress, f"{account.email}: indexed {len(messages)} messages")
+        return SyncResult(account_id=account.id, mailboxes=clean_mailboxes, messages=messages, search_docs=search_docs)
+
+    def fetch_body(self, account: Account, message: dict[str, Any]) -> dict[str, Any]:
+        session = self.fetch_session(account)
+        mail_account_id = message.get("jmap_account_id") or account.primary_mail_account_id or session.primary_mail_account_id
+        if not mail_account_id:
+            raise MuratError("no JMAP mail account found")
+        args = self.call(
+            account,
+            session,
+            [CAP_MAIL],
+            "Email/get",
+            {
+                "accountId": mail_account_id,
+                "ids": [message["id"]],
+                "properties": ["id", "subject", "bodyValues", "textBody", "htmlBody", "attachments"],
+                "bodyProperties": ["partId", "type", "charset", "name", "size", "disposition", "blobId", "cid"],
+                "fetchTextBodyValues": True,
+                "fetchHTMLBodyValues": True,
+                "maxBodyValueBytes": 300000,
+            },
+            "murat-email-body-get",
+        )
+        items = args.get("list", [])
+        email_obj = items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else {}
+        text = body_text(email_obj)
+        return {"body": text, "fetched_at": now_utc(), "attachments": email_obj.get("attachments") or []}
+
+    def send(self, account: Account, draft: ComposeDraft) -> None:
+        session = self.fetch_session(account)
+        if CAP_SUBMISSION not in session.capabilities:
+            raise MuratError("server does not advertise JMAP submission")
+        mail_account_id = submission_account_id(session, account.primary_mail_account_id)
+        if not mail_account_id:
+            raise MuratError("no submission-capable JMAP account found")
+        identity = self.fetch_identity(account, session, mail_account_id)
+        mailboxes = self.fetch_mailboxes(account, session, mail_account_id)
+        drafts_id = mailbox_id_by_role(mailboxes, "drafts")
+        sent_id = mailbox_id_by_role(mailboxes, "sent")
+        if not drafts_id:
+            raise MuratError("server did not advertise a Drafts mailbox")
+        recipients = recipient_map(draft)
+        if not any(recipients.values()):
+            raise MuratError("add at least one recipient")
+        email_create = compose_email(account, identity, draft, drafts_id, recipients)
+        submission_create = {"emailId": "#draft", "identityId": identity.id}
+        cleanup = {"keywords/$draft": None}
+        if sent_id:
+            cleanup[f"mailboxIds/{patch_path(drafts_id)}"] = None
+            cleanup[f"mailboxIds/{patch_path(sent_id)}"] = True
+        response = self.request(
+            account,
+            session,
+            [CAP_MAIL, CAP_SUBMISSION],
+            [
+                ["Email/set", {"accountId": mail_account_id, "create": {"draft": email_create}}, "murat-compose-email-set"],
+                [
+                    "EmailSubmission/set",
+                    {
+                        "accountId": mail_account_id,
+                        "create": {"submission": submission_create},
+                        "onSuccessUpdateEmail": {"#submission": cleanup},
+                    },
+                    "murat-compose-submission-set",
+                ],
+            ],
+        )
+        throw_if_rejected(response_args(response, "murat-compose-email-set"), "draft", "server rejected draft creation")
+        throw_if_rejected(response_args(response, "murat-compose-submission-set"), "submission", "server rejected submission")
+
+    def fetch_identity(self, account: Account, session: JmapSession, mail_account_id: str) -> SendIdentity:
+        args = self.call(
+            account,
+            session,
+            [CAP_SUBMISSION],
+            "Identity/get",
+            {"accountId": mail_account_id, "ids": None, "properties": ["id", "name", "email"]},
+            "murat-identity-get",
+        )
+        identities = []
+        for item in args.get("list", []):
+            if isinstance(item, dict) and item.get("id") and item.get("email"):
+                identities.append(SendIdentity(str(item["id"]), str(item["email"]), str(item.get("name") or "")))
+        preferred = account.email.lower()
+        for identity in identities:
+            if identity.email.lower() == preferred:
+                return identity
+        if identities:
+            return identities[0]
+        raise MuratError("server did not advertise a send identity")
+
+    def fetch_mailboxes(self, account: Account, session: JmapSession, mail_account_id: str) -> list[dict[str, Any]]:
+        args = self.call(
+            account,
+            session,
+            [CAP_MAIL],
+            "Mailbox/get",
+            {"accountId": mail_account_id, "ids": None, "properties": ["id", "name", "role"]},
+            "murat-compose-mailbox-get",
+        )
+        return [item for item in args.get("list", []) if isinstance(item, dict)]
+
+
+def response_args(response: dict[str, Any], call_id: str) -> dict[str, Any]:
+    for item in reversed(response.get("methodResponses", [])):
+        if not isinstance(item, list) or len(item) != 3:
+            continue
+        name, args, item_id = item
+        if item_id != call_id:
+            continue
+        if name == "error":
+            if isinstance(args, dict):
+                message = args.get("description") or args.get("type") or "JMAP call failed"
+                raise MuratError(str(message))
+            raise MuratError("JMAP call failed")
+        if isinstance(args, dict):
+            return args
+    raise MuratError(f"JMAP response omitted {call_id}")
+
+
+def require_str(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise MuratError(f"JMAP omitted {name}")
+    return value
+
+
+def domain_from_email(email_addr: str) -> str:
+    if "@" not in email_addr or email_addr.endswith("@"):
+        raise MuratError("email address must contain a domain")
+    return email_addr.rsplit("@", 1)[1].lower()
+
+
+def jmap_discovery_candidates(email_addr: str) -> list[str]:
+    domain = domain_from_email(email_addr)
+    candidates = []
+    try:
+        candidates.extend(srv_session_url(record) for record in order_srv_records(resolve_jmap_srv(domain)))
+    except MuratError:
+        pass
+    candidates.append(f"https://{domain}/.well-known/jmap")
+    seen = set()
+    unique = []
+    for url in candidates:
+        if url in seen:
+            continue
+        seen.add(url)
+        unique.append(url)
+    return unique
+
+
+def resolve_jmap_srv(domain: str) -> list[SrvRecord]:
+    query = urllib.parse.urlencode({"name": f"_jmap._tcp.{domain}", "type": "SRV"})
+    body = fetch_json_url(f"https://cloudflare-dns.com/dns-query?{query}", {"Accept": "application/dns-json"}, timeout=8.0)
+    status = body.get("Status")
+    if status not in (0, 3):
+        raise MuratError(f"DNS SRV lookup failed: status {status}")
+    answers = body.get("Answer") if isinstance(body.get("Answer"), list) else []
+    records = []
+    for answer in answers:
+        if isinstance(answer, dict) and isinstance(answer.get("data"), str):
+            records.extend(parse_srv_answer(answer["data"]))
+    return records
+
+
+def fetch_json_url(url: str, headers: dict[str, str], timeout: float) -> dict[str, Any]:
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as error:
+        raise MuratError(f"HTTP {error.code} for {url}") from error
+    except urllib.error.URLError as error:
+        raise MuratError(f"request failed for {url}: {error.reason}") from error
+    try:
+        decoded = json.loads(raw.decode())
+    except json.JSONDecodeError as error:
+        raise MuratError("server returned invalid JSON") from error
+    if not isinstance(decoded, dict):
+        raise MuratError("server returned non-object JSON")
+    return decoded
+
+
+def http_error_message(error: urllib.error.HTTPError, url: str) -> str:
+    body = error.read().decode(errors="replace").strip()
+    detail = ""
+    if body:
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            title = str(payload.get("title") or "").strip()
+            problem = str(payload.get("detail") or payload.get("description") or "").strip()
+            detail = " - ".join(item for item in (title, problem) if item)
+        else:
+            detail = body[:200]
+    auth = []
+    if error.headers:
+        auth = error.headers.get_all("www-authenticate", []) or []
+    message = f"JMAP HTTP {error.code} for {url}"
+    if detail:
+        message = f"{message}: {detail.rstrip('.')}"
+    if auth:
+        message = f"{message}. auth: {'; '.join(auth)}"
+    return message
+
+
+def parse_srv_answer(data: str) -> list[SrvRecord]:
+    parts = data.strip().split()
+    if len(parts) < 4:
+        return []
+    try:
+        priority = int(parts[0])
+        weight = int(parts[1])
+        port = int(parts[2])
+    except ValueError:
+        return []
+    target = " ".join(parts[3:]).strip().rstrip(".")
+    if not target or target == ".":
+        return []
+    return [SrvRecord(priority=priority, weight=weight, port=port, target=target)]
+
+
+def order_srv_records(records: list[SrvRecord]) -> list[SrvRecord]:
+    ordered = []
+    priorities = sorted({record.priority for record in records})
+    for priority in priorities:
+        ordered.extend(weighted_srv_order([record for record in records if record.priority == priority]))
+    return ordered
+
+
+def weighted_srv_order(records: list[SrvRecord]) -> list[SrvRecord]:
+    remaining = records[:]
+    ordered = []
+    while remaining:
+        total = sum(max(0, record.weight) for record in remaining)
+        if total <= 0:
+            ordered.extend(sorted(remaining, key=lambda record: record.target))
+            break
+        pick = secrets.randbelow(total) + 1
+        running = 0
+        for index, record in enumerate(remaining):
+            running += max(0, record.weight)
+            if running >= pick:
+                ordered.append(remaining.pop(index))
+                break
+    return ordered
+
+
+def srv_session_url(record: SrvRecord) -> str:
+    netloc = record.target if record.port == 443 else f"{record.target}:{record.port}"
+    return urllib.parse.urlunparse(("https", netloc, "/.well-known/jmap", "", "", ""))
+
+
+def normalize_message(
+    account: Account,
+    jmap_account_id: str,
+    message: dict[str, Any],
+    paths: dict[str, str],
+    spam_mailboxes: set[str],
+) -> dict[str, Any]:
+    message_id = str(message.get("id") or "")
+    key = f"{account.id}:{urllib.parse.quote(jmap_account_id, safe='')}:{urllib.parse.quote(message_id, safe='')}"
+    keywords = message.get("keywords") if isinstance(message.get("keywords"), dict) else {}
+    mailbox_ids = list((message.get("mailboxIds") or {}).keys()) if isinstance(message.get("mailboxIds"), dict) else []
+    tags = sorted({paths.get(mailbox_id, mailbox_id) for mailbox_id in mailbox_ids if paths.get(mailbox_id, mailbox_id)})
+    spam = is_spam_message(keywords, tags) or any(mailbox_id in spam_mailboxes for mailbox_id in mailbox_ids)
+    if spam and "spam" not in tags:
+        tags.append("spam")
+    return {
+        "key": key,
+        "id": message_id,
+        "account_id": account.id,
+        "account_email": account.email,
+        "jmap_account_id": jmap_account_id,
+        "mailbox_ids": mailbox_ids,
+        "tags": tags,
+        "spam": spam,
+        "subject": subject_text(message),
+        "from": ", ".join(address_strings(message.get("from"))),
+        "to": address_strings(message.get("to")),
+        "cc": address_strings(message.get("cc")),
+        "reply_to": address_strings(message.get("replyTo")),
+        "received_at": str(message.get("receivedAt") or ""),
+        "sent_at": str(message.get("sentAt") or ""),
+        "read": keywords.get("$seen") is True,
+        "flagged": keywords.get("$flagged") is True,
+        "message_ids": [str(item) for item in message.get("messageId", [])] if isinstance(message.get("messageId"), list) else [],
+        "references": [str(item) for item in message.get("references", [])] if isinstance(message.get("references"), list) else [],
+        "has_attachment": message.get("hasAttachment") is True,
+    }
+
+
+def mailbox_paths(mailboxes: list[dict[str, Any]]) -> dict[str, str]:
+    by_id = {str(box["id"]): box for box in mailboxes if isinstance(box.get("id"), str)}
+    cache: dict[str, str] = {}
+
+    def path_for(mailbox_id: str, seen: set[str] | None = None) -> str:
+        if mailbox_id in cache:
+            return cache[mailbox_id]
+        seen = seen or set()
+        if mailbox_id in seen:
+            return mailbox_id
+        seen.add(mailbox_id)
+        box = by_id.get(mailbox_id)
+        if not box:
+            cache[mailbox_id] = mailbox_id
+            return mailbox_id
+        name = str(box.get("name") or mailbox_id).strip() or mailbox_id
+        parent_id = box.get("parentId")
+        if isinstance(parent_id, str) and parent_id in by_id:
+            name = f"{path_for(parent_id, seen)}/{name}"
+        cache[mailbox_id] = name
+        return name
+
+    return {mailbox_id: path_for(mailbox_id) for mailbox_id in by_id}
+
+
+def spam_mailbox_ids(mailboxes: list[dict[str, Any]]) -> set[str]:
+    spam_roles = {"junk", "spam"}
+    ids = set()
+    for box in mailboxes:
+        mailbox_id = box.get("id")
+        role = str(box.get("role") or "").lower()
+        if isinstance(mailbox_id, str) and role in spam_roles:
+            ids.add(mailbox_id)
+    return ids
+
+
+def is_spam_message(keywords: dict[str, Any], tags: list[str]) -> bool:
+    if keywords.get("$junk") is True or keywords.get("junk") is True or keywords.get("spam") is True:
+        return True
+    spam_names = {"spam", "junk", "junk mail", "bulk mail"}
+    for tag in tags:
+        parts = [part.strip().lower() for part in tag.split("/")]
+        if any(part in spam_names for part in parts):
+            return True
+    return False
+
+
+def subject_text(message: dict[str, Any]) -> str:
+    for key, value in message.items():
+        if key.lower() in ("header:subject", "header:subject:asraw", "header:subject:astext") and isinstance(value, str) and value.strip():
+            return decode_mime_header(value.strip())
+    return decode_mime_header(str(message.get("subject") or ""))
+
+
+def decode_mime_header(value: str) -> str:
+    try:
+        parts = email.header.decode_header(value)
+        decoded = []
+        for part, charset in parts:
+            if isinstance(part, bytes):
+                decoded.append(part.decode(charset or "utf-8", errors="replace"))
+            else:
+                decoded.append(part)
+        return "".join(decoded)
+    except Exception:
+        return value
+
+
+def address_strings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    output = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        addr = str(item.get("email") or "")
+        name = decode_mime_header(str(item.get("name") or ""))
+        if name and addr:
+            output.append(f"{name} <{addr}>")
+        elif addr:
+            output.append(addr)
+    return output
+
+
+def body_text(email_obj: dict[str, Any]) -> str:
+    values = email_obj.get("bodyValues") if isinstance(email_obj.get("bodyValues"), dict) else {}
+    html_value = body_for_parts(values, email_obj.get("htmlBody"))
+    if html_value:
+        return html_to_rich_text(html_value)
+    text = body_for_parts(values, email_obj.get("textBody"))
+    if text:
+        return text
+    return ""
+
+
+def body_for_parts(values: dict[str, Any], parts: Any) -> str:
+    if not isinstance(parts, list):
+        return ""
+    chunks = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        part_id = part.get("partId")
+        value = values.get(part_id) if isinstance(part_id, str) else None
+        if isinstance(value, dict) and isinstance(value.get("value"), str):
+            chunks.append(value["value"])
+    return "\n\n".join(chunks).strip()
+
+
+def strip_html(value: str) -> str:
+    value = re.sub(r"(?is)<(script|style).*?</\1>", "", value)
+    value = re.sub(r"(?i)<br\s*/?>", "\n", value)
+    value = re.sub(r"(?i)</p>", "\n\n", value)
+    value = re.sub(r"<[^>]+>", "", value)
+    return html.unescape(value).strip()
+
+
+def html_to_rich_text(value: str) -> str:
+    parser = HtmlRichTextExtractor()
+    try:
+        parser.feed(value)
+        parser.close()
+        return parser.text()
+    except Exception:
+        return strip_html(value)
+
+
+class HtmlRichTextExtractor(HTMLParser):
+    block_tags = {
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "div",
+        "dl",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hr",
+        "li",
+        "main",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "tr",
+        "ul",
+    }
+    bold_tags = {"b", "strong"}
+    italic_tags = {"i", "em", "cite"}
+    underline_tags = {"u", "ins"}
+    void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.skip_depth = 0
+        self.marker_stack: list[tuple[bool, bool, bool]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in ("script", "style"):
+            self.skip_depth += 1
+            return
+        if self.skip_depth:
+            return
+        if tag == "br":
+            self.newline()
+            return
+        if tag in self.block_tags:
+            self.newline()
+            if tag == "li":
+                self.write("- ")
+        if tag in self.void_tags:
+            return
+        bold, italic, underline = self.markers_for(tag, attrs)
+        self.marker_stack.append((bold, italic, underline))
+        if bold:
+            self.write("**")
+        if italic:
+            self.write("*")
+        if underline:
+            self.write("__")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in ("script", "style") and self.skip_depth:
+            self.skip_depth -= 1
+            return
+        if self.skip_depth:
+            return
+        bold, italic, underline = self.marker_stack.pop() if self.marker_stack else self.markers_for(tag, [])
+        if underline:
+            self.write("__")
+        if italic:
+            self.write("*")
+        if bold:
+            self.write("**")
+        if tag in self.block_tags:
+            self.newline()
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_depth:
+            return
+        self.write(data)
+
+    def newline(self) -> None:
+        if not self.parts or self.parts[-1].endswith("\n"):
+            return
+        self.parts.append("\n")
+
+    def write(self, value: str) -> None:
+        if not value:
+            return
+        self.parts.append(value)
+
+    def markers_for(self, tag: str, attrs: list[tuple[str, str | None]]) -> tuple[bool, bool, bool]:
+        attrs_by_name = {name.lower(): value or "" for name, value in attrs}
+        style = attrs_by_name.get("style", "").lower()
+        bold = tag in self.bold_tags or "font-weight:bold" in style.replace(" ", "") or re.search(r"font-weight\s*:\s*[6-9]00", style) is not None
+        italic = tag in self.italic_tags or "font-style:italic" in style.replace(" ", "")
+        underline = tag in self.underline_tags or "text-decoration:underline" in style.replace(" ", "") or "text-decoration-line:underline" in style.replace(" ", "")
+        return bold, italic, underline
+
+    def text(self) -> str:
+        text = "".join(self.parts)
+        text = text.replace("\r", "")
+        text = re.sub(r"[ \t\f\v]+", " ", text)
+        text = re.sub(r" *\n *", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+
+def submission_account_id(session: JmapSession, preferred: str | None) -> str | None:
+    candidates = [preferred, session.primary_accounts.get(CAP_SUBMISSION), session.primary_mail_account_id]
+    candidates.extend(account_id for account_id, account in session.accounts.items() if CAP_SUBMISSION in account_capabilities(account))
+    seen = set()
+    for account_id in candidates:
+        if not account_id or account_id in seen:
+            continue
+        seen.add(account_id)
+        if CAP_SUBMISSION in account_capabilities(session.accounts.get(account_id, {})):
+            return account_id
+    return None
+
+
+def mailbox_id_by_role(mailboxes: list[dict[str, Any]], role: str) -> str | None:
+    for mailbox in mailboxes:
+        if mailbox.get("role") == role and mailbox.get("id"):
+            return str(mailbox["id"])
+    for mailbox in mailboxes:
+        if str(mailbox.get("name") or "").lower() == role and mailbox.get("id"):
+            return str(mailbox["id"])
+    return None
+
+
+def patch_path(value: str) -> str:
+    return value.replace("~", "~0").replace("/", "~1")
+
+
+def recipient_map(draft: ComposeDraft) -> dict[str, list[dict[str, str]]]:
+    return {"to": address_objects(draft.to), "cc": address_objects(draft.cc), "bcc": address_objects(draft.bcc)}
+
+
+def address_objects(value: str) -> list[dict[str, str]]:
+    objects = []
+    for name, addr in email.utils.getaddresses([value]):
+        if not addr:
+            continue
+        entry = {"email": addr}
+        if name:
+            entry["name"] = name
+        objects.append(entry)
+    return objects
+
+
+def compose_email(
+    account: Account,
+    identity: SendIdentity,
+    draft: ComposeDraft,
+    drafts_id: str,
+    recipients: dict[str, list[dict[str, str]]],
+) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "mailboxIds": {drafts_id: True},
+        "keywords": {"$draft": True},
+        "from": [{"email": identity.email, "name": identity.name or account.name}],
+        "to": recipients["to"],
+        "subject": draft.subject.strip(),
+        "textBody": [{"partId": "body", "type": "text/plain"}],
+        "bodyValues": {"body": {"value": draft.body}},
+    }
+    if recipients["cc"]:
+        data["cc"] = recipients["cc"]
+    if recipients["bcc"]:
+        data["bcc"] = recipients["bcc"]
+    if draft.reply_to_message_id:
+        data["inReplyTo"] = [draft.reply_to_message_id]
+        refs = list(dict.fromkeys((draft.references or []) + [draft.reply_to_message_id]))
+        if refs:
+            data["references"] = refs
+    return data
+
+
+def throw_if_rejected(args: dict[str, Any], create_id: str, message: str) -> None:
+    not_created = args.get("notCreated") if isinstance(args.get("notCreated"), dict) else {}
+    rejection = not_created.get(create_id) if isinstance(not_created, dict) else None
+    if not isinstance(rejection, dict):
+        return
+    details = ". ".join(str(rejection.get(key)) for key in ("type", "description") if rejection.get(key))
+    raise MuratError(f"{message}{': ' + details if details else ''}")
+
+
+@dataclass
+class Services:
+    paths: Paths
+    config: dict[str, Any]
+    key_provider: SymmetricKeyProvider
+    accounts: AccountsStore
+    mail: MailStore
+    jmap: JmapClient
+
+
+def build_services() -> Services:
+    paths = xdg_paths()
+    config = load_config(paths)
+    recipient = str(config_value(config, "crypto", "gpg_recipient", ""))
+    key_provider = GpgWrappedKeyProvider(paths.key_file, recipient)
+    accounts_file = EncryptedJsonFile(paths.accounts_file, key_provider, {"version": 1, "accounts": []})
+    mail_file = EncryptedJsonFile(
+        paths.mail_file,
+        key_provider,
+        {"version": 1, "mailboxes": {}, "messages": {}, "bodies": {}, "search_index": {}, "drafts": []},
+    )
+    return Services(
+        paths=paths,
+        config=config,
+        key_provider=key_provider,
+        accounts=AccountsStore(accounts_file),
+        mail=EncryptedJsonMailStore(mail_file, key_provider, paths.data_dir / "eml"),
+        jmap=JmapClient(),
+    )
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    paths = xdg_paths()
+    ensure_dirs(paths)
+    recipient = args.gpg_key or input("GPG secret key fingerprint/email: ").strip()
+    if not recipient:
+        raise MuratError("gpg key required")
+    check_gpg()
+    ensure_gpg_secret(recipient)
+    set_toml_value(paths.config_file, "crypto", "gpg_recipient", recipient)
+    services = build_services()
+    services.key_provider.ensure_key()
+    services.accounts.save_all(services.accounts.all())
+    print(f"initialized {APP}")
+    print(f"config: {paths.config_file}")
+    print(f"data:   {paths.data_dir}")
+
+
+def cmd_account_add(_args: argparse.Namespace) -> None:
+    services = build_services()
+    services.key_provider.ensure_key()
+    email_addr = prompt("Email")
+    default_name = email_addr.split("@", 1)[0]
+    name = prompt("Display name", default_name)
+    session_url = prompt("JMAP session URL override (blank = auto)")
+    auth_kind = prompt("Auth kind [bearer/basic]", "bearer").lower()
+    if auth_kind not in ("bearer", "basic"):
+        raise MuratError("auth kind must be bearer or basic")
+    username = email_addr if auth_kind == "basic" else ""
+    if auth_kind == "basic":
+        username = prompt("Username", email_addr)
+    secret = getpass.getpass("Token/password: ")
+    if not secret:
+        raise MuratError("secret required")
+    created_at = now_utc()
+    account = Account(
+        id="pending",
+        name=name,
+        email=email_addr,
+        username=username,
+        session_url=session_url,
+        auth_kind=auth_kind,
+        secret=secret,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+    if session_url:
+        account.session_url = session_url
+    else:
+        print("discovering JMAP session...", file=sys.stderr)
+        account.session_url = services.jmap.discover_session_url(email_addr)
+        print(f"found {account.session_url}", file=sys.stderr)
+
+    try:
+        session = services.jmap.fetch_session(account)
+    except MuratError as error:
+        message = str(error)
+        if "HTTP 401" in message:
+            raise MuratError(
+                f"authentication failed for {account.session_url}. {message}. "
+                "If using mailbox password, rerun and choose auth kind basic; bearer expects a token."
+            ) from error
+        raise
+    if CAP_MAIL not in session.capabilities or not session.primary_mail_account_id:
+        raise MuratError("server does not advertise JMAP Mail")
+    account.id = stable_account_id(email_addr, account.session_url)
+    account.primary_mail_account_id = session.primary_mail_account_id
+    services.accounts.upsert(account)
+    print(f"added {account.email} ({account.id})")
+
+
+def cmd_account_list(_args: argparse.Namespace) -> None:
+    accounts = build_services().accounts.all()
+    if not accounts:
+        print("no accounts")
+        return
+    for account in accounts:
+        print(f"{account.id}\t{account.email}\t{account.session_url}\t{account.auth_kind}")
+
+
+def cmd_account_remove(args: argparse.Namespace) -> None:
+    services = build_services()
+    if not services.accounts.remove(args.account_id):
+        raise MuratError(f"account not found: {args.account_id}")
+    print(f"removed {args.account_id}")
+
+
+def cmd_sync(args: argparse.Namespace) -> None:
+    services = build_services()
+    accounts = services.accounts.all()
+    if args.account_id:
+        accounts = [account for account in accounts if account.id == args.account_id]
+    if not accounts:
+        raise MuratError("no accounts; run `murat account add`")
+    page_size = int(config_value(services.config, "ui", "page_size", 50))
+    for account in accounts:
+        result = services.jmap.sync_account(
+            account,
+            page_size,
+            progress=lambda message: print(message, file=sys.stderr),
+            message_sink=services.mail.write_message_eml,
+        )
+        services.mail.save_sync(result)
+        print(f"{account.email}: {len(result.messages)} messages, {len(result.mailboxes)} tags")
+
+
+def cmd_compose(_args: argparse.Namespace) -> None:
+    services = build_services()
+    accounts = services.accounts.all()
+    if not accounts:
+        raise MuratError("no accounts; run `murat account add`")
+    draft = edit_compose(services, accounts[0], ComposeDraft(accounts[0].id, "", "", "", "", ""))
+    print(format_draft_preview(draft))
+    choice = prompt("Send? [y/N/draft]", "n").lower()
+    if choice in ("y", "yes"):
+        services.jmap.send(accounts[0], draft)
+        print("sent")
+    elif choice in ("d", "draft"):
+        services.mail.save_draft(draft)
+        print("saved draft")
+
+
+def cmd_paths(_args: argparse.Namespace) -> None:
+    paths = xdg_paths()
+    print(f"config={paths.config_file}")
+    print(f"data={paths.data_dir}")
+    print(f"key={paths.key_file}")
+    print(f"accounts={paths.accounts_file}")
+    print(f"mail={paths.mail_file}")
+
+
+def prompt(label: str, default: str = "") -> str:
+    enable_prompt_editing()
+    if default and _READLINE is not None and sys.stdin.isatty():
+        _READLINE.set_startup_hook(lambda: _READLINE.insert_text(default))
+        try:
+            value = input(f"{label}: ").strip()
+        finally:
+            _READLINE.set_startup_hook(None)
+        return value or default
+    suffix = f" [{default}]" if default else ""
+    value = input(f"{label}{suffix}: ").strip()
+    return value or default
+
+
+def session_url_for_email(email_addr: str) -> str:
+    domain = domain_from_email(email_addr)
+    return f"https://{domain}/.well-known/jmap"
+
+
+def stable_account_id(email_addr: str, session_url: str) -> str:
+    digest = hashlib.sha256(f"{email_addr}\0{session_url}".encode()).hexdigest()[:12]
+    name = re.sub(r"[^a-z0-9]+", "-", email_addr.lower()).strip("-")[:30]
+    return f"{name}-{digest}"
+
+
+def editor_command(config: dict[str, Any]) -> list[str]:
+    configured = str(config_value(config, "ui", "editor", "") or "")
+    editor = configured or os.environ.get("EDITOR") or "vi"
+    return editor.split()
+
+
+def edit_compose(services: Services, account: Account, draft: ComposeDraft) -> ComposeDraft:
+    fd, path = tempfile.mkstemp(prefix="murat-compose.", suffix=".txt")
+    os.close(fd)
+    try:
+        Path(path).write_text(compose_template(account, draft))
+        subprocess.run(editor_command(services.config) + [path], check=False)
+        return parse_compose(account.id, Path(path).read_text())
+    finally:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+def compose_template(account: Account, draft: ComposeDraft) -> str:
+    return (
+        f"From: {account.email}\n"
+        f"To: {draft.to}\n"
+        f"Cc: {draft.cc}\n"
+        f"Bcc: {draft.bcc}\n"
+        f"Subject: {draft.subject}\n"
+        "\n"
+        f"{draft.body}"
+    )
+
+
+def parse_compose(account_id: str, text: str) -> ComposeDraft:
+    headers: dict[str, str] = {}
+    lines = text.splitlines()
+    index = 0
+    for index, line in enumerate(lines):
+        if not line.strip():
+            index += 1
+            break
+        if ":" not in line:
+            break
+        key, value = line.split(":", 1)
+        headers[key.strip().lower()] = value.strip()
+    else:
+        index = len(lines)
+    return ComposeDraft(
+        account_id=account_id,
+        to=headers.get("to", ""),
+        cc=headers.get("cc", ""),
+        bcc=headers.get("bcc", ""),
+        subject=headers.get("subject", ""),
+        body="\n".join(lines[index:]).strip() + "\n",
+    )
+
+
+def format_draft_preview(draft: ComposeDraft) -> str:
+    return (
+        f"To: {draft.to}\n"
+        f"Cc: {draft.cc}\n"
+        f"Bcc: {draft.bcc}\n"
+        f"Subject: {draft.subject}\n"
+        "\n"
+        f"{draft.body}"
+    )
+
+
+def wrap_lines(text: str, width: int) -> list[str]:
+    output: list[str] = []
+    for raw in text.splitlines() or [""]:
+        if not raw:
+            output.append("")
+            continue
+        output.extend(textwrap.wrap(raw, max(10, width), replace_whitespace=False) or [""])
+    return output
+
+
+class TuiApp:
+    def __init__(self, services: Services):
+        self.services = services
+        self.accounts = services.accounts.all()
+        self.account_filter = 0
+        self.include_spam = False
+        self.search_query = ""
+        self.messages: list[dict[str, Any]] = []
+        self.selected = 0
+        self.list_scroll = 0
+        self.body_scroll = 0
+        self.preview_key: str | None = None
+        self.preview_message: dict[str, Any] | None = None
+        self.preview_body = ""
+        self.status = ""
+        self.shortcuts = "s sync  c compose  r reply  / search  esc clear  z spam  enter open  ? help  q back/quit"
+        self.error = False
+        self.deferred_status: tuple[str, bool] | None = None
+        self.running = True
+        self.events: queue.Queue[tuple[str, str, bool]] = queue.Queue()
+        self.active_tasks: set[str] = set()
+        self.store_lock = threading.Lock()
+        self.keys = services.config.get("keys", {})
+        if not isinstance(self.keys, dict):
+            self.keys = {}
+        self.refresh_messages()
+
+    def refresh_messages(self) -> None:
+        with self.store_lock:
+            if self.search_query:
+                self.messages = self.services.mail.search(self.search_query, include_spam=self.include_spam)
+            else:
+                self.messages = self.services.mail.messages(include_spam=self.include_spam)
+        self.selected = max(0, min(len(self.messages) - 1, self.selected)) if self.messages else 0
+        self.list_scroll = min(self.list_scroll, self.selected)
+
+    def run(self, stdscr: Any) -> None:
+        curses.curs_set(0)
+        stdscr.keypad(True)
+        stdscr.timeout(100)
+        curses.use_default_colors()
+        while self.running:
+            self.drain_events()
+            self.draw(stdscr)
+            ch = stdscr.getch()
+            if ch != -1:
+                self.handle(stdscr, ch)
+
+    def post_status(self, message: str, error: bool = False) -> None:
+        self.events.put(("status", message, error))
+
+    def post_refresh(self) -> None:
+        self.events.put(("refresh", "", False))
+
+    def drain_events(self, apply_status: bool = True) -> None:
+        while True:
+            try:
+                kind, message, error = self.events.get_nowait()
+            except queue.Empty:
+                return
+            if kind == "status":
+                if apply_status:
+                    self.set_status(message, error=error)
+                else:
+                    self.deferred_status = (message, error)
+            elif kind == "refresh":
+                self.refresh_messages()
+            elif kind == "task_done":
+                self.active_tasks.discard(message)
+
+    def apply_deferred_status(self) -> None:
+        if self.deferred_status is None:
+            return
+        message, error = self.deferred_status
+        self.deferred_status = None
+        self.set_status(message, error=error)
+
+    def start_task(self, name: str, target: Any) -> None:
+        if name in self.active_tasks:
+            self.set_status(f"{name} already running")
+            return
+        self.active_tasks.add(name)
+
+        def run_task() -> None:
+            try:
+                target()
+            except MuratError as error:
+                self.post_status(str(error), error=True)
+            except Exception as error:
+                self.post_status(f"{name} failed: {error}", error=True)
+            finally:
+                self.events.put(("task_done", name, False))
+
+        threading.Thread(target=run_task, name=f"murat-{name}", daemon=True).start()
+
+    def action(self, ch: int) -> str | None:
+        token = key_token(ch)
+        for action, configured in DEFAULT_KEYMAP.items():
+            if token == str(self.keys.get(action, configured)):
+                return action
+        if token in ("down", "j"):
+            return "next"
+        if token in ("up", "k"):
+            return "prev"
+        if token == "pagedown":
+            return "page_down"
+        if token == "pageup":
+            return "page_up"
+        return None
+
+    def visible_messages(self) -> list[dict[str, Any]]:
+        if not self.accounts or self.account_filter == 0:
+            return self.messages
+        account_id = self.accounts[self.account_filter - 1].id
+        return [message for message in self.messages if message.get("account_id") == account_id]
+
+    def handle(self, stdscr: Any, ch: int) -> None:
+        action = self.action(ch)
+        visible = self.visible_messages()
+        if action == "force_quit":
+            self.running = False
+        elif action == "quit":
+            if self.search_query or self.include_spam:
+                self.clear_search_view()
+            elif self.preview_key is not None:
+                self.close_preview()
+            else:
+                self.running = False
+        elif action == "next":
+            self.move_selection(1, visible)
+        elif action == "prev":
+            self.move_selection(-1, visible)
+        elif action == "page_down":
+            self.page(1, visible)
+        elif action == "page_up":
+            self.page(-1, visible)
+        elif action == "top":
+            self.selected = 0
+            self.list_scroll = 0
+        elif action == "bottom" and visible:
+            self.selected = len(visible) - 1
+        elif action == "open":
+            self.open_selected(visible)
+        elif action == "sync":
+            self.sync()
+        elif action == "compose":
+            self.compose(stdscr, None)
+        elif action == "reply":
+            self.compose(stdscr, self.preview_message if self.preview_key else self.current_message(visible))
+        elif action == "cycle_account":
+            self.account_filter = (self.account_filter + 1) % (len(self.accounts) + 1)
+            self.selected = 0
+            self.list_scroll = 0
+        elif action == "search":
+            query = self.prompt_line(stdscr, "search")
+            if query:
+                self.search_query = query
+                self.selected = 0
+                self.list_scroll = 0
+                self.refresh_messages()
+                self.set_status(f"search: {query} ({len(self.messages)} matches)")
+            else:
+                self.apply_deferred_status()
+        elif action == "clear_search":
+            if self.search_query or self.include_spam:
+                self.clear_search_view()
+            elif self.preview_key:
+                self.close_preview()
+        elif action == "toggle_spam":
+            self.include_spam = not self.include_spam
+            self.refresh_messages()
+            self.set_status("spam visible" if self.include_spam else "spam hidden")
+        elif action == "help":
+            self.set_status("keys: j/k/arrows move, / search, esc/q clear search, z spam, s sync, c compose, r reply, enter open, q back/quit")
+
+    def clear_search_view(self) -> None:
+        self.search_query = ""
+        self.include_spam = False
+        self.refresh_messages()
+        self.set_status("default listing")
+
+    def close_preview(self) -> None:
+        self.preview_key = None
+        self.preview_message = None
+        self.preview_body = ""
+
+    def move_selection(self, delta: int, visible: list[dict[str, Any]]) -> None:
+        if not visible:
+            return
+        self.selected = max(0, min(len(visible) - 1, self.selected + delta))
+
+    def page(self, direction: int, visible: list[dict[str, Any]]) -> None:
+        if self.preview_key:
+            self.body_scroll = max(0, self.body_scroll + direction * 10)
+            return
+        if visible:
+            self.selected = max(0, min(len(visible) - 1, self.selected + direction * 10))
+
+    def current_message(self, visible: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not visible:
+            return None
+        self.selected = max(0, min(len(visible) - 1, self.selected))
+        return visible[self.selected]
+
+    def open_selected(self, visible: list[dict[str, Any]]) -> None:
+        message = self.current_message(visible)
+        if not message:
+            return
+        with self.store_lock:
+            cached = self.services.mail.body_from_message(message)
+        if cached is None:
+            self.set_status("mail not on disk; sync first", error=True)
+            return
+        self.preview_key = str(message["key"])
+        self.preview_message = dict(message)
+        self.preview_body = str(cached.get("body") or "")
+        self.body_scroll = 0
+
+    def sync(self) -> None:
+        def task() -> None:
+            page_size = int(config_value(self.services.config, "ui", "page_size", 50))
+            total = 0
+            for account in self.accounts:
+                def sink(message: dict[str, Any], body: str) -> str:
+                    with self.store_lock:
+                        return self.services.mail.write_message_eml(message, body)
+
+                result = self.services.jmap.sync_account(account, page_size, progress=self.post_status, message_sink=sink)
+                self.post_status(f"{account.email}: encrypting local store")
+                with self.store_lock:
+                    self.services.mail.save_sync(result)
+                total += len(result.messages)
+                self.post_refresh()
+            self.post_status(f"synced {total} messages")
+
+        self.start_task("sync", task)
+
+    def prompt_line(self, stdscr: Any, label: str) -> str:
+        stdscr.timeout(-1)
+        curses.echo()
+        curses.curs_set(1)
+        try:
+            height, width = stdscr.getmaxyx()
+            safe_addstr(stdscr, height - 2, 0, f"{label}: ", width, curses.A_REVERSE)
+            stdscr.clrtoeol()
+            value = stdscr.getstr(height - 2, len(label) + 2, max(1, width - len(label) - 3))
+            return value.decode(errors="replace").strip()
+        finally:
+            curses.noecho()
+            curses.curs_set(0)
+            stdscr.timeout(100)
+            self.drain_events(apply_status=False)
+
+    def compose(self, stdscr: Any, source: dict[str, Any] | None) -> None:
+        if not self.accounts:
+            self.set_status("no accounts; run `murat account add`", error=True)
+            return
+        account = self.account_for(str(source.get("account_id"))) if source else self.accounts[0]
+        draft = reply_draft(account, source, self.preview_body) if source else ComposeDraft(account.id, "", "", "", "", "")
+        while True:
+            curses.def_prog_mode()
+            curses.endwin()
+            try:
+                draft = edit_compose(self.services, account, draft)
+            finally:
+                curses.reset_prog_mode()
+                stdscr.keypad(True)
+            choice = self.confirm_compose(stdscr, draft)
+            if choice == "edit":
+                continue
+            if choice == "send":
+                self.send_async(account, draft)
+                return
+            if choice == "draft":
+                self.services.mail.save_draft(draft)
+                self.set_status("saved local encrypted draft")
+                return
+            self.set_status("compose cancelled")
+            return
+
+    def send_async(self, account: Account, draft: ComposeDraft) -> None:
+        def task() -> None:
+            self.post_status(f"sending to {draft.to}")
+            self.services.jmap.send(account, draft)
+            self.post_status("sent")
+
+        self.start_task("send", task)
+
+    def confirm_compose(self, stdscr: Any, draft: ComposeDraft) -> str:
+        lines = format_draft_preview(draft).splitlines()
+        scroll = 0
+        while True:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            safe_addstr(stdscr, 0, 0, "compose preview: s send  d draft  e edit  x cancel", width, curses.A_REVERSE)
+            body_height = height - 2
+            for index, line in enumerate(lines[scroll : scroll + body_height]):
+                safe_addstr(stdscr, index + 1, 0, line, width)
+            stdscr.refresh()
+            token = key_token(stdscr.getch())
+            if token in ("s", "enter"):
+                return "send"
+            if token == "d":
+                return "draft"
+            if token == "e":
+                return "edit"
+            if token in ("x", "q", "esc"):
+                return "cancel"
+            if token in ("j", "down"):
+                scroll = min(max(0, len(lines) - body_height), scroll + 1)
+            if token in ("k", "up"):
+                scroll = max(0, scroll - 1)
+            if token == "pagedown":
+                scroll = min(max(0, len(lines) - body_height), scroll + body_height)
+            if token == "pageup":
+                scroll = max(0, scroll - body_height)
+
+    def account_for(self, account_id: str) -> Account:
+        for account in self.accounts:
+            if account.id == account_id:
+                return account
+        raise MuratError(f"account not found: {account_id}")
+
+    def set_status(self, message: str, error: bool = False) -> None:
+        self.deferred_status = None
+        self.status = message
+        self.error = error
+
+    def draw(self, stdscr: Any) -> None:
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+        if height < 6 or width < 30:
+            safe_addstr(stdscr, 0, 0, "terminal too small", width)
+            return
+        self.draw_header(stdscr, width)
+        status_attr = curses.A_REVERSE | (curses.A_BOLD if self.error else 0)
+        safe_addstr(stdscr, height - 2, 0, self.status, width, status_attr)
+        safe_addstr(stdscr, height - 1, 0, self.shortcuts, width, curses.A_REVERSE)
+        body_height = height - 3
+        visible = self.visible_messages()
+        if self.preview_key:
+            split = str(config_value(self.services.config, "ui", "split", "vertical"))
+            if split == "vertical":
+                top = max(1, body_height // 2)
+                self.draw_list(stdscr, 1, 0, top, width, visible)
+                self.draw_body(stdscr, 1 + top, 0, body_height - top, width, visible)
+            else:
+                left = min(max(32, width // 3), max(32, width - 40))
+                self.draw_list(stdscr, 1, 0, body_height, left, visible)
+                self.draw_body(stdscr, 1, left + 1, body_height, width - left - 1, visible)
+        else:
+            self.draw_list(stdscr, 1, 0, body_height, width, visible)
+        stdscr.refresh()
+
+    def draw_header(self, stdscr: Any, width: int) -> None:
+        filter_label = "all accounts" if self.account_filter == 0 else self.accounts[self.account_filter - 1].email
+        search = f" | /{self.search_query}" if self.search_query else ""
+        spam = " | spam shown" if self.include_spam else ""
+        text = f" murat | {filter_label} | {len(self.visible_messages())} messages{search}{spam} "
+        safe_addstr(stdscr, 0, 0, text, width, curses.A_REVERSE)
+
+    def draw_list(self, stdscr: Any, y: int, x: int, height: int, width: int, messages: list[dict[str, Any]]) -> None:
+        if not messages:
+            safe_addstr(stdscr, y, x, "no mail; press s to sync", width)
+            return
+        self.selected = max(0, min(len(messages) - 1, self.selected))
+        if self.selected < self.list_scroll:
+            self.list_scroll = self.selected
+        if self.selected >= self.list_scroll + height:
+            self.list_scroll = self.selected - height + 1
+        for row, message in enumerate(messages[self.list_scroll : self.list_scroll + height]):
+            index = self.list_scroll + row
+            attr = curses.A_REVERSE if index == self.selected else 0
+            if not message.get("read"):
+                attr |= curses.A_BOLD
+            marker = "*" if not message.get("read") else " "
+            date = short_date(str(message.get("received_at") or message.get("sent_at") or ""))
+            sender = compact(str(message.get("from") or ""), 22)
+            tags = compact("/".join(str(item) for item in message.get("tags", [])[:2]), 18)
+            subject = str(message.get("subject") or "(no subject)")
+            attach = "@" if message.get("has_attachment") else " "
+            spam = "!" if message.get("spam") else " "
+            line = f"{marker}{attach}{spam} {date:10} {sender:22} {tags:18} {subject}"
+            safe_addstr(stdscr, y + row, x, line, width, attr)
+
+    def draw_body(self, stdscr: Any, y: int, x: int, height: int, width: int, messages: list[dict[str, Any]]) -> None:
+        message = self.preview_message
+        if not message:
+            return
+        headers = [
+            f"Subject: {message.get('subject') or '(no subject)'}",
+            f"From: {message.get('from') or ''}",
+            f"To: {', '.join(message.get('to') or [])}",
+            f"Date: {message.get('received_at') or message.get('sent_at') or ''}",
+            f"Tags: {', '.join(message.get('tags') or [])}",
+            "",
+        ]
+        lines = headers + wrap_lines(self.preview_body or "(no body)", max(10, width - 1))
+        max_scroll = max(0, len(lines) - height)
+        self.body_scroll = min(self.body_scroll, max_scroll)
+        for row, line in enumerate(lines[self.body_scroll : self.body_scroll + height]):
+            safe_add_rich_line(stdscr, y + row, x, line, width)
+
+
+DEFAULT_KEYMAP = {
+    "quit": "q",
+    "force_quit": "Q",
+    "sync": "s",
+    "compose": "c",
+    "reply": "r",
+    "search": "/",
+    "clear_search": "esc",
+    "toggle_spam": "z",
+    "open": "enter",
+    "next": "j",
+    "prev": "k",
+    "page_down": "pagedown",
+    "page_up": "pageup",
+    "top": "g",
+    "bottom": "G",
+    "cycle_account": "a",
+    "help": "?",
+}
+
+
+def key_token(ch: int) -> str:
+    special = {
+        curses.KEY_UP: "up",
+        curses.KEY_DOWN: "down",
+        curses.KEY_LEFT: "left",
+        curses.KEY_RIGHT: "right",
+        curses.KEY_NPAGE: "pagedown",
+        curses.KEY_PPAGE: "pageup",
+        curses.KEY_HOME: "home",
+        curses.KEY_END: "end",
+        10: "enter",
+        13: "enter",
+        27: "esc",
+        32: "space",
+    }
+    if ch in special:
+        return special[ch]
+    if 0 <= ch < 256:
+        return chr(ch)
+    return str(ch)
+
+
+def safe_addstr(window: Any, y: int, x: int, text: str, width: int, attr: int = 0) -> None:
+    if width <= 0:
+        return
+    try:
+        window.addstr(y, x, text[: max(0, width - 1)].ljust(max(0, width - 1)), attr)
+    except curses.error:
+        pass
+
+
+def safe_add_rich_line(window: Any, y: int, x: int, text: str, width: int, attr: int = 0) -> None:
+    if width <= 0:
+        return
+    col = 0
+    flags = attr
+    italic = getattr(curses, "A_ITALIC", curses.A_DIM)
+    try:
+        window.addstr(y, x, " " * max(0, width - 1), attr)
+    except curses.error:
+        pass
+    index = 0
+    while index < len(text) and col < width - 1:
+        if text.startswith("**", index):
+            flags ^= curses.A_BOLD
+            index += 2
+            continue
+        if text.startswith("__", index):
+            flags ^= curses.A_UNDERLINE
+            index += 2
+            continue
+        if text[index] == "*":
+            flags ^= italic
+            index += 1
+            continue
+        chunk_start = index
+        while index < len(text) and not text.startswith("**", index) and not text.startswith("__", index) and text[index] != "*":
+            index += 1
+        chunk = text[chunk_start:index][: width - 1 - col]
+        if not chunk:
+            continue
+        try:
+            window.addstr(y, x + col, chunk, flags)
+        except curses.error:
+            pass
+        col += len(chunk)
+
+
+def compact(text: str, width: int) -> str:
+    return text if len(text) <= width else text[: max(0, width - 3)] + "..."
+
+
+def short_date(value: str) -> str:
+    return value[:10] if len(value) >= 10 else value
+
+
+def reply_draft(account: Account, message: dict[str, Any] | None, body: str) -> ComposeDraft:
+    if not message:
+        return ComposeDraft(account.id, "", "", "", "", "")
+    subject = str(message.get("subject") or "")
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+    quoted = "\n".join(f"> {line}" if line else ">" for line in body.splitlines())
+    msg_ids = message.get("message_ids") if isinstance(message.get("message_ids"), list) else []
+    refs = message.get("references") if isinstance(message.get("references"), list) else []
+    return ComposeDraft(
+        account_id=account.id,
+        to=str(message.get("from") or ""),
+        cc="",
+        bcc="",
+        subject=subject,
+        body=f"\n\n{quoted}\n",
+        reply_to_message_id=msg_ids[0] if msg_ids else None,
+        references=[str(item) for item in refs],
+    )
+
+
+def cmd_tui(_args: argparse.Namespace) -> None:
+    services = build_services()
+    try:
+        services.key_provider.ensure_key()
+        services.mail.warm_crypto()
+    except MuratError as error:
+        raise MuratError(f"not initialized: {error}") from error
+    curses.wrapper(TuiApp(services).run)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="murat: standalone JMAP-only TUI mail user agent")
+    sub = parser.add_subparsers(dest="command")
+
+    init = sub.add_parser("init", help="initialize encrypted storage")
+    init.add_argument("--gpg-key", help="GPG secret key fingerprint/email used to unwrap murat key")
+    init.set_defaults(func=cmd_init)
+
+    account = sub.add_parser("account", help="manage encrypted accounts")
+    account_sub = account.add_subparsers(dest="account_command", required=True)
+    account_add = account_sub.add_parser("add", help="add JMAP account")
+    account_add.set_defaults(func=cmd_account_add)
+    account_list = account_sub.add_parser("list", help="list JMAP accounts")
+    account_list.set_defaults(func=cmd_account_list)
+    account_remove = account_sub.add_parser("remove", help="remove JMAP account")
+    account_remove.add_argument("account_id")
+    account_remove.set_defaults(func=cmd_account_remove)
+
+    sync = sub.add_parser("sync", help="retrieve and persist mail metadata")
+    sync.add_argument("account_id", nargs="?")
+    sync.set_defaults(func=cmd_sync)
+
+    compose = sub.add_parser("compose", help="compose mail in $EDITOR")
+    compose.set_defaults(func=cmd_compose)
+
+    paths = sub.add_parser("paths", help="show XDG paths")
+    paths.set_defaults(func=cmd_paths)
+
+    tui = sub.add_parser("tui", help="open TUI")
+    tui.set_defaults(func=cmd_tui)
+
+    parser.set_defaults(func=cmd_tui)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        args.func(args)
+        return 0
+    except MuratError as error:
+        die(str(error))
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

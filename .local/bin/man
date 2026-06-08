@@ -29,4 +29,36 @@ else
   export MANROFFOPT=-P-c
 fi
 
+terminal_width=$(tput cols 2>/dev/null || :)
+case "$terminal_width" in
+  ''|*[!0-9]*) terminal_width=80 ;;
+esac
+
+if [ "$terminal_width" -lt 80 ]; then
+  export MANWIDTH=$terminal_width
+else
+  export MANWIDTH=80
+fi
+
+if [ -t 1 ]; then
+  MAN_LEFT_PAD=0
+  if [ "$terminal_width" -gt "$MANWIDTH" ]; then
+    MAN_LEFT_PAD=$(( (terminal_width - MANWIDTH) / 2 ))
+  fi
+  export MAN_LEFT_PAD
+  export MANPAGER='sh -c '\''
+pad=${MAN_LEFT_PAD:-0}
+case "$pad" in
+  ""|*[!0-9]*) pad=0 ;;
+esac
+
+if [ "$pad" -gt 0 ]; then
+  prefix=$(printf "%*s" "$pad" "")
+  awk -v prefix="$prefix" "{ print prefix \$0 }" | less
+else
+  exec less
+fi
+'\'''
+fi
+
 exec /usr/bin/man "$@"

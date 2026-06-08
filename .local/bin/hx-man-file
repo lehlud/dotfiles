@@ -19,7 +19,7 @@ tmp=$(mktemp "${TMPDIR:-/tmp}/hx-man.XXXXXX")
 
 export MANWIDTH=65
 
-if man "$@" | col -b > "$tmp"; then
+if /usr/bin/man "$@" | col -b > "$tmp"; then
   printf '%s\n' "$tmp"
 else
   rm -f "$tmp"

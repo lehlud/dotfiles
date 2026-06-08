@@ -44,6 +44,7 @@
 !/.local/bin/man
 !/.local/bin/hx-git-blame
 !/.local/bin/cht.sh
+!/.local/bin/murat
 
 !/.config/
 /.config/*
@@ -59,6 +60,8 @@
 !/.config/mako/
 !/.config/kitty/
 !/.config/ghostty/
+!/.config/murat/
+!/.config/murat/config.toml
 
 !/.emacs.d/
 /.emacs.d/*
