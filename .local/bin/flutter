@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+_flutter_runtime() {
+    if [ -n "${FLUTTER_CONTAINER_RUNTIME:-}" ]; then
+        printf '%s\n' "$FLUTTER_CONTAINER_RUNTIME"
+        return 0
+    fi
+
+    if command -v podman >/dev/null 2>&1; then
+        printf '%s\n' podman
+        return 0
+    fi
+
+    if command -v docker >/dev/null 2>&1; then
+        printf '%s\n' docker
+        return 0
+    fi
+
+    printf 'flutter container failed: podman or docker not found\n' >&2
+    return 1
+}
+
+_flutter_build_key() {
+    local containerfile="$1"
+
+    sha256sum "$containerfile" | cut -d ' ' -f 1
+    id -u
+    id -g
+}
+
+_flutter_build_image() {
+    local runtime="$1"
+    local image="$2"
+    local containerfile="$3"
+
+    "$runtime" build \
+        --build-arg USER_UID="$(id -u)" \
+        --build-arg USER_GID="$(id -g)" \
+        --tag "$image" \
+        --file "$containerfile" \
+        "$(dirname "$containerfile")"
+}
+
+_flutter_image_exists() {
+    local runtime="$1"
+    local image="$2"
+
+    case "$(basename "$runtime")" in
+        podman)
+            "$runtime" image exists "$image"
+            ;;
+        docker)
+            "$runtime" image inspect "$image" >/dev/null 2>&1
+            ;;
+        *)
+            "$runtime" image inspect "$image" >/dev/null 2>&1
+            ;;
+    esac
+}
+
+_flutter_ensure_sdk() {
+    local sdk_dir="$1"
+
+    if [ -d "$sdk_dir/.git" ]; then
+        return 0
+    fi
+
+    if [ -e "$sdk_dir" ]; then
+        printf 'flutter container failed: %s exists but is not a git checkout\n' "$sdk_dir" >&2
+        return 1
+    fi
+
+    git clone https://github.com/flutter/flutter.git -b stable "$sdk_dir"
+}
+
+_flutter_main() {
+    local runtime
+    local image="${FLUTTER_CONTAINER_IMAGE:-localhost/flutter-fedora43:latest}"
+    local containerfile="${FLUTTER_CONTAINERFILE:-$HOME/.local/config/flutter/Containerfile}"
+    local command_name="${FLUTTER_CONTAINER_COMMAND:-flutter}"
+    local sdk_dir="${FLUTTER_SDK_DIR:-$HOME/.local/share/flutter}"
+    local state_dir="${XDG_CACHE_HOME:-$HOME/.cache}/flutter-container"
+    local key_file="$state_dir/build.key"
+    local current_key
+    local previous_key=
+    local -a run_args
+
+    runtime="$(_flutter_runtime)"
+
+    if [ ! -f "$containerfile" ]; then
+        printf 'flutter container failed: missing Containerfile: %s\n' "$containerfile" >&2
+        return 1
+    fi
+
+    if ! command -v git >/dev/null 2>&1; then
+        printf 'flutter container failed: git not found\n' >&2
+        return 1
+    fi
+
+    _flutter_ensure_sdk "$sdk_dir"
+
+    mkdir -p "$state_dir/home" "$state_dir/pub-cache" "$state_dir/gradle"
+    rm -f "$state_dir/flutter_settings"
+
+    current_key="$(_flutter_build_key "$containerfile")"
+
+    if [ -f "$key_file" ]; then
+        previous_key="$(cat "$key_file")"
+    fi
+
+    if ! _flutter_image_exists "$runtime" "$image" || [ "$current_key" != "$previous_key" ]; then
+        _flutter_build_image "$runtime" "$image" "$containerfile"
+        printf '%s\n' "$current_key" >"$key_file"
+        rm -f "$state_dir/configured"
+    fi
+
+    run_args=(run --rm)
+
+    if [ -t 0 ] && [ -t 1 ]; then
+        run_args+=(-it)
+    fi
+
+    case "$(basename "$runtime")" in
+        podman)
+            run_args+=(--userns=keep-id --security-opt label=disable)
+            ;;
+        docker)
+            run_args+=(--user "$(id -u):$(id -g)")
+            ;;
+    esac
+
+    run_args+=(
+        --workdir /workspace
+        --volume "$PWD:/workspace"
+        --volume "$state_dir/home:/home/flutter"
+        --volume "$sdk_dir:/home/flutter/flutter"
+        --volume "$state_dir/pub-cache:/home/flutter/.pub-cache"
+        --volume "$state_dir/gradle:/home/flutter/.gradle"
+        --env PUB_CACHE=/home/flutter/.pub-cache
+        --env CHROME_EXECUTABLE=/usr/local/bin/flutter-chrome
+    )
+
+    if [ -n "${XAUTHORITY:-}" ] && [ -f "$XAUTHORITY" ]; then
+        run_args+=(--env XAUTHORITY="$XAUTHORITY" --volume "$XAUTHORITY:$XAUTHORITY:ro")
+    fi
+
+    if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+        run_args+=(--env DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS")
+    fi
+
+    if [ -n "${XDG_SESSION_TYPE:-}" ]; then
+        run_args+=(--env XDG_SESSION_TYPE="$XDG_SESSION_TYPE")
+    fi
+
+    if [ -n "${PULSE_SERVER:-}" ]; then
+        run_args+=(--env PULSE_SERVER="$PULSE_SERVER")
+    fi
+
+    if [ ! -f "$state_dir/configured" ]; then
+        "$runtime" "${run_args[@]}" "$image" bash -lc 'flutter --disable-analytics && flutter config --android-sdk "$ANDROID_HOME" && flutter config --enable-linux-desktop && flutter doctor || true'
+        touch "$state_dir/configured"
+    fi
+
+    if [ -n "${DISPLAY:-}" ]; then
+        run_args+=(--env DISPLAY="$DISPLAY")
+
+        if [ -d /tmp/.X11-unix ]; then
+            run_args+=(--volume /tmp/.X11-unix:/tmp/.X11-unix:ro)
+        fi
+    fi
+
+    if [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ]; then
+        run_args+=(
+            --env WAYLAND_DISPLAY="$WAYLAND_DISPLAY"
+            --env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+            --volume "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY:$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+        )
+    fi
+
+    if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -S "$XDG_RUNTIME_DIR/bus" ]; then
+        run_args+=(--volume "$XDG_RUNTIME_DIR/bus:$XDG_RUNTIME_DIR/bus")
+    fi
+
+    if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR/pulse" ]; then
+        run_args+=(--volume "$XDG_RUNTIME_DIR/pulse:$XDG_RUNTIME_DIR/pulse")
+    fi
+
+    if [ -d /dev/dri ]; then
+        run_args+=(--device /dev/dri)
+    fi
+
+    if [ -e /dev/kvm ]; then
+        run_args+=(--device /dev/kvm)
+    fi
+
+    exec "$runtime" "${run_args[@]}" "$image" "$command_name" "$@"
+}
+
+_flutter_main "$@"

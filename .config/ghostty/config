@@ -1,0 +1,38 @@
+# Mirrored from ../kitty/kitty.conf where Ghostty has matching options.
+
+font-family = JetBrains Mono
+font-size = 18
+
+window-padding-x = 0
+window-padding-y = 0
+
+command = /bin/sh -lc 'exec "$HOME/.local/bin/kitty-lubox-shell"'
+
+env = TERMINAL=ghostty
+
+macos-auto-secure-input = true
+macos-secure-input-indication = false
+
+background = #05070a
+foreground = #f0f3f6
+cursor-color = #ffffff
+
+selection-foreground = #ffffff
+selection-background = #1f6feb
+
+palette = 0=#f0f3f6
+palette = 1=#ff6b7a
+palette = 2=#4ade80
+palette = 3=#facc15
+palette = 4=#60a5fa
+palette = 5=#c084fc
+palette = 6=#22d3ee
+palette = 7=#c9d1d9
+palette = 8=#8b949e
+palette = 9=#ff4d6d
+palette = 10=#22c55e
+palette = 11=#eab308
+palette = 12=#3b82f6
+palette = 13=#a855f7
+palette = 14=#06b6d4
+palette = 15=#ffffff

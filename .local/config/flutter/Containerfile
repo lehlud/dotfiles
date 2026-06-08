@@ -1,0 +1,46 @@
+FROM fedora:43
+
+ARG USERNAME=flutter
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV FLUTTER_HOME=/home/flutter/flutter
+ENV PATH="${FLUTTER_HOME}/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools:${ANDROID_HOME}/emulator:${PATH}"
+
+RUN dnf install -y \
+    git curl unzip xz zip tar which findutils \
+    clang cmake ninja-build pkgconf-pkg-config gtk3-devel \
+    chromium mesa-demos libsecret libsecret-devel xdg-utils \
+    java-25-openjdk-devel \
+    mesa-libGL libX11 libXcursor libXdamage libXext libXi libXrandr libXrender libXtst \
+    && dnf clean all
+
+RUN for chrome in /usr/bin/chromium-browser /usr/bin/chromium /usr/lib64/chromium-browser/chromium-browser /usr/lib64/chromium/chromium; do \
+      if [ -x "$chrome" ]; then ln -sf "$chrome" /usr/local/bin/flutter-chrome; exit 0; fi; \
+    done; \
+    echo "chromium executable not found" >&2; exit 1
+
+RUN mkdir -p ${ANDROID_HOME}/cmdline-tools \
+    && curl -L -o /tmp/cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip \
+    && unzip /tmp/cmdline-tools.zip -d /tmp/android-cmdline-tools \
+    && mv /tmp/android-cmdline-tools/cmdline-tools ${ANDROID_HOME}/cmdline-tools/latest \
+    && rm /tmp/cmdline-tools.zip
+
+RUN yes | sdkmanager --licenses >/dev/null || true \
+    && sdkmanager \
+      "platform-tools" \
+      "platforms;android-36" \
+      "build-tools;36.0.0" \
+      "build-tools;28.0.3" \
+      "cmdline-tools;latest"
+
+RUN groupadd --gid ${USER_GID} ${USERNAME} \
+    && useradd --uid ${USER_UID} --gid ${USER_GID} -m ${USERNAME} \
+    && chown -R ${USERNAME}:${USERNAME} ${ANDROID_HOME} /usr/local
+
+USER ${USERNAME}
+WORKDIR /workspace
+
+CMD ["/bin/bash"]

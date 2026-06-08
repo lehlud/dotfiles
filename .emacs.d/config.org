@@ -1,0 +1,775 @@
+#+TITLE: Ludwig's emacs config
+#+AUTHOR: Ludwig Lehnert
+#+STARTUP: showeverything
+#+OPTIONS: toc:2
+
+#+begin_src emacs-lisp
+; -*- lexical-binding: t; -*-
+#+end_src
+
+* TABLE OF CONTENTS :toc:
+- [[#no-welcome-screen][NO WELCOME SCREEN]]
+- [[#maximize-window][MAXIMIZE WINDOW]]
+- [[#path-env][PATH ENV]]
+- [[#savehist][SAVEHIST]]
+- [[#elpaca][ELPACA]]
+- [[#backup][BACKUP]]
+- [[#dashboard][DASHBOARD]]
+- [[#diminish][DIMINISH]]
+- [[#ediff][EDIFF]]
+- [[#git][GIT]]
+  - [[#time-machine][Time Machine]]
+- [[#icons][ICONS]]
+  - [[#all-the-icons][all-the-icons]]
+  - [[#nerd-icons][nerd-icons]]
+- [[#modeline][MODELINE]]
+- [[#ivy--counsel][IVY + COUNSEL]]
+- [[#custom-keybinds][CUSTOM KEYBINDS]]
+- [[#lsp--auto-complete][LSP + AUTO COMPLETE]]
+  - [[#haskell][Haskell]]
+- [[#tree-sitter][TREE SITTER]]
+- [[#multiple-cursors][MULTIPLE CURSORS]]
+- [[#surround][SURROUND]]
+- [[#space-indentation][SPACE INDENTATION]]
+- [[#eliminate-odd-behaviour][ELIMINATE ODD BEHAVIOUR]]
+  - [[#unwanted-auto-indentation-in-org-mode-source-blocks][Unwanted auto-indentation in org mode source blocks]]
+- [[#vterm][VTERM]]
+- [[#pdf][PDF]]
+- [[#org-mode][ORG MODE]]
+  - [[#org-capture][Org Capture]]
+  - [[#bullets][Bullets]]
+  - [[#heading-font-sizes][Heading font sizes]]
+  - [[#toc-org][Toc-Org]]
+- [[#markdown-mode][MARKDOWN MODE]]
+- [[#rainbow-delimiters][RAINBOW DELIMITERS]]
+- [[#rainbow-mode][RAINBOW MODE]]
+- [[#whitespace-rendering][WHITESPACE RENDERING]]
+- [[#macos-tweaks][MACOS TWEAKS]]
+  - [[#cmd-as-meta-key][cmd as meta key]]
+- [[#theming][THEMING]]
+  - [[#hide-window-bars][Hide window bars]]
+  - [[#line-numbers][Line numbers]]
+  - [[#wrap-text-instead-of-overflow][Wrap text instead of overflow]]
+  - [[#1-zoom][+1 Zoom]]
+- [[#color-scheme][COLOR SCHEME]]
+
+* NO WELCOME SCREEN
+
+#+begin_src emacs-lisp
+(setq inhibit-startup-screen t)
+#+end_src
+
+* MAXIMIZE WINDOW
+
+#+begin_src emacs-lisp
+(add-to-list 'default-frame-alist '(fullscreen . maximized))
+#+end_src
+
+* PATH ENV
+
+#+begin_src emacs-lisp
+(defun my/add-to-path-if-exists (dir)
+  "Add DIR to `PATH' and `exec-path' if DIR exists."
+  (let ((dir (expand-file-name dir)))
+    (when (file-directory-p dir)
+      (setenv "PATH" (concat dir path-separator (getenv "PATH")))
+      (add-to-list 'exec-path dir))))
+
+(my/add-to-path-if-exists "~/.ghcup/bin/")
+(my/add-to-path-if-exists "~/.local/bin/")
+#+end_src
+
+* SAVEHIST
+
+#+begin_src emacs-lisp
+(setq savehist-file (expand-file-name "savehist" user-emacs-directory))
+(savehist-mode 1)
+#+end_src
+
+* ELPACA
+
+GitHub repo: https://github.com/progfolio/elpaca, we just follow the instructions here:
+
+#+begin_src emacs-lisp
+(defvar elpaca-installer-version 0.12)
+(defvar elpaca-directory (expand-file-name "elpaca/" user-emacs-directory))
+(defvar elpaca-builds-directory (expand-file-name "builds/" elpaca-directory))
+(defvar elpaca-sources-directory (expand-file-name "sources/" elpaca-directory))
+(defvar elpaca-order '(elpaca :repo "https://github.com/progfolio/elpaca.git"
+                              :ref nil :depth 1 :inherit ignore
+                              :files (:defaults "elpaca-test.el" (:exclude "extensions"))
+                              :build (:not elpaca-activate)))
+(let* ((repo  (expand-file-name "elpaca/" elpaca-sources-directory))
+       (build (expand-file-name "elpaca/" elpaca-builds-directory))
+       (order (cdr elpaca-order))
+       (default-directory repo))
+  (add-to-list 'load-path (if (file-exists-p build) build repo))
+  (unless (file-exists-p repo)
+    (make-directory repo t)
+    (when (<= emacs-major-version 28) (require 'subr-x))
+    (condition-case-unless-debug err
+        (if-let* ((buffer (pop-to-buffer-same-window "*elpaca-bootstrap*"))
+                  ((zerop (apply #'call-process `("git" nil ,buffer t "clone"
+                                                  ,@(when-let* ((depth (plist-get order :depth)))
+                                                      (list (format "--depth=%d" depth) "--no-single-branch"))
+                                                  ,(plist-get order :repo) ,repo))))
+                  ((zerop (call-process "git" nil buffer t "checkout"
+                                        (or (plist-get order :ref) "--"))))
+                  (emacs (concat invocation-directory invocation-name))
+                  ((zerop (call-process emacs nil buffer nil "-Q" "-L" "." "--batch"
+                                        "--eval" "(byte-recompile-directory \".\" 0 'force)")))
+                  ((require 'elpaca))
+                  ((elpaca-generate-autoloads "elpaca" repo)))
+            (progn (message "%s" (buffer-string)) (kill-buffer buffer))
+          (error "%s" (with-current-buffer buffer (buffer-string))))
+      ((error) (warn "%s" err) (delete-directory repo 'recursive))))
+  (unless (require 'elpaca-autoloads nil t)
+    (require 'elpaca)
+    (elpaca-generate-autoloads "elpaca" repo)
+    (let ((load-source-file-function nil)) (load "./elpaca-autoloads"))))
+(add-hook 'after-init-hook #'elpaca-process-queues)
+(elpaca `(,@elpaca-order))
+#+end_src
+
+... and then enable use-package support
+
+#+begin_src emacs-lisp
+;; Install a package via the elpaca macro
+;; See the "recipes" section of the manual for more details.
+
+;; (elpaca example-package)
+
+;; Install use-package support
+(elpaca elpaca-use-package
+  ;; Enable use-package :ensure support for Elpaca.
+  (elpaca-use-package-mode))
+
+;;When installing a package used in the init file itself, e.g. a
+;;package which adds a use-package key word, use the :wait recipe
+;;keyword to block until that package is installed/configured.  For
+;;example: (use-package general :ensure (:wait t) :demand t)
+
+;;Turns off elpaca-use-package-mode current declaration
+;;Note this will cause evaluate the declaration immediately. It is not deferred.
+;;Useful for configuring built-in emacs features.
+(use-package emacs :ensure nil :config (setq ring-bell-function #'ignore))
+#+end_src
+
+* BACKUP
+
+By default, Emacs creates automatic backups of files in their original
+such, directories "file.el" and the backup "file.el~".  This leads to
+a lot of clutter, so let's tell Emacs to put all backups that it
+creates in the =TRASH= directory.
+
+#+begin_src emacs-lisp
+(setq backup-directory-alist '((".*" . "~/.local/share/Trash/files")))
+#+end_src
+
+* DASHBOARD
+
+Emacs Dashboard is an extensible startup screen showing you recent files, bookmarks, agenda items and an Emacs banner.
+
+#+begin_src emacs-lisp
+(use-package dashboard
+  :ensure (:wait t)
+  :demand t
+  :init
+  (setq initial-scratch-message nil)
+  (setq dashboard-set-heading-icons t)
+  (setq dashboard-set-file-icons t)
+  (setq dashboard-startup-banner 'logo)
+  (setq dashboard-center-content nil)
+  (setq dashboard-week-agenda t)
+  (setq dashboard-filter-agenda-entry 'dashboard-no-filter-agenda)
+  (setq dashboard-items '((recents . 5)
+                          (agenda . 5)
+                          (bookmarks . 3)
+                          (projects . 3)))
+  :config
+  (dashboard-modify-heading-icons '((recents . "file-text")
+                                    (bookmarks . "book")))
+  (dashboard-setup-startup-hook)
+  (setq initial-buffer-choice
+        (lambda ()
+          (dashboard-open)
+          (get-buffer "*dashboard*"))))
+#+end_src
+
+* DIMINISH
+
+This package implements hiding or abbreviation of the modeline
+displays (lighters) of minor-modes.  With this package installed, you
+can add ':diminish' to any use-package block to hide that particular
+mode in the modeline.
+
+#+begin_src emacs-lisp
+(use-package diminish :ensure t)
+#+end_src
+
+* EDIFF
+'ediff' is a diff program that is built into Emacs.  By default,
+'ediff' splits files vertically and places the 'help' frame in its own
+window.  I have changed this so the two files are split horizontally
+and the 'help' frame appears as a lower split within the existing
+window.
+
+#+begin_src emacs-lisp
+(setq ediff-split-window-function 'split-window-horizontally
+      ediff-window-setup-function 'ediff-setup-windows-plain)
+#+end_src
+
+* GIT
+
+** Time Machine
+
+[[https://github.com/emacsmirror/git-timemachine][git-timemachine]] is a program that allows you to move backwards and
+forwards through a file's commits.  'SPC g t' will open the time
+machine on a file if it is in a git repo.
+
+#+begin_src emacs-lisp
+(use-package git-timemachine :ensure t)
+#+end_src
+
+* ICONS
+
+** all-the-icons
+
+This is an icon set that can be used with dashboard, dired, ibuffer
+and other Emacs programs.
+
+#+begin_src emacs-lisp
+(use-package all-the-icons
+  :ensure t
+  :if (display-graphic-p))
+
+(use-package all-the-icons-ivy-rich
+  :ensure t
+  :init (all-the-icons-ivy-rich-mode 1))
+
+(use-package all-the-icons-dired
+  :ensure t
+  :hook (dired-mode . (lambda () (all-the-icons-dired-mode t))))
+#+end_src
+
+** nerd-icons
+
+#+begin_src emacs-lisp
+(use-package nerd-icons
+  :ensure t
+  ;; :custom
+  ;; The Nerd Font you want to use in GUI
+  ;; "Symbols Nerd Font Mono" is the default and is recommended
+  ;; but you can use any other Nerd Font if you want
+  ;; (nerd-icons-font-family "Symbols Nerd Font Mono")
+  )
+#+end_src
+
+* MODELINE
+
+The modeline is the bottom status bar that appears in Emacs windows.
+While you can create your own custom modeline, why go to the trouble
+when Doom Emacs already has a nice modeline package available.
+
+#+begin_src emacs-lisp
+(use-package doom-modeline
+  :ensure t
+  :init (doom-modeline-mode 1)
+  :config
+  (setq doom-modeline-height 35      ;; sets modeline height
+        doom-modeline-bar-width 5    ;; sets right bar width
+        doom-modeline-persp-name t   ;; adds perspective name to modeline
+        doom-modeline-persp-icon t)) ;; adds folder icon next to persp name
+#+end_src
+
+* IVY + COUNSEL
+
++ Ivy, a generic completion mechanism for Emacs.
++ Counsel, a collection of Ivy-enhanced versions of common Emacs commands.
++ Ivy-rich allows us to add descriptions alongside the commands in M-x.
+
+#+begin_src emacs-lisp
+(use-package counsel
+  :ensure t
+  :after ivy
+  :diminish
+  :config 
+    (counsel-mode)
+    (setq ivy-initial-inputs-alist nil)) ;; removes starting ^ regex in M-x
+
+(use-package ivy
+  :ensure t
+  :bind
+  ;; ivy-resume resumes the last Ivy-based completion.
+  (("C-c C-r" . ivy-resume)
+   ("C-x B" . ivy-switch-buffer-other-window))
+  :diminish
+  :custom
+  (setq ivy-use-virtual-buffers t)
+  (setq ivy-count-format "(%d/%d) ")
+  (setq enable-recursive-minibuffers t)
+  :config
+  (ivy-mode))
+
+(use-package ivy-rich
+  :after ivy
+  :ensure t
+  :init (ivy-rich-mode 1) ;; this gets us descriptions in M-x.
+  :custom
+  (ivy-virtual-abbreviate 'full
+   ivy-rich-switch-buffer-align-virtual-buffer t
+   ivy-rich-path-style 'abbrev))
+
+(use-package ivy-prescient
+  :after counsel
+  :ensure t
+  :custom
+  ;; Optional: keep Ivy/Counsel's usual filtering, only add sorting.
+  (ivy-prescient-enable-filtering nil)
+  (ivy-prescient-enable-sorting t)
+  :config
+  (ivy-prescient-mode 1))
+#+end_src
+
+* CUSTOM KEYBINDS
+
+Reference "Documentation": https://github.com/radian-software/straight.el
+
+#+begin_src emacs-lisp
+; no custom keybinds yet
+#+end_src
+
+* LSP + AUTO COMPLETE
+
+We require our packages, and set our hooks along the way:
+
+#+begin_src emacs-lisp
+; emacs polyglot (helix-ish support for many language servers)
+(use-package eglot :ensure t :defer t)
+
+; company for auto-completion (+ auto-enablement hook)
+(use-package company :ensure t
+  :custom
+  (company-begin-commands '(self-insert-command))
+  (company-idle-delay .1)
+  (company-minimum-prefix-length 2)
+  (company-show-numbers t)
+  (company-tooltip-align-annotations 't)
+  (global-company-mode t))
+#+end_src
+
+** Haskell
+
+#+begin_src emacs-lisp
+(use-package haskell-mode
+  :ensure t
+  :mode (("\\.hs\\'"    . haskell-mode)
+         ("\\.lhs\\'"   . literate-haskell-mode)
+         ("\\.cabal\\'" . haskell-cabal-mode))
+  :hook ((haskell-mode . eglot-ensure)
+         (literate-haskell-mode . eglot-ensure)))
+
+(with-eval-after-load 'eglot
+  (add-to-list 'eglot-server-programs
+               '((haskell-mode literate-haskell-mode)
+                 . ("haskell-language-server-wrapper" "--lsp"))))
+#+end_src
+
+* TREE SITTER
+
+#+begin_src emacs-lisp
+(use-package treesit-auto :ensure t
+  :custom
+  (treesit-auto-install 'prompt)
+  :config
+  (treesit-auto-add-to-auto-mode-alist 'all)
+  (global-treesit-auto-mode))
+#+end_src
+
+* MULTIPLE CURSORS
+
+#+begin_src emacs-lisp
+(use-package multiple-cursors :ensure t :defer t
+  :bind (("C-S-c C-S-c" . mc/edit-lines)
+         ("C->"         . mc/mark-next-like-this)
+         ("C-<"         . mc/mark-previous-like-this)
+         ("C-c C-<"     . mc/mark-all-like-this)))
+#+end_src
+
+* SURROUND
+
+#+begin_src emacs-lisp
+(use-package surround
+  :ensure t
+  :bind-keymap ("M-'" . surround-keymap))
+#+end_src
+
+* SPACE INDENTATION
+
+#+begin_src emacs-lisp
+(setq-default indent-tabs-mode nil)
+(setq-default tab-width 4)
+(setq-default standard-indent 4)
+#+end_src
+
+* ELIMINATE ODD BEHAVIOUR
+
+** Unwanted auto-indentation in org mode source blocks
+
+#+begin_src emacs-lisp
+(setq org-src-preserve-indentation t)
+(setq org-edit-src-content-indentation 0)
+#+end_src
+
+* VTERM
+
+#+begin_src emacs-lisp
+(defvar-local my/vterm-kitty-dark-p nil
+  "Non-nil means this vterm buffer should use the Kitty dark palette.")
+
+(defun my/vterm-kitty-dark-get-color (orig-fun index &rest args)
+  "Return Kitty dark default colors for vterm buffers.
+
+This fixes the actual vterm background, unlike `face-remap-add-relative'
+or `buffer-face-mode', which vterm's default-color path does not honor."
+  (if (and (bound-and-true-p my/vterm-kitty-dark-p)
+           (= index -1))
+      (cond
+       ;; Default foreground.
+       ((member :foreground args)
+        "#f0f3f6")
+
+       ;; Default background.
+       (t
+        "#05070a"))
+    (apply orig-fun index args)))
+
+(defun my/vterm-kitty-dark-mode ()
+  "Use Kitty-like dark colors in the current vterm buffer."
+  (setq-local my/vterm-kitty-dark-p t)
+
+  ;; Normal Emacs buffer background fallback. This alone is not enough for
+  ;; vterm, but it helps with margins/edge cases.
+  (setq-local buffer-face-mode-face
+              '(:foreground "#f0f3f6"
+                :background "#05070a"))
+  (buffer-face-mode 1)
+
+  ;; Selection.
+  (face-remap-add-relative
+   'region
+   '(:foreground "#ffffff"
+     :background "#1f6feb"))
+
+  ;; Cursor.
+  (setq-local cursor-type 'box)
+
+  ;; No line numbers in terminals.
+  (display-line-numbers-mode -1))
+
+(use-package vterm
+  :ensure t
+  :defer t
+  :commands vterm
+  :hook
+  (vterm-mode . my/vterm-kitty-dark-mode)
+  :config
+  (setq vterm-max-scrollback 5000
+        vterm-shell "/bin/bash"
+        shell-file-name "/bin/bash"
+        vterm-timer-delay 0.01)
+
+  ;; This is the important part. It makes vterm's own default background dark.
+  (advice-add 'vterm--get-color :around #'my/vterm-kitty-dark-get-color)
+
+  ;; Kitty palette: color0..color15.
+  ;;
+  ;; vterm documents these as the faces to customize for its terminal colors.
+  ;; They affect ANSI colors, not the default background.
+  (set-face-attribute 'vterm-color-black nil
+                      :foreground "#303030"
+                      :background "#303030")
+  (set-face-attribute 'vterm-color-red nil
+                      :foreground "#ff6b7a"
+                      :background "#ff6b7a")
+  (set-face-attribute 'vterm-color-green nil
+                      :foreground "#4ade80"
+                      :background "#4ade80")
+  (set-face-attribute 'vterm-color-yellow nil
+                      :foreground "#facc15"
+                      :background "#facc15")
+  (set-face-attribute 'vterm-color-blue nil
+                      :foreground "#60a5fa"
+                      :background "#60a5fa")
+  (set-face-attribute 'vterm-color-magenta nil
+                      :foreground "#c084fc"
+                      :background "#c084fc")
+  (set-face-attribute 'vterm-color-cyan nil
+                      :foreground "#22d3ee"
+                      :background "#22d3ee")
+  (set-face-attribute 'vterm-color-white nil
+                      :foreground "#c9d1d9"
+                      :background "#c9d1d9")
+
+  (set-face-attribute 'vterm-color-bright-black nil
+                      :foreground "#8b949e"
+                      :background "#8b949e")
+  (set-face-attribute 'vterm-color-bright-red nil
+                      :foreground "#ff4d6d"
+                      :background "#ff4d6d")
+  (set-face-attribute 'vterm-color-bright-green nil
+                      :foreground "#22c55e"
+                      :background "#22c55e")
+  (set-face-attribute 'vterm-color-bright-yellow nil
+                      :foreground "#eab308"
+                      :background "#eab308")
+  (set-face-attribute 'vterm-color-bright-blue nil
+                      :foreground "#3b82f6"
+                      :background "#3b82f6")
+  (set-face-attribute 'vterm-color-bright-magenta nil
+                      :foreground "#a855f7"
+                      :background "#a855f7")
+  (set-face-attribute 'vterm-color-bright-cyan nil
+                      :foreground "#06b6d4"
+                      :background "#06b6d4")
+  (set-face-attribute 'vterm-color-bright-white nil
+                      :foreground "#ffffff"
+                      :background "#ffffff"))
+
+(defvar my/default-cursor-color nil
+  "Cursor color before entering vterm.")
+
+(defvar my/vterm-cursor-color "#ffffff"
+  "Cursor color to use in vterm buffers.")
+
+(defun my/vterm-visible-cursor ()
+  "Make the cursor more visible in vterm."
+  ;; This is buffer-local and safe.
+  (setq-local cursor-type 'box))
+
+(defun my/update-cursor-color-for-vterm ()
+  "Use a bright cursor in vterm, restore normal cursor elsewhere."
+  (unless my/default-cursor-color
+    (setq my/default-cursor-color
+          (frame-parameter nil 'cursor-color)))
+
+  (if (derived-mode-p 'vterm-mode)
+      (set-cursor-color my/vterm-cursor-color)
+    (when my/default-cursor-color
+      (set-cursor-color my/default-cursor-color))))
+
+(add-hook 'vterm-mode-hook #'my/vterm-visible-cursor)
+(add-hook 'buffer-list-update-hook #'my/update-cursor-color-for-vterm)
+(add-hook 'window-selection-change-functions
+          (lambda (_frame)
+            (my/update-cursor-color-for-vterm)))
+#+end_src
+
+* PDF
+
+#+begin_src emacs-lisp
+(use-package pdf-tools :ensure t :defer t
+  :commands (pdf-loader-install)
+  :mode "\\.pdf\\'"
+  :init (pdf-loader-install)
+  :config (add-to-list 'revert-without-query ".pdf"))
+
+(add-hook 'pdf-view-mode-hook #'(lambda () (interactive) (display-line-numbers-mode -1)
+                                                         (blink-cursor-mode -1)
+                                                         (doom-modeline-mode -1)))
+#+end_src
+
+* ORG MODE
+
+** Org Capture
+
+#+begin_src emacs-lisp
+(setq org-directory "~/.org/")
+
+;; List files that org-agenda will use.
+(setq org-agenda-files 
+      (list (concat org-directory "tasks.org")
+            (concat org-directory "notes.org")
+            (concat org-directory "journal.org")))
+
+;; Defines the global fallback destination for all your Org notes.
+(setq org-default-notes-file (concat org-directory "notes.org"))
+
+;; (Optional) Create custom templates
+;; NOTE '%U' is an inactive timestamp meaning the item will not show
+;; in org-agenda.  Use '%^t' for active timestamps instead.
+;; You can manually switch active/inactive with SHIFT-up/down.
+(setq org-capture-templates
+      `(
+        ;; Idea capture
+        ("i" "idea" entry
+         (file ,org-default-notes-file)
+         "* %? :idea:\n%U\n")
+
+        ;; Journal entry
+        ("j" "journal" entry
+         (file+olp+datetree ,(concat org-directory "journal.org"))
+         "* %U\n%?\n")
+
+        ;; Note with link to source
+        ("n" "note" entry
+         (file ,org-default-notes-file)
+         "* %? :note:\n%^t\n%a\n")
+	    
+        ;; Todo with context
+        ("t" "task" entry
+         (file ,(concat org-directory "tasks.org"))
+         "* TODO %?\n%^t\n%a\n")
+        
+        ))
+#+end_src
+
+** Bullets
+
+=Org-bullets= gives us attractive bullets rather than asterisks.
+
+#+begin_src emacs-lisp
+(add-hook 'org-mode-hook 'org-indent-mode)
+(use-package org-bullets :ensure t)
+(add-hook 'org-mode-hook (lambda () (org-bullets-mode 1)))
+#+end_src
+
+** Heading font sizes
+
+#+begin_src emacs-lisp
+(with-eval-after-load 'org
+  (set-face-attribute 'org-level-1 nil :height 2.2 :weight 'bold)
+  (set-face-attribute 'org-level-2 nil :height 1.8 :weight 'bold)
+  (set-face-attribute 'org-level-3 nil :height 1.4 :weight 'bold)
+  (set-face-attribute 'org-level-4 nil :height 1.25 :weight 'bold)
+  (set-face-attribute 'org-level-5 nil :height 1.1 :weight 'bold))
+#+end_src
+
+** Toc-Org
+Allows us to create a Table of Contents in our Org docs.
+
+#+begin_src emacs-lisp
+(use-package toc-org
+  :ensure t
+  :commands toc-org-enable
+  :init (add-hook 'org-mode-hook 'toc-org-enable))
+#+end_src
+
+* MARKDOWN MODE
+
+#+begin_src emacs-lisp
+(use-package markdown-mode :ensure t :demand t
+  :mode ("\\.md\\'" . markdown-mode))
+#+end_src
+
+* RAINBOW DELIMITERS
+
+Adding rainbow coloring to parentheses.
+
+#+begin_src emacs-lisp
+(use-package rainbow-delimiters
+  :ensure t
+  :hook ((emacs-lisp-mode . rainbow-delimiters-mode)
+         (clojure-mode . rainbow-delimiters-mode)))
+#+end_src
+
+* RAINBOW MODE
+
+Display the actual color as a background for any hex color value
+(ex. #ff8700).  The code block below enables rainbow-mode in all
+programming modes (prog-mode) as well as org-mode, which is why
+rainbow works in this document.
+
+#+begin_src emacs-lisp
+(use-package rainbow-mode
+  :ensure t
+  :diminish
+  :hook org-mode prog-mode)
+#+end_src
+
+* WHITESPACE RENDERING
+
+#+begin_src emacs-lisp
+(require 'whitespace)
+
+(setq-default whitespace-style
+              '(face
+                space-mark
+                tab-mark
+                newline-mark))
+
+(setq-default whitespace-display-mappings
+              `((space-mark ?\s
+                            [,(make-glyph-code ?· 'whitespace-space)]
+                            [,(make-glyph-code ?. 'whitespace-space)])
+
+                (space-mark ?\xA0
+                            [,(make-glyph-code ?¤ 'whitespace-space)]
+                            [,(make-glyph-code ?_ 'whitespace-space)])
+
+                (newline-mark ?\n
+                              [,(make-glyph-code ?$ 'whitespace-newline) ?\n])
+
+                (tab-mark ?\t
+                          [,(make-glyph-code ?» 'whitespace-tab) ?\t]
+                          [,(make-glyph-code ?\\ 'whitespace-tab) ?\t])))
+
+(global-whitespace-mode 1)
+#+end_src
+
+* MACOS TWEAKS
+
+** cmd as meta key
+
+#+begin_src emacs-lisp
+(when (eq system-type 'darwin)
+  ;; Use Command as Emacs Meta
+  (setq ns-command-modifier 'meta
+        ns-right-command-modifier 'meta)
+
+  ;; Let macOS/Neo2/Karabiner handle Option/Alt/Mod3 characters
+  (setq ns-alternate-modifier 'none
+        ns-right-alternate-modifier 'none))
+#+end_src
+
+* THEMING
+
+** Hide window bars
+
+#+begin_src emacs-lisp
+(menu-bar-mode -1)
+(toggle-scroll-bar -1)
+(tool-bar-mode -1)
+#+end_src
+
+** Line numbers
+
+#+begin_src emacs-lisp
+(global-display-line-numbers-mode 1)
+(setq display-line-numbers-type 'relative)
+#+end_src
+
+** Wrap text instead of overflow
+
+#+begin_src emacs-lisp
+(global-visual-line-mode 1)
+#+end_src
+
+** +1 Zoom
+
+#+begin_src emacs-lisp
+(set-face-attribute 'default nil :height 148)
+;(add-hook 'after-change-major-mode-hook
+;	  (lambda ()
+;	    (text-scale-set 1)))
+#+end_src
+
+* COLOR SCHEME
+
+#+begin_src emacs-lisp
+(let ((theme-dir (expand-file-name "themes/" user-emacs-directory)))
+  (add-to-list 'custom-theme-load-path theme-dir))
+
+(load-theme 'custom-light t)
+#+end_src
+

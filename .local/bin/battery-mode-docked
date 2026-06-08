@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BAT="${BAT:-/sys/class/power_supply/BAT0}"
+START=40
+END=60
+
+require_file() {
+  local path="$1"
+  [[ -e "$path" ]] || {
+    printf 'Error: missing file: %s\n' "$path" >&2
+    exit 1
+  }
+}
+
+require_file "$BAT/charge_control_start_threshold"
+require_file "$BAT/charge_control_end_threshold"
+require_file "$BAT/charge_behaviour"
+
+echo "Requesting sudo permission..."
+sudo -v
+
+echo "Setting docked battery mode..."
+sudo sh -c "printf '%s\n' '$START' > '$BAT/charge_control_start_threshold'"
+sudo sh -c "printf '%s\n' '$END' > '$BAT/charge_control_end_threshold'"
+sudo sh -c "printf '%s\n' 'inhibit-charge' > '$BAT/charge_behaviour'"
+
+echo
+echo "Current battery settings:"
+printf 'charge_behaviour: '
+cat "$BAT/charge_behaviour"
+printf 'start threshold:  '
+cat "$BAT/charge_control_start_threshold"
+printf 'end threshold:    '
+cat "$BAT/charge_control_end_threshold"

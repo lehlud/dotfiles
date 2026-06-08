@@ -1,0 +1,4349 @@
+#!/usr/bin/env python3
+"""lubox: small mutable Linux userspace wrapper for podman/docker."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import dataclasses
+import errno
+import fcntl
+import hashlib
+import hmac
+import json
+import os
+import pathlib
+import platform
+import pwd
+import pty
+import secrets
+import selectors
+import shlex
+import shutil
+import signal
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+import termios
+import threading
+import time
+import tty
+import urllib.parse
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+
+VERSION = "0.1.9"
+DEFAULT_IMAGE = "docker.io/library/fedora:latest"
+LABEL_PREFIX = "dev.lubox"
+CONTAINER_CONFIG_PATH = "/run/lubox/hostexec.json"
+CONTAINER_TOKEN_PATH = "/run/lubox/hostexec.token"
+PODMAN_TOKEN_PATH = "/run/secrets/lubox_hostexec_token"
+CONTAINER_SSH_AUTH_SOCK_TEMPLATE = "/tmp/lubox-{uid}/ssh-agent.sock"
+CONTAINER_SSH_AGENT_PID_TEMPLATE = "/tmp/lubox-{uid}/ssh-agent.pid"
+CONTAINER_GPG_HOME_TEMPLATE = "/tmp/lubox-{uid}/gnupg"
+CONTAINER_GPG_AGENT_PID_TEMPLATE = "/tmp/lubox-{uid}/gpg-agent-proxy.pid"
+HOSTEXEC_MIN_PORT = 49152
+HOSTEXEC_MAX_PORT = 65535
+CONTROL_MAX = 1024 * 1024
+FRAME_MAX = 64 * 1024 * 1024
+KEEPALIVE_COMMAND = 'trap "exit 0" TERM INT; while :; do sleep 86400 & wait $!; done'
+FORWARDABLE_LUBOX_COMMANDS = {"doctor", "list", "create", "destroy", "start", "stop", "enter", "exec", "code-server", "enable"}
+GPG_SOCKET_BASENAMES = {
+    "agent-socket": "S.gpg-agent",
+    "agent-extra-socket": "S.gpg-agent.extra",
+    "keyboxd-socket": "S.keyboxd",
+    "dirmngr-socket": "S.dirmngr",
+}
+XQUARTZ_APP_CANDIDATES = [
+    "/Applications/Utilities/XQuartz.app",
+    "/Applications/XQuartz.app",
+]
+CODE_SERVER_INSTALL_SCRIPT = r'''
+import json
+import os
+import pathlib
+import platform
+import shutil
+import tarfile
+import tempfile
+import urllib.request
+
+arch_map = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+arch = arch_map.get(platform.machine().lower())
+if not arch:
+    raise SystemExit(f"unsupported code-server architecture: {platform.machine()}")
+base = pathlib.Path.home() / ".local" / "share" / "lubox" / "code-server"
+base.mkdir(parents=True, exist_ok=True)
+req = urllib.request.Request(
+    "https://api.github.com/repos/coder/code-server/releases/latest",
+    headers={"User-Agent": "lubox"},
+)
+with urllib.request.urlopen(req, timeout=30) as resp:
+    release = json.loads(resp.read().decode("utf-8"))
+tag = str(release.get("tag_name") or "").strip()
+if not tag:
+    raise SystemExit("latest code-server release has no tag_name")
+asset = None
+suffix = f"linux-{arch}.tar.gz"
+for item in release.get("assets") or []:
+    name = str(item.get("name") or "")
+    url = str(item.get("browser_download_url") or "")
+    if name.endswith(suffix) and url:
+        asset = (name, url)
+        break
+if asset is None:
+    raise SystemExit(f"no code-server release asset found for {suffix}")
+install_dir = base / tag
+bin_path = install_dir / "bin" / "code-server"
+if not bin_path.exists():
+    if install_dir.exists():
+        shutil.rmtree(install_dir)
+    with tempfile.TemporaryDirectory(prefix="lubox-code-server-") as td:
+        tmp = pathlib.Path(td)
+        archive = tmp / asset[0]
+        req = urllib.request.Request(asset[1], headers={"User-Agent": "lubox"})
+        with urllib.request.urlopen(req, timeout=120) as resp, archive.open("wb") as f:
+            shutil.copyfileobj(resp, f)
+        extract_dir = tmp / "extract"
+        extract_dir.mkdir()
+        with tarfile.open(archive, "r:gz") as tf:
+            for member in tf.getmembers():
+                target = (extract_dir / member.name).resolve()
+                if not str(target).startswith(str(extract_dir.resolve()) + os.sep):
+                    raise SystemExit(f"unsafe path in code-server archive: {member.name}")
+            tf.extractall(extract_dir)
+        roots = [p for p in extract_dir.iterdir() if p.is_dir() and (p / "bin" / "code-server").exists()]
+        if not roots:
+            raise SystemExit("code-server archive did not contain bin/code-server")
+        shutil.move(str(roots[0]), str(install_dir))
+current = base / "current"
+try:
+    if current.is_symlink() or current.exists():
+        if current.is_dir() and not current.is_symlink():
+            shutil.rmtree(current)
+        else:
+            current.unlink()
+    current.symlink_to(install_dir, target_is_directory=True)
+except OSError:
+    pass
+print(str(bin_path))
+'''
+CODE_SERVER_CONNECT_SCRIPT = r'''
+import os
+import select
+import socket
+import sys
+
+target_port = int(sys.argv[1])
+sock = socket.create_connection(("127.0.0.1", target_port), timeout=10)
+sock.setblocking(False)
+stdin_open = True
+try:
+    while True:
+        readers = [sock]
+        if stdin_open:
+            readers.append(0)
+        ready, _, _ = select.select(readers, [], [])
+        if 0 in ready:
+            data = os.read(0, 65536)
+            if data:
+                sock.sendall(data)
+            else:
+                stdin_open = False
+                try:
+                    sock.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+        if sock in ready:
+            data = sock.recv(65536)
+            if not data:
+                break
+            os.write(1, data)
+finally:
+    sock.close()
+'''
+
+
+class LuboxError(Exception):
+    def __init__(self, message: str, code: int = 1):
+        super().__init__(message)
+        self.code = code
+
+
+class CommandError(LuboxError):
+    def __init__(self, argv: Sequence[str], returncode: int, stderr: object = ""):
+        self.argv = list(argv)
+        self.returncode = returncode
+        self.stderr = _decode_output(stderr)
+        message = f"lubox: command failed ({returncode}): {shlex.join(self.argv)}"
+        if self.stderr:
+            message += f"\nstderr:\n{self.stderr.rstrip()}"
+        super().__init__(message, 1)
+
+
+class Progress:
+    FRAMES = "-/|\\"
+
+    def __init__(self, title: str, total: int):
+        self.title = title
+        self.total = max(1, total)
+        self.current = 0
+        self.label = ""
+        self.detail_text = ""
+        self.start_time = time.monotonic()
+        self.last_draw = 0.0
+        self.last_len = 0
+        self.frame_index = 0
+        self.enabled = sys.stderr.isatty()
+
+    def begin(self, label: str, detail: str = "") -> None:
+        self.current = min(self.total, self.current + 1)
+        self.label = label
+        self.detail_text = self.clean_detail(detail)
+        if self.enabled:
+            self.draw(force=True)
+        else:
+            eprint(f"lubox: [{self.current}/{self.total}] {label}")
+
+    def detail(self, text: str) -> None:
+        text = self.clean_detail(text)
+        if not text:
+            return
+        self.detail_text = text
+        self.draw()
+
+    def pulse(self) -> None:
+        self.draw()
+
+    def finish(self, message: str = "done") -> None:
+        if self.enabled:
+            self.current = self.total
+            self.label = message
+            self.detail_text = ""
+            self.draw(force=True, finished=True)
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+        else:
+            eprint(f"lubox: {message}")
+
+    def fail(self, message: str = "failed") -> None:
+        if self.enabled:
+            self.clear()
+        eprint(f"lubox: {self.title}: {message} at {self.label or 'start'}")
+
+    def draw(self, *, force: bool = False, finished: bool = False) -> None:
+        if not self.enabled:
+            return
+        now = time.monotonic()
+        if not force and now - self.last_draw < 0.08:
+            return
+        self.last_draw = now
+        width = 28
+        completed = self.total if finished else max(0, self.current - 1)
+        filled = width if finished else int(width * completed / self.total)
+        if finished:
+            bar = "#" * width
+            frame = " "
+        else:
+            bar_chars = ["#"] * filled + ["-"] * (width - filled)
+            if filled < width:
+                bar_chars[filled] = self.FRAMES[self.frame_index % len(self.FRAMES)]
+            bar = "".join(bar_chars)
+            frame = self.FRAMES[self.frame_index % len(self.FRAMES)]
+            self.frame_index += 1
+        elapsed = int(now - self.start_time)
+        detail = f" | {self.detail_text}" if self.detail_text else ""
+        line = f"{self.title} [{bar}] {self.current}/{self.total} {frame} {elapsed:02d}s {self.label}{detail}"
+        columns = shutil.get_terminal_size(fallback=(120, 24)).columns
+        if len(line) >= columns:
+            line = line[: max(0, columns - 1)]
+        pad = " " * max(0, self.last_len - len(line))
+        sys.stderr.write("\r" + line + pad)
+        sys.stderr.flush()
+        self.last_len = len(line)
+
+    def clear(self) -> None:
+        if self.last_len:
+            sys.stderr.write("\r" + " " * self.last_len + "\r")
+            sys.stderr.flush()
+            self.last_len = 0
+
+    def clean_detail(self, text: str) -> str:
+        text = text.replace("\r", " ").replace("\n", " ").strip()
+        if len(text) > 96:
+            text = text[:93] + "..."
+        return text
+
+
+def color_enabled(stream: object = None) -> bool:
+    mode = os.environ.get("LUBOX_COLOR", "auto").lower()
+    if mode in ("never", "no", "0", "false") or os.environ.get("NO_COLOR"):
+        return False
+    if mode in ("always", "yes", "1", "true"):
+        return True
+    target = stream if stream is not None else sys.stdout
+    return bool(getattr(target, "isatty", lambda: False)()) and os.environ.get("TERM") != "dumb"
+
+
+def ansi(code: str, text: str) -> str:
+    return f"\033[{code}m{text}\033[0m"
+
+
+def color_token_line(line: str, code: str) -> str:
+    indent_len = len(line) - len(line.lstrip())
+    stripped = line[indent_len:]
+    if not stripped:
+        return line
+    token_end = len(stripped)
+    for idx, ch in enumerate(stripped):
+        if ch.isspace():
+            token_end = idx
+            break
+    token = stripped[:token_end]
+    return line[:indent_len] + ansi(code, token) + stripped[token_end:]
+
+
+def color_help_text(text: str) -> str:
+    if not color_enabled(sys.stdout):
+        return text
+    out: List[str] = []
+    headings = {"positional arguments:", "optional arguments:", "examples:"}
+    for line in text.splitlines():
+        stripped = line.strip()
+        indent_len = len(line) - len(line.lstrip())
+        if line.startswith("usage:"):
+            out.append(ansi("1;36", "usage:") + line[len("usage:"):])
+        elif stripped in headings:
+            out.append(ansi("1;34", line))
+        elif line.startswith("  lubox "):
+            out.append(line.replace("lubox", ansi("1;32", "lubox"), 1))
+        elif indent_len == 2 and stripped.startswith("-"):
+            out.append(color_token_line(line, "1;33"))
+        elif indent_len == 4 and stripped and not stripped.startswith("="):
+            out.append(color_token_line(line, "1;32"))
+        else:
+            out.append(line)
+    if text.endswith("\n"):
+        return "\n".join(out) + "\n"
+    return "\n".join(out)
+
+
+class LuboxHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    def format_help(self) -> str:
+        return color_help_text(super().format_help())
+
+
+class LuboxArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args: Any, **kwargs: Any):
+        kwargs.setdefault("formatter_class", LuboxHelpFormatter)
+        super().__init__(*args, **kwargs)
+
+
+def _decode_output(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+def eprint(*args: object) -> None:
+    print(*args, file=sys.stderr)
+
+
+def die(message: str, code: int = 1) -> None:
+    raise LuboxError(message, code)
+
+
+def is_linux() -> bool:
+    return platform.system() == "Linux"
+
+
+def is_macos() -> bool:
+    return platform.system() == "Darwin"
+
+
+def strip_dashdash(argv: Sequence[str]) -> List[str]:
+    args = list(argv)
+    if args and args[0] == "--":
+        return args[1:]
+    return args
+
+
+def validate_box_name(name: str) -> None:
+    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789_.-")
+    if not name:
+        die("lubox: NAME must not be empty")
+    if name[0] not in set("abcdefghijklmnopqrstuvwxyz0123456789"):
+        die("lubox: NAME must start with lowercase letter or digit")
+    if any(ch not in allowed for ch in name):
+        die("lubox: NAME may contain only lowercase letters, digits, '.', '_', '-' ")
+
+
+def validate_safe_word(label: str, value: str) -> None:
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.+-")
+    if not value or value[0] == "-" or any(ch not in allowed for ch in value):
+        die(f"lubox: unsafe {label!s}: {value!r}")
+
+
+def validate_image_ref(image: str) -> None:
+    if not image or any(ch.isspace() for ch in image) or "\n" in image or "\r" in image:
+        die(f"lubox: invalid image reference: {image!r}")
+
+
+def current_username() -> str:
+    return pwd.getpwuid(os.getuid()).pw_name
+
+
+def container_name(name: str) -> str:
+    return f"lubox-{current_username()}-{name}"
+
+
+def image_name(name: str) -> str:
+    return f"lubox/{name}:latest"
+
+
+def secret_name(name: str) -> str:
+    safe = []
+    for ch in name:
+        if ch.isalnum() or ch in "_.-":
+            safe.append(ch)
+        else:
+            safe.append("_")
+    return "lubox_" + "".join(safe) + "_hostexec_token"
+
+
+def container_ssh_auth_sock(uid: Optional[int] = None) -> str:
+    if uid is None:
+        uid = os.getuid()
+    return CONTAINER_SSH_AUTH_SOCK_TEMPLATE.format(uid=uid)
+
+
+def container_ssh_agent_pid(uid: Optional[int] = None) -> str:
+    if uid is None:
+        uid = os.getuid()
+    return CONTAINER_SSH_AGENT_PID_TEMPLATE.format(uid=uid)
+
+
+def container_gpg_home(uid: Optional[int] = None) -> str:
+    if uid is None:
+        uid = os.getuid()
+    return CONTAINER_GPG_HOME_TEMPLATE.format(uid=uid)
+
+
+def container_gpg_agent_pid(uid: Optional[int] = None) -> str:
+    if uid is None:
+        uid = os.getuid()
+    return CONTAINER_GPG_AGENT_PID_TEMPLATE.format(uid=uid)
+
+
+def container_gpg_proxy_socket_path(socket_key: str, uid: Optional[int] = None) -> str:
+    basename = GPG_SOCKET_BASENAMES.get(socket_key, socket_key)
+    return str(pathlib.Path(container_gpg_home(uid)) / basename)
+
+
+def current_ssh_auth_sock() -> Optional[pathlib.Path]:
+    value = os.environ.get("SSH_AUTH_SOCK")
+    if not value:
+        return None
+    path = pathlib.Path(value)
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    if stat.S_ISSOCK(st.st_mode):
+        return path
+    return None
+
+
+def socket_path_if_socket(path: pathlib.Path) -> Optional[pathlib.Path]:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    if stat.S_ISSOCK(st.st_mode):
+        return path
+    return None
+
+
+def current_gpg_info() -> Tuple[Optional[pathlib.Path], Dict[str, pathlib.Path]]:
+    rows: Dict[str, str] = {}
+    gpgconf = shutil.which("gpgconf")
+    if gpgconf:
+        try:
+            cp = subprocess.run(
+                [gpgconf, "--list-dirs"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=5,
+            )
+            if cp.returncode == 0:
+                for line in cp.stdout.splitlines():
+                    if ":" in line:
+                        key, value = line.split(":", 1)
+                        rows[key] = value
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    home_value = rows.get("homedir") or os.environ.get("GNUPGHOME") or str(pathlib.Path.home() / ".gnupg")
+    home = pathlib.Path(home_value).expanduser()
+    sockets: Dict[str, pathlib.Path] = {}
+    for key, basename in GPG_SOCKET_BASENAMES.items():
+        value = rows.get(key)
+        path = pathlib.Path(value).expanduser() if value else home / basename
+        sock = socket_path_if_socket(path)
+        if sock is not None:
+            sockets[key] = sock
+    return home, sockets
+
+
+def x11_binary(name: str) -> Optional[str]:
+    found = shutil.which(name)
+    if found:
+        return found
+    path = pathlib.Path("/opt/X11/bin") / name
+    if path.exists() and os.access(path, os.X_OK):
+        return str(path)
+    return None
+
+
+def xquartz_app_path() -> Optional[pathlib.Path]:
+    for candidate in XQUARTZ_APP_CANDIDATES:
+        path = pathlib.Path(candidate)
+        if path.exists():
+            return path
+    return None
+
+
+def parse_display_number(value: str) -> int:
+    if not value or ":" not in value:
+        return 0
+    tail = value.rsplit(":", 1)[-1]
+    number = tail.split(".", 1)[0]
+    if number.isdigit():
+        return int(number)
+    return 0
+
+
+def tcp_port_open(host: str, port: int, timeout: float = 0.25) -> bool:
+    try:
+        sock = socket.create_connection((host, port), timeout=timeout)
+        sock.close()
+        return True
+    except OSError:
+        return False
+
+
+def env_flag_enabled(value: str) -> bool:
+    return value.lower() in ("1", "true", "yes", "on", "always")
+
+
+def env_flag_disabled(value: str) -> bool:
+    return value.lower() in ("0", "false", "no", "off", "never")
+
+
+def host_lubox_path() -> str:
+    return str(pathlib.Path(__file__).resolve())
+
+
+def inside_lubox_container() -> bool:
+    config_path = pathlib.Path(os.environ.get("LUBOX_HOSTEXEC_CONFIG", CONTAINER_CONFIG_PATH))
+    return bool(os.environ.get("LUBOX_CONTAINER_NAME")) and config_path.exists()
+
+
+def host_lubox_command(raw_args: Sequence[str]) -> List[str]:
+    configured = os.environ.get("LUBOX_HOST_LUBOX")
+    if configured:
+        return [configured] + list(raw_args)
+    candidate = pathlib.Path(os.environ.get("HOME", str(pathlib.Path.home()))) / ".local" / "bin" / "lubox"
+    if candidate.exists():
+        return [str(candidate)] + list(raw_args)
+    return ["lubox"] + list(raw_args)
+
+
+def forward_lubox_command_if_needed(raw_args: Sequence[str]) -> Optional[int]:
+    args = list(raw_args)
+    if not args or args[0].startswith("-"):
+        return None
+    if args[0] not in FORWARDABLE_LUBOX_COMMANDS:
+        return None
+    if not inside_lubox_container():
+        return None
+    if args[0] == "code-server":
+        current = os.environ.get("LUBOX_CONTAINER_NAME")
+        if current:
+            args = [args[0], current] + args[1:]
+    return HostExecClient(host_lubox_command(args), probe=False).run()
+
+
+def path_under(path: pathlib.Path, parent: pathlib.Path) -> bool:
+    try:
+        resolved_path = str(path.expanduser().resolve())
+        resolved_parent = str(parent.expanduser().resolve())
+        return os.path.commonpath([resolved_path, resolved_parent]) == resolved_parent
+    except (OSError, ValueError):
+        return False
+
+
+def atomic_write_bytes(path: pathlib.Path, data: bytes, mode: Optional[int] = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    tmp_path = pathlib.Path(tmp)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        if mode is not None:
+            os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def atomic_write_text(path: pathlib.Path, data: str, mode: Optional[int] = None) -> None:
+    atomic_write_bytes(path, data.encode("utf-8"), mode)
+
+
+def atomic_write_json(path: pathlib.Path, obj: Dict[str, Any], mode: Optional[int] = None) -> None:
+    data = json.dumps(obj, sort_keys=True, indent=2) + "\n"
+    atomic_write_text(path, data, mode)
+
+
+def load_json_file(path: pathlib.Path) -> Dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        die(f"lubox: expected object JSON in {path}")
+    return data
+
+
+def ensure_private_dir(path: pathlib.Path) -> pathlib.Path:
+    path.mkdir(parents=True, exist_ok=True)
+    st = path.stat()
+    if not stat.S_ISDIR(st.st_mode):
+        die(f"lubox: not a directory: {path}")
+    if st.st_uid != os.getuid():
+        die(f"lubox: refusing directory not owned by current user: {path}")
+    if st.st_mode & 0o077:
+        os.chmod(path, 0o700)
+        st = path.stat()
+        if st.st_mode & 0o077:
+            die(f"lubox: refusing non-private directory: {path}")
+    return path
+
+
+def ensure_token_file(path: pathlib.Path) -> None:
+    st = path.stat()
+    if st.st_uid != os.getuid():
+        die(f"lubox: refusing token file not owned by current user: {path}")
+    if st.st_mode & 0o077:
+        die(f"lubox: refusing token file with broad permissions: {path}")
+
+
+def read_token(path: pathlib.Path) -> bytes:
+    ensure_token_file(path)
+    data = path.read_bytes()
+    if len(data) < 32:
+        die(f"lubox: token file too short: {path}")
+    return data
+
+
+def looks_like_pid_running(pid: int) -> bool:
+    if pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def safe_unlink(path: pathlib.Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+@dataclasses.dataclass(frozen=True)
+class HostIdentity:
+    username: str
+    uid: int
+    gid: int
+    home: pathlib.Path
+    login_shell: pathlib.Path
+    shell_basename: str
+
+    @classmethod
+    def load(cls) -> "HostIdentity":
+        pw = pwd.getpwuid(os.getuid())
+        login_shell = pathlib.Path(pw.pw_shell) if pw.pw_shell else pathlib.Path("/bin/sh")
+        shell_basename = login_shell.name or "sh"
+        validate_safe_word("username", pw.pw_name)
+        validate_safe_word("shell basename", shell_basename)
+        return cls(
+            username=pw.pw_name,
+            uid=pw.pw_uid,
+            gid=pw.pw_gid,
+            home=pathlib.Path(pw.pw_dir),
+            login_shell=login_shell,
+            shell_basename=shell_basename,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LuboxPaths:
+    data: pathlib.Path
+    state: pathlib.Path
+    cache: pathlib.Path
+    runtime: pathlib.Path
+
+    @classmethod
+    def load(cls) -> "LuboxPaths":
+        home = pathlib.Path.home()
+        data_home = pathlib.Path(os.environ.get("XDG_DATA_HOME", str(home / ".local" / "share")))
+        state_home = pathlib.Path(os.environ.get("XDG_STATE_HOME", str(home / ".local" / "state")))
+        cache_home = pathlib.Path(os.environ.get("XDG_CACHE_HOME", str(home / ".cache")))
+        runtime_base_env = os.environ.get("XDG_RUNTIME_DIR")
+        if runtime_base_env:
+            runtime_base = pathlib.Path(runtime_base_env)
+        elif is_linux():
+            runtime_base = pathlib.Path("/tmp") / f"lubox-{os.getuid()}"
+        else:
+            runtime_base = pathlib.Path(tempfile.gettempdir()) / f"lubox-{os.getuid()}"
+        paths = cls(
+            data=ensure_private_dir(data_home / "lubox"),
+            state=ensure_private_dir(state_home / "lubox"),
+            cache=ensure_private_dir(cache_home / "lubox"),
+            runtime=ensure_private_dir(runtime_base / "lubox"),
+        )
+        return paths
+
+    def state_dir(self, name: str) -> pathlib.Path:
+        return ensure_private_dir(self.state / name)
+
+    def runtime_dir(self, name: str) -> pathlib.Path:
+        return ensure_private_dir(self.runtime / name)
+
+    def mount_dir(self, name: str, engine_name: str) -> pathlib.Path:
+        if is_macos() and engine_name == "podman":
+            return ensure_private_dir(self.state_dir(name) / "run")
+        return ensure_private_dir(self.runtime_dir(name) / "run")
+
+    def token_file(self, name: str) -> pathlib.Path:
+        return self.state_dir(name) / "hostexec.token"
+
+    def log_file(self, name: str) -> pathlib.Path:
+        return self.state_dir(name) / "hostexec.log"
+
+    def code_server_log_file(self, name: str) -> pathlib.Path:
+        return self.state_dir(name) / "code-server.log"
+
+    def code_server_tunnel_log_file(self, name: str, port: int) -> pathlib.Path:
+        return self.state_dir(name) / f"code-server-tunnel-{port}.log"
+
+    def pid_file(self, name: str) -> pathlib.Path:
+        return self.runtime_dir(name) / "hostexec.pid"
+
+    def code_server_tunnel_pid_file(self, name: str, port: int) -> pathlib.Path:
+        return self.runtime_dir(name) / f"code-server-tunnel-{port}.pid"
+
+    def lock_file(self, name: str) -> pathlib.Path:
+        return self.runtime_dir(name) / "hostexec.lock"
+
+
+@dataclasses.dataclass(frozen=True)
+class Engine:
+    name: str
+    path: str
+
+    @classmethod
+    def select(cls, override: Optional[str] = None) -> "Engine":
+        requested = override or os.environ.get("LUBOX_ENGINE")
+        if requested:
+            if requested not in ("podman", "docker"):
+                die("lubox: --engine/LUBOX_ENGINE must be podman or docker")
+            found = shutil.which(requested)
+            if not found:
+                die(f"lubox: requested engine not found in PATH: {requested}")
+            return cls(requested, found)
+        for name in ("podman", "docker"):
+            found = shutil.which(name)
+            if found:
+                return cls(name, found)
+        die("lubox: neither podman nor docker found in PATH")
+
+    def argv(self, args: Sequence[str]) -> List[str]:
+        return [self.path] + list(args)
+
+    def run(
+        self,
+        args: Sequence[str],
+        *,
+        check: bool = True,
+        capture: bool = True,
+        input_data: object = None,
+        timeout: Optional[float] = None,
+        env: Optional[Dict[str, str]] = None,
+    ) -> subprocess.CompletedProcess:
+        argv = self.argv(args)
+        text_mode = not isinstance(input_data, (bytes, bytearray))
+        cp = subprocess.run(
+            argv,
+            input=input_data,
+            text=text_mode,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
+            timeout=timeout,
+            env=env,
+        )
+        if check and cp.returncode != 0:
+            raise CommandError(argv, cp.returncode, cp.stderr)
+        return cp
+
+    def run_progress(
+        self,
+        args: Sequence[str],
+        progress: Progress,
+        *,
+        check: bool = True,
+        env: Optional[Dict[str, str]] = None,
+    ) -> subprocess.CompletedProcess:
+        argv = self.argv(args)
+        proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        selector = selectors.DefaultSelector()
+        stdout_data = bytearray()
+        stderr_data = bytearray()
+        stdout_pending = ""
+        stderr_pending = ""
+        if proc.stdout is not None:
+            selector.register(proc.stdout.fileno(), selectors.EVENT_READ, "stdout")
+        if proc.stderr is not None:
+            selector.register(proc.stderr.fileno(), selectors.EVENT_READ, "stderr")
+        try:
+            while selector.get_map():
+                events = selector.select(0.1)
+                if not events:
+                    progress.pulse()
+                for key, _mask in events:
+                    chunk = os.read(key.fd, 65536)
+                    if not chunk:
+                        selector.unregister(key.fd)
+                        continue
+                    if key.data == "stdout":
+                        stdout_data.extend(chunk)
+                        stdout_pending = self.progress_lines(chunk, stdout_pending, progress)
+                    else:
+                        stderr_data.extend(chunk)
+                        stderr_pending = self.progress_lines(chunk, stderr_pending, progress)
+            returncode = proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            raise
+        finally:
+            selector.close()
+        if stdout_pending.strip():
+            progress.detail(stdout_pending.strip())
+        if stderr_pending.strip():
+            progress.detail(stderr_pending.strip())
+        stdout_text = stdout_data.decode("utf-8", "replace")
+        stderr_text = stderr_data.decode("utf-8", "replace")
+        if check and returncode != 0:
+            raise CommandError(argv, returncode, stderr_text or stdout_text)
+        return subprocess.CompletedProcess(argv, returncode, stdout_text, stderr_text)
+
+    def progress_lines(self, chunk: bytes, pending: str, progress: Progress) -> str:
+        text = pending + chunk.decode("utf-8", "replace").replace("\r", "\n")
+        lines = text.split("\n")
+        for line in lines[:-1]:
+            line = line.strip()
+            if line:
+                progress.detail(line)
+        return lines[-1]
+
+    def popen(
+        self,
+        args: Sequence[str],
+        *,
+        stdin: object = None,
+        stdout: object = None,
+        stderr: object = None,
+        start_new_session: bool = False,
+    ) -> subprocess.Popen:
+        return subprocess.Popen(
+            self.argv(args),
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            start_new_session=start_new_session,
+        )
+
+    def ensure_ready(self, *, start_machine: bool) -> None:
+        if is_macos() and self.name == "podman" and start_machine:
+            self.ensure_podman_machine_running()
+
+    def podman_machine_rows(self) -> List[Dict[str, Any]]:
+        cp = self.run(["machine", "ls", "--format", "json"], check=False, capture=True, timeout=20)
+        if cp.returncode != 0:
+            raise CommandError(self.argv(["machine", "ls", "--format", "json"]), cp.returncode, cp.stderr)
+        text = _decode_output(cp.stdout).strip()
+        if not text:
+            return []
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            die(f"lubox: cannot parse podman machine JSON: {exc}")
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        if isinstance(data, dict):
+            return [data]
+        return []
+
+    def ensure_podman_machine_running(self) -> None:
+        try:
+            rows = self.podman_machine_rows()
+        except CommandError as exc:
+            die(
+                "lubox: cannot list Podman machines\n"
+                f"{exc}\n"
+                'If no machine exists, run: podman machine init -v "$HOME:$HOME" --now'
+            )
+        if not rows:
+            die(
+                'lubox: no Podman machine exists; run: podman machine init -v "$HOME:$HOME" --now'
+            )
+        if any(bool(row.get("Running")) or str(row.get("Status", "")).lower() == "running" for row in rows):
+            return
+        cp = self.run(["machine", "start"], check=False, capture=True, timeout=120)
+        if cp.returncode != 0:
+            stderr = _decode_output(cp.stderr).strip()
+            die(
+                "lubox: failed to start Podman machine\n"
+                f"command: {shlex.join(self.argv(['machine', 'start']))}\n"
+                f"exit code: {cp.returncode}\n"
+                f"stderr:\n{stderr}\n"
+                'If no machine exists, run: podman machine init -v "$HOME:$HOME" --now'
+            )
+
+    def inspect_container(self, cname: str, *, required: bool = False) -> Optional[Dict[str, Any]]:
+        cp = self.run(["inspect", cname], check=False, capture=True)
+        if cp.returncode != 0:
+            if required:
+                die(f"lubox: container not found: {cname}\nTry: lubox create {cname.removeprefix('lubox-')}")
+            return None
+        try:
+            data = json.loads(_decode_output(cp.stdout))
+        except json.JSONDecodeError as exc:
+            die(f"lubox: cannot parse inspect JSON for {cname}: {exc}")
+        if isinstance(data, list) and data:
+            first = data[0]
+            if isinstance(first, dict):
+                return first
+        if isinstance(data, dict):
+            return data
+        if required:
+            die(f"lubox: container not found: {cname}\nTry: lubox create {cname.removeprefix('lubox-')}")
+        return None
+
+    def container_exists(self, cname: str) -> bool:
+        return self.inspect_container(cname, required=False) is not None
+
+    def is_running(self, cname: str) -> bool:
+        info = self.inspect_container(cname, required=False)
+        if not info:
+            return False
+        state = info.get("State", {})
+        if isinstance(state, dict):
+            return bool(state.get("Running")) or str(state.get("Status", "")).lower() == "running"
+        return False
+
+    def list_lubox_names(self) -> List[str]:
+        cp = self.run(
+            ["ps", "-a", "--filter", f"label={LABEL_PREFIX}=1", "--format", "{{.Names}}"],
+            check=False,
+            capture=True,
+        )
+        if cp.returncode != 0:
+            raise CommandError(self.argv(["ps", "-a", "--filter", f"label={LABEL_PREFIX}=1", "--format", "{{.Names}}"]), cp.returncode, cp.stderr)
+        names = []
+        for line in _decode_output(cp.stdout).splitlines():
+            line = line.strip()
+            if line:
+                names.append(line.split()[0])
+        return names
+
+
+class ImageBuilder:
+    def __init__(self, engine: Engine, ident: HostIdentity):
+        self.engine = engine
+        self.ident = ident
+
+    def build(self, name: str, base_image: str, progress: Optional[Progress] = None) -> str:
+        validate_image_ref(base_image)
+        tag = image_name(name)
+        with tempfile.TemporaryDirectory(prefix="lubox-build-") as td:
+            root = pathlib.Path(td)
+            if progress is not None:
+                progress.detail("writing Containerfile")
+            atomic_write_text(root / "Containerfile", self.containerfile(base_image), 0o644)
+            script_src = pathlib.Path(__file__).resolve()
+            script_data = script_src.read_bytes()
+            atomic_write_bytes(root / "lubox", script_data, 0o755)
+            user_json = {
+                "username": self.ident.username,
+                "uid": self.ident.uid,
+                "gid": self.ident.gid,
+                "home": str(self.ident.home),
+                "login_shell": str(self.ident.login_shell),
+                "shell_basename": self.ident.shell_basename,
+            }
+            atomic_write_json(root / "user.json", user_json, 0o644)
+            args = [
+                "build",
+                "-t",
+                tag,
+                "--build-arg",
+                f"LUBOX_USERNAME={self.ident.username}",
+                "--build-arg",
+                f"LUBOX_UID={self.ident.uid}",
+                "--build-arg",
+                f"LUBOX_GID={self.ident.gid}",
+                "--build-arg",
+                f"LUBOX_HOME={self.ident.home}",
+                "--build-arg",
+                f"LUBOX_SHELL_BASENAME={self.ident.shell_basename}",
+                "-f",
+                str(root / "Containerfile"),
+                str(root),
+            ]
+            if progress is None:
+                self.engine.run(args, capture=True)
+            else:
+                progress.detail(f"{self.engine.name} build {tag}")
+                self.engine.run_progress(args, progress)
+        return tag
+
+    def containerfile(self, base_image: str) -> str:
+        return f"""FROM {base_image}
+ARG LUBOX_USERNAME
+ARG LUBOX_UID
+ARG LUBOX_GID
+ARG LUBOX_HOME
+ARG LUBOX_SHELL_BASENAME
+COPY lubox /usr/local/bin/lubox
+COPY user.json /tmp/lubox-user.json
+RUN chmod 0755 /usr/local/bin/lubox \
+ && set -eux \
+ && shell_pkg="" \
+ && if [ "$LUBOX_SHELL_BASENAME" != "sh" ]; then shell_pkg="$LUBOX_SHELL_BASENAME"; fi \
+ && if command -v apt-get >/dev/null 2>&1; then \
+      export DEBIAN_FRONTEND=noninteractive; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends python3 sudo ca-certificates passwd coreutils procps hostname locales openssh-client git ncurses-bin debianutils grep net-tools vim-tiny nano man-db less findutils sed gawk diffutils patch tar gzip bzip2 xz-utils zip unzip file curl wget rsync iproute2 iputils-ping libcap2-bin dnsutils lsof psmisc util-linux $shell_pkg; \
+      for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf; do apt-get install -y --no-install-recommends "$p" || true; done; \
+      rm -rf /var/lib/apt/lists/*; \
+    elif command -v dnf >/dev/null 2>&1; then \
+      dnf install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
+      for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf; do dnf install -y "$p" || true; done; \
+      dnf clean all; \
+    elif command -v microdnf >/dev/null 2>&1; then \
+      microdnf install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
+      for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf; do microdnf install -y "$p" || true; done; \
+      microdnf clean all; \
+    elif command -v yum >/dev/null 2>&1; then \
+      yum install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
+      for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf; do yum install -y "$p" || true; done; \
+      yum clean all; \
+    elif command -v apk >/dev/null 2>&1; then \
+      apk add --no-cache python3 sudo ca-certificates shadow coreutils procps hostname libc-utils openssh-client git ncurses which grep net-tools vim nano mandoc less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap bind-tools lsof psmisc util-linux $shell_pkg; \
+      for p in musl-locales musl-locales-lang jq tree tmux htop strace make bash-completion ripgrep fd fzf; do apk add --no-cache "$p" || true; done; \
+    elif command -v pacman >/dev/null 2>&1; then \
+      pacman -Syu --noconfirm python sudo ca-certificates shadow coreutils procps-ng inetutils openssh git ncurses which grep net-tools vim nano man-db less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap bind lsof psmisc util-linux $shell_pkg; \
+      for p in jq tree tmux htop strace make bash-completion ripgrep fd fzf; do pacman -S --noconfirm "$p" || true; done; \
+      pacman -Scc --noconfirm || true; \
+    elif command -v zypper >/dev/null 2>&1; then \
+      zypper --non-interactive refresh; \
+      zypper --non-interactive install -y python3 sudo ca-certificates shadow coreutils procps hostname glibc-locale openssh git ncurses-utils which grep net-tools vim nano man less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap-progs bind-utils lsof psmisc util-linux $shell_pkg; \
+      for p in jq tree tmux htop strace make bash-completion ripgrep fd fzf; do zypper --non-interactive install -y "$p" || true; done; \
+      zypper clean -a || true; \
+    else \
+      echo 'lubox: unsupported image: no apt-get/dnf/microdnf/yum/apk/pacman/zypper found' >&2; \
+      exit 70; \
+    fi \
+ && for cmd in ssh git clear which grep netstat vi nano man less curl wget rsync tar gzip xz unzip file find sed awk diff patch lsof ip ping; do \
+      command -v "$cmd" >/dev/null 2>&1 || {{ echo "lubox: required CLI command missing after install: $cmd" >&2; exit 78; }}; \
+    done \
+ && if command -v ping >/dev/null 2>&1; then \
+      ping_bin="$(command -v ping)"; \
+      if command -v setcap >/dev/null 2>&1; then setcap cap_net_raw+ep "$ping_bin" || chmod u+s "$ping_bin" || true; \
+      else chmod u+s "$ping_bin" || true; fi; \
+    fi \
+ && if [ -f /etc/locale.gen ]; then \
+      sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen || true; \
+      grep -q '^en_US.UTF-8 UTF-8' /etc/locale.gen || printf '%s\\n' 'en_US.UTF-8 UTF-8' >> /etc/locale.gen; \
+      locale-gen || true; \
+    fi \
+ && if command -v localedef >/dev/null 2>&1 && ! locale -a 2>/dev/null | grep -Eiq '^en_US\\.utf-?8$'; then \
+      localedef -i en_US -f UTF-8 en_US.UTF-8 || true; \
+    fi \
+ && SHELL_PATH="$(command -v "$LUBOX_SHELL_BASENAME" || true)" \
+ && if [ -z "$SHELL_PATH" ]; then \
+      echo "lubox: required login shell '$LUBOX_SHELL_BASENAME' was not installed in image" >&2; \
+      exit 78; \
+    fi \
+ && case "$SHELL_PATH" in /*) : ;; *) echo "lubox: shell path is not absolute: $SHELL_PATH" >&2; exit 78 ;; esac \
+ && mkdir -p /etc/lubox /etc/sudoers.d "$(dirname "$LUBOX_HOME")" "/tmp/lubox-$LUBOX_UID" \
+ && if [ -f /etc/os-release ]; then cp /etc/os-release /etc/lubox/os-release-copy; else : > /etc/lubox/os-release-copy; fi \
+ && if ! getent group "$LUBOX_GID" >/dev/null 2>&1; then \
+      group_name="$LUBOX_USERNAME"; \
+      if getent group "$group_name" >/dev/null 2>&1; then group_name="lubox_$LUBOX_GID"; fi; \
+      groupadd -g "$LUBOX_GID" "$group_name"; \
+    fi \
+ && if id -u "$LUBOX_USERNAME" >/dev/null 2>&1; then \
+      usermod -u "$LUBOX_UID" -g "$LUBOX_GID" -d "$LUBOX_HOME" -s "$SHELL_PATH" "$LUBOX_USERNAME"; \
+    elif getent passwd "$LUBOX_UID" >/dev/null 2>&1; then \
+      old_user="$(getent passwd "$LUBOX_UID" | cut -d: -f1)"; \
+      usermod -l "$LUBOX_USERNAME" -d "$LUBOX_HOME" -m -s "$SHELL_PATH" -g "$LUBOX_GID" "$old_user"; \
+    else \
+      useradd -m -u "$LUBOX_UID" -g "$LUBOX_GID" -d "$LUBOX_HOME" -s "$SHELL_PATH" "$LUBOX_USERNAME"; \
+    fi \
+ && mkdir -p "$LUBOX_HOME" \
+ && chown "$LUBOX_UID:$LUBOX_GID" "$LUBOX_HOME" "/tmp/lubox-$LUBOX_UID" \
+ && printf '%s ALL=(ALL) NOPASSWD:ALL\\n' "$LUBOX_USERNAME" > /etc/sudoers.d/lubox \
+ && chmod 0440 /etc/sudoers.d/lubox \
+ && printf '%s\\n' "$SHELL_PATH" > /etc/lubox/shell \
+ && cp /tmp/lubox-user.json /etc/lubox/user.json
+"""
+
+
+@dataclasses.dataclass
+class ContainerInfo:
+    name: str
+    status: str
+    image: str
+    host_exec: str
+    base_image: str
+
+
+class ContainerManager:
+    def __init__(self, engine: Engine, ident: HostIdentity, paths: LuboxPaths):
+        self.engine = engine
+        self.ident = ident
+        self.paths = paths
+        self._locale_cache: Dict[str, List[str]] = {}
+
+    def create(self, name: str, base_image: str, no_host_exec: bool, rebuild: bool) -> None:
+        validate_box_name(name)
+        cname = container_name(name)
+        progress = Progress(f"lubox create {name}", 6)
+        try:
+            progress.begin("check engine")
+            self.engine.ensure_ready(start_machine=True)
+
+            progress.begin("check existing container")
+            if self.engine.container_exists(cname):
+                if not rebuild:
+                    die(f"lubox: container already exists: {cname}; use --rebuild to recreate")
+                progress.detail(f"removing existing {cname}")
+                self.stop_server(name)
+                self.engine.run_progress(["rm", "-f", cname], progress)
+
+            progress.begin("prepare state")
+            host_exec = not no_host_exec
+            mount_dir = self.prepare_hostexec_files(name, host_exec)
+
+            progress.begin("build image")
+            tag = ImageBuilder(self.engine, self.ident).build(name, base_image, progress)
+
+            progress.begin("validate image")
+            shell_path = self.image_shell_path(tag, progress)
+
+            progress.begin("create container")
+            args = self.create_args(name, tag, base_image, host_exec, mount_dir, shell_path)
+            self.engine.run_progress(args, progress)
+            progress.finish(f"created {cname}")
+            print(f"created {cname}")
+        except LuboxError:
+            progress.fail("failed")
+            raise
+        except KeyboardInterrupt:
+            progress.fail("interrupted")
+            raise
+
+    def image_shell_path(self, tag: str, progress: Optional[Progress] = None) -> str:
+        if progress is None:
+            self.engine.run(["run", "--rm", tag, "/usr/local/bin/lubox", "__container-init-check"], capture=True)
+            cp = self.engine.run(["run", "--rm", tag, "/bin/sh", "-lc", "cat /etc/lubox/shell"], capture=True)
+        else:
+            progress.detail("checking /etc/lubox metadata")
+            self.engine.run_progress(["run", "--rm", tag, "/usr/local/bin/lubox", "__container-init-check"], progress)
+            cp = self.engine.run_progress(["run", "--rm", tag, "/bin/sh", "-lc", "cat /etc/lubox/shell"], progress)
+        shell_path = _decode_output(cp.stdout).strip()
+        if not shell_path.startswith("/"):
+            die(f"lubox: built image did not report absolute shell path: {shell_path!r}")
+        return shell_path
+
+    def create_args(
+        self,
+        name: str,
+        tag: str,
+        base_image: str,
+        host_exec: bool,
+        mount_dir: pathlib.Path,
+        shell_path: str,
+    ) -> List[str]:
+        cname = container_name(name)
+        host_ssh_sock = current_ssh_auth_sock()
+        _host_gpg_home, host_gpg_sockets = current_gpg_info()
+        ssh_agent = host_ssh_sock is not None and (is_linux() or host_exec)
+        gpg_agent = bool(host_gpg_sockets) and (is_linux() or host_exec)
+        if host_ssh_sock is not None and not is_linux() and not host_exec:
+            eprint("lubox: SSH_AUTH_SOCK not forwarded because --no-host-exec disables macOS socket proxy")
+        if host_gpg_sockets and not is_linux() and not host_exec:
+            eprint("lubox: GPG agent sockets not forwarded because --no-host-exec disables macOS socket proxy")
+        labels = {
+            f"{LABEL_PREFIX}": "1",
+            f"{LABEL_PREFIX}.name": name,
+            f"{LABEL_PREFIX}.version": VERSION,
+            f"{LABEL_PREFIX}.host_exec": "true" if host_exec else "false",
+            f"{LABEL_PREFIX}.home": str(self.ident.home),
+            f"{LABEL_PREFIX}.user": self.ident.username,
+            f"{LABEL_PREFIX}.uid": str(self.ident.uid),
+            f"{LABEL_PREFIX}.gid": str(self.ident.gid),
+            f"{LABEL_PREFIX}.shell_basename": self.ident.shell_basename,
+            f"{LABEL_PREFIX}.engine": self.engine.name,
+            f"{LABEL_PREFIX}.base_image": base_image,
+            f"{LABEL_PREFIX}.ssh_agent": "true" if ssh_agent else "false",
+            f"{LABEL_PREFIX}.gpg_agent": "true" if gpg_agent else "false",
+        }
+        args = ["create", "--name", cname, "--hostname", socket.gethostname(), "--cap-add", "NET_RAW"]
+        for key, value in labels.items():
+            args += ["--label", f"{key}={value}"]
+        envs = {
+            "HOME": str(self.ident.home),
+            "USER": self.ident.username,
+            "LOGNAME": self.ident.username,
+            "SHELL": shell_path,
+            "PATH": self.container_path_value(),
+            "LUBOX_NAME": name,
+            "LUBOX_CONTAINER_NAME": name,
+            "LUBOX_ENGINE_CONTAINER_NAME": cname,
+            "LUBOX_HOST_LUBOX": host_lubox_path(),
+            "LUBOX_HOST_EXEC": "1" if host_exec else "0",
+            "LUBOX_HOSTEXEC_CONFIG": CONTAINER_CONFIG_PATH,
+        }
+        if ssh_agent:
+            envs["SSH_AUTH_SOCK"] = container_ssh_auth_sock(self.ident.uid)
+            envs["LUBOX_SSH_AGENT_PROXY"] = "1" if not is_linux() else "0"
+        if gpg_agent and not is_linux():
+            envs["GNUPGHOME"] = container_gpg_home(self.ident.uid)
+            envs["LUBOX_GPG_AGENT_PROXY"] = "1"
+        for key, value in envs.items():
+            args += ["--env", f"{key}={value}"]
+        if is_linux():
+            args += self.linux_session_args()
+        args += ["--workdir", str(self.ident.home)]
+        args += ["--mount", f"type=bind,src={self.ident.home},dst={self.ident.home}"]
+        args += ["--mount", f"type=bind,src={mount_dir},dst=/run/lubox,readonly"]
+        if ssh_agent and is_linux() and host_ssh_sock is not None:
+            args += ["--mount", f"type=bind,src={host_ssh_sock},dst={container_ssh_auth_sock(self.ident.uid)}"]
+        if gpg_agent and is_linux():
+            for sock in sorted({str(path) for path in host_gpg_sockets.values()}):
+                args += ["--mount", f"type=bind,src={sock},dst={sock}"]
+        if self.engine.name == "podman" and host_exec:
+            args += [
+                "--secret",
+                f"{secret_name(name)},type=mount,target={PODMAN_TOKEN_PATH},uid={self.ident.uid},gid={self.ident.gid},mode=0400",
+            ]
+        if self.engine.name == "podman":
+            args += ["--userns=keep-id", "--user", f"{self.ident.uid}:{self.ident.gid}"]
+            if is_linux():
+                args += ["--group-add", "keep-groups", "--network=host", "--security-opt", "label=disable"]
+        else:
+            args += ["--user", f"{self.ident.uid}:{self.ident.gid}"]
+            if is_linux():
+                args += ["--network=host"]
+                for gid in sorted(set(os.getgroups())):
+                    args += ["--group-add", str(gid)]
+        args += [tag, "/bin/sh", "-lc", KEEPALIVE_COMMAND]
+        return args
+
+    def linux_session_args(self) -> List[str]:
+        args: List[str] = []
+        pass_env = [
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XDG_RUNTIME_DIR",
+            "XAUTHORITY",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "PULSE_SERVER",
+            "PIPEWIRE_RUNTIME_DIR",
+            "COLORTERM",
+            "TERM",
+            "LANG",
+        ]
+        for key in sorted(os.environ):
+            if key.startswith("LC_"):
+                pass_env.append(key)
+        for key in pass_env:
+            value = os.environ.get(key)
+            if value:
+                args += ["--env", f"{key}={value}"]
+        if os.environ.get("DISPLAY") and pathlib.Path("/tmp/.X11-unix").exists():
+            args += ["--mount", "type=bind,src=/tmp/.X11-unix,dst=/tmp/.X11-unix"]
+        xauth = os.environ.get("XAUTHORITY")
+        if xauth:
+            xp = pathlib.Path(xauth)
+            if xp.exists() and not path_under(xp, self.ident.home):
+                args += ["--mount", f"type=bind,src={xp},dst={xp},readonly"]
+        if os.environ.get("WAYLAND_DISPLAY") and os.environ.get("XDG_RUNTIME_DIR"):
+            xr = pathlib.Path(os.environ["XDG_RUNTIME_DIR"])
+            if xr.exists():
+                args += ["--mount", f"type=bind,src={xr},dst={xr}"]
+        if pathlib.Path("/dev/dri").exists():
+            args += ["--device", "/dev/dri"]
+        return args
+
+    def container_shell_path(self) -> str:
+        common = [
+            f"/usr/bin/{self.ident.shell_basename}",
+            f"/bin/{self.ident.shell_basename}",
+            f"/usr/local/bin/{self.ident.shell_basename}",
+        ]
+        if self.ident.shell_basename == "sh":
+            common.append("/bin/sh")
+        return common[0]
+
+    def container_path_value(self) -> str:
+        standard = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        return f"{self.ident.home}/.local/bin:{self.ident.home}/bin:{standard}"
+
+    def prepare_hostexec_files(self, name: str, host_exec: bool) -> pathlib.Path:
+        mount_dir = self.paths.mount_dir(name, self.engine.name)
+        if is_macos() and self.engine.name == "podman" and not path_under(mount_dir, self.ident.home):
+            die(
+                f"lubox: cannot mount host-exec config path into Podman machine: {mount_dir}\n"
+                'Recreate/configure the Podman machine with this path shared, or use: podman machine init -v "$HOME:$HOME" --now'
+            )
+        token_file = self.paths.token_file(name)
+        if host_exec:
+            token = secrets.token_bytes(32)
+            atomic_write_bytes(token_file, token, 0o600)
+            if self.engine.name == "podman":
+                self.create_podman_secret(name, token)
+            else:
+                atomic_write_bytes(mount_dir / "hostexec.token", token, 0o600)
+        else:
+            safe_unlink(token_file)
+            safe_unlink(mount_dir / "hostexec.token")
+        self.write_initial_config(name, host_exec, mount_dir)
+        return mount_dir
+
+    def write_initial_config(self, name: str, host_exec: bool, mount_dir: pathlib.Path) -> None:
+        cfg = {
+            "version": 1,
+            "enabled": False if not host_exec else False,
+            "box_name": name,
+            "container_name": container_name(name),
+            "container_id": "",
+            "host": self.hostexec_host(),
+            "port": 0,
+            "token_path": self.container_token_path(),
+            "pty_default": True,
+        }
+        if not host_exec:
+            cfg["token_path"] = ""
+        atomic_write_json(mount_dir / "hostexec.json", cfg, 0o644)
+
+    def create_podman_secret(self, name: str, token: bytes) -> None:
+        sec = secret_name(name)
+        self.engine.run(["secret", "rm", sec], check=False, capture=True)
+        self.engine.run(["secret", "create", sec, "-"], input_data=token, capture=True)
+
+    def ensure_podman_secret(self, name: str) -> None:
+        if self.engine.name != "podman":
+            return
+        token_path = self.paths.token_file(name)
+        if not token_path.exists():
+            die(f"lubox: host-exec token missing; recreate container: {name}")
+        cp = self.engine.run(["secret", "inspect", secret_name(name)], check=False, capture=True)
+        if cp.returncode != 0:
+            self.create_podman_secret(name, read_token(token_path))
+
+    def container_token_path(self) -> str:
+        if self.engine.name == "podman":
+            return PODMAN_TOKEN_PATH
+        return CONTAINER_TOKEN_PATH
+
+    def hostexec_host(self) -> str:
+        if is_linux():
+            return "127.0.0.1"
+        if self.engine.name == "podman":
+            return "host.containers.internal"
+        return "host.docker.internal"
+
+    def hostexec_enabled(self, name: str, info: Optional[Dict[str, Any]] = None) -> bool:
+        if info is None:
+            info = self.require_container(name)
+        labels = self.labels_from_info(info or {})
+        return labels.get(f"{LABEL_PREFIX}.host_exec") == "true"
+
+    def ssh_agent_enabled(self, name: str, info: Optional[Dict[str, Any]] = None) -> bool:
+        if info is None:
+            info = self.require_container(name)
+        labels = self.labels_from_info(info or {})
+        return labels.get(f"{LABEL_PREFIX}.ssh_agent") == "true"
+
+
+    def gpg_agent_enabled(self, name: str, info: Optional[Dict[str, Any]] = None) -> bool:
+        if info is None:
+            info = self.require_container(name)
+        labels = self.labels_from_info(info or {})
+        configured = labels.get(f"{LABEL_PREFIX}.gpg_agent")
+        if configured is not None:
+            return configured == "true"
+        return self.hostexec_enabled(name, info) and bool(current_gpg_info()[1])
+
+    def labels_from_info(self, info: Dict[str, Any]) -> Dict[str, str]:
+        config = info.get("Config", {})
+        labels = config.get("Labels", {}) if isinstance(config, dict) else {}
+        if labels is None:
+            return {}
+        return {str(k): str(v) for k, v in labels.items()}
+
+    def env_from_info(self, info: Dict[str, Any]) -> Dict[str, str]:
+        config = info.get("Config", {})
+        env_list = config.get("Env", []) if isinstance(config, dict) else []
+        env: Dict[str, str] = {}
+        if isinstance(env_list, list):
+            for item in env_list:
+                if isinstance(item, str) and "=" in item:
+                    key, value = item.split("=", 1)
+                    env[key] = value
+        return env
+
+    def running_from_info(self, info: Dict[str, Any]) -> bool:
+        state = info.get("State", {})
+        if isinstance(state, dict):
+            return bool(state.get("Running")) or str(state.get("Status", "")).lower() == "running"
+        return False
+
+    def container_id_from_info(self, info: Dict[str, Any]) -> str:
+        return str(info.get("Id") or "")
+
+    def ensure_runtime_mount_files(self, name: str, host_exec: Optional[bool] = None, running: bool = False) -> None:
+        if host_exec is None:
+            host_exec = self.hostexec_enabled(name)
+        if not host_exec:
+            mount_dir = self.paths.mount_dir(name, self.engine.name)
+            self.write_initial_config(name, False, mount_dir)
+            return
+        mount_dir = self.paths.mount_dir(name, self.engine.name)
+        token_path = self.paths.token_file(name)
+        if not token_path.exists():
+            die(f"lubox: host-exec token missing; recreate container: {name}")
+        if self.engine.name == "docker":
+            atomic_write_bytes(mount_dir / "hostexec.token", read_token(token_path), 0o600)
+        elif self.engine.name == "podman" and not running:
+            self.ensure_podman_secret(name)
+        if not (mount_dir / "hostexec.json").exists():
+            self.write_initial_config(name, True, mount_dir)
+
+    def require_container(self, name: str) -> Dict[str, Any]:
+        validate_box_name(name)
+        return self.engine.inspect_container(container_name(name), required=True) or {}
+
+    def start(self, name: str, *, start_server: bool = True, announce: bool = True) -> Dict[str, Any]:
+        self.engine.ensure_ready(start_machine=True)
+        info = self.require_container(name)
+        running = self.running_from_info(info)
+        host_exec = self.hostexec_enabled(name, info)
+        ssh_agent = self.ssh_agent_enabled(name, info)
+        gpg_agent = self.gpg_agent_enabled(name, info)
+        self.ensure_runtime_mount_files(name, host_exec, running=running)
+        cname = container_name(name)
+        if not running:
+            self.engine.run(["start", cname], capture=True)
+            running = True
+        self.sync_container_lubox(cname, name)
+        if start_server and host_exec:
+            self.ensure_hostexec_server(name, host_exec, ssh_agent, gpg_agent)
+            self.ensure_ssh_agent_proxy(name, ssh_agent, self.container_id_from_info(info))
+            self.ensure_gpg_agent_proxy(name, gpg_agent, self.container_id_from_info(info))
+        if announce:
+            print(f"started {cname}")
+        return info
+
+    def script_sync_stamp(self) -> str:
+        script_path = pathlib.Path(__file__).resolve()
+        try:
+            st = script_path.stat()
+            return f"{VERSION}:{int(st.st_mtime)}:{st.st_size}"
+        except OSError:
+            return VERSION
+
+    def sync_container_lubox(self, cname: str, name: str) -> None:
+        stamp = self.script_sync_stamp()
+        stamp_file = self.paths.state_dir(name) / "container-lubox-sync.stamp"
+        try:
+            if stamp_file.read_text(encoding="utf-8").strip() == stamp:
+                return
+        except OSError:
+            pass
+        script_path = pathlib.Path(__file__).resolve()
+        quoted = shlex.quote(str(script_path))
+        cmd = f"if [ -x {quoted} ]; then sudo install -m 0755 {quoted} /usr/local/bin/lubox; fi"
+        cp = self.engine.run(["exec", cname, "/bin/sh", "-lc", cmd], check=False, capture=True)
+        if cp.returncode != 0:
+            cp = self.engine.run(["exec", "--user", "0:0", cname, "/bin/sh", "-lc", cmd], check=False, capture=True)
+        if cp.returncode == 0:
+            atomic_write_text(stamp_file, stamp + "\n", 0o600)
+
+    def stop(self, name: str) -> None:
+        validate_box_name(name)
+        cname = container_name(name)
+        if not self.engine.container_exists(cname):
+            die(f"lubox: container not found: {cname}\nTry: lubox create {name}")
+        self.stop_server(name)
+        self.stop_code_server_tunnels(name)
+        if self.engine.is_running(cname):
+            self.engine.run(["stop", cname], capture=True)
+        print(f"stopped {cname}")
+
+    def destroy(self, name: str, force: bool) -> None:
+        validate_box_name(name)
+        cname = container_name(name)
+        self.stop_server(name)
+        self.stop_code_server_tunnels(name)
+        if self.engine.container_exists(cname):
+            if force:
+                self.engine.run(["rm", "-f", cname], capture=True)
+            else:
+                if self.engine.is_running(cname):
+                    self.engine.run(["stop", cname], capture=True)
+                self.engine.run(["rm", cname], capture=True)
+        if self.engine.name == "podman":
+            self.engine.run(["secret", "rm", secret_name(name)], check=False, capture=True)
+        shutil.rmtree(self.paths.state / name, ignore_errors=True)
+        shutil.rmtree(self.paths.runtime / name, ignore_errors=True)
+        if force:
+            self.engine.run(["rmi", image_name(name)], check=False, capture=True)
+            print(f"destroyed {cname} and removed image {image_name(name)}")
+        else:
+            print(f"destroyed {cname}; image kept: {image_name(name)}")
+
+    def enter(self, name: str, cmd: Sequence[str], *, xquartz: bool = False) -> int:
+        info = self.start(name, start_server=True, announce=False)
+        cname = container_name(name)
+        cwd = self.container_cwd(cname)
+        shell_path = self.read_container_shell(cname, info)
+        exec_args = ["exec"]
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            exec_args.append("-it")
+        elif sys.stdin.isatty():
+            exec_args.append("-i")
+        exec_args += ["--user", f"{self.ident.uid}:{self.ident.gid}", "-w", cwd]
+        exec_args += self.exec_env_args(cname, name, auto_start_xquartz=xquartz)
+        run_cmd = strip_dashdash(cmd)
+        if run_cmd:
+            exec_args += [cname, shell_path, "-l", "-c", shlex.join(run_cmd)]
+        else:
+            exec_args += [cname, shell_path, "-l"]
+        return subprocess.call(self.engine.argv(exec_args))
+
+    def exec(self, name: str, cmd: Sequence[str]) -> int:
+        run_cmd = strip_dashdash(cmd)
+        if not run_cmd:
+            die("lubox: exec requires command after --")
+        self.start(name, start_server=True, announce=False)
+        cname = container_name(name)
+        cwd = self.container_cwd(cname)
+        exec_args = ["exec"]
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            exec_args.append("-it")
+        exec_args += ["--user", f"{self.ident.uid}:{self.ident.gid}", "-w", cwd]
+        exec_args += self.exec_env_args(cname, name)
+        exec_args += [cname] + run_cmd
+        return subprocess.call(self.engine.argv(exec_args))
+
+    def code_server(self, name: str, args: argparse.Namespace) -> int:
+        info = self.start(name, start_server=True, announce=False)
+        cname = container_name(name)
+        target = self.code_server_target(cname, args.path)
+        bin_path = self.ensure_code_server_installed(cname, reinstall=bool(args.reinstall))
+        if args.install_only:
+            print(bin_path)
+            return 0
+        host_port = int(args.port) if args.port is not None else self.choose_random_high_port()
+        container_port = int(args.container_port) if args.container_port is not None else host_port
+        auth = str(args.auth)
+        password = str(args.password or "")
+        if args.host:
+            auth = "password"
+            password = secrets.token_urlsafe(18)
+        elif auth == "password" and not password:
+            password = secrets.token_urlsafe(18)
+        if not self.local_port_available_on("0.0.0.0" if args.host else "127.0.0.1", host_port):
+            die(f"lubox: local port already in use: {host_port}")
+        bind_host = "127.0.0.1"
+        if args.host and not (is_macos() and self.engine.name == "podman"):
+            bind_host = "0.0.0.0"
+        code_proc = self.start_code_server_foreground(
+            name,
+            cname,
+            bin_path,
+            container_port,
+            target,
+            auth,
+            password,
+            bind_host,
+            self.hostexec_enabled(name, info),
+        )
+        proxy_proc: Optional[subprocess.Popen] = None
+        listen_host = "0.0.0.0" if args.host else "127.0.0.1"
+        try:
+            self.wait_code_server_ready(cname, container_port, code_proc)
+            if is_macos() and self.engine.name == "podman":
+                proxy_proc = self.start_code_server_proxy_foreground(name, cname, listen_host, host_port, container_port)
+                public_port = host_port
+            elif is_linux():
+                if host_port != container_port:
+                    eprint("lubox: --port cannot remap on Linux host-network containers; using --container-port")
+                public_port = container_port
+            else:
+                die("lubox: code-server supports Linux host-network containers and macOS Podman")
+        except Exception:
+            self.terminate_process(code_proc)
+            if proxy_proc is not None:
+                self.terminate_process(proxy_proc)
+            raise
+        url = f"http://127.0.0.1:{public_port}/"
+        print(f"code-server: {url}")
+        print(f"port: {public_port}")
+        if args.host:
+            print(f"listen: 0.0.0.0:{public_port}")
+        if auth == "password":
+            print(f"password: {password}")
+        sys.stdout.flush()
+        if not args.no_open:
+            self.open_url(url)
+        try:
+            return normalize_exit_code(code_proc.wait())
+        except KeyboardInterrupt:
+            self.terminate_process(code_proc, signal.SIGINT)
+            if proxy_proc is not None:
+                self.terminate_process(proxy_proc, signal.SIGINT)
+            return 130
+        finally:
+            if proxy_proc is not None:
+                self.terminate_process(proxy_proc)
+            self.stop_code_server_process(cname, container_port)
+
+    def code_server_target(self, cname: str, value: str) -> str:
+        if not value or value == ".":
+            return self.container_cwd(cname)
+        path = pathlib.Path(value)
+        if path.is_absolute():
+            return value
+        host_path = pathlib.Path.cwd() / value
+        try:
+            host_path = host_path.resolve()
+        except OSError:
+            pass
+        if path_under(host_path, self.ident.home):
+            return str(host_path)
+        return value
+
+    def ensure_code_server_installed(self, cname: str, *, reinstall: bool = False) -> str:
+        check_cmd = (
+            'p="$HOME/.local/share/lubox/code-server/current/bin/code-server"; '
+            'if [ -x "$p" ]; then printf "%s\\n" "$p"; '
+            'elif command -v code-server >/dev/null 2>&1; then command -v code-server; fi'
+        )
+        if not reinstall:
+            cp = self.engine.run(["exec", cname, "sh", "-lc", check_cmd], check=False, capture=True)
+            found = _decode_output(cp.stdout).strip().splitlines()
+            if cp.returncode == 0 and found:
+                return found[0]
+        eprint(f"lubox: installing code-server in {cname.removeprefix('lubox-')} (first run only)")
+        cp = self.engine.run(
+            ["exec", "-i", cname, "python3", "-"],
+            check=False,
+            capture=True,
+            input_data=CODE_SERVER_INSTALL_SCRIPT,
+            timeout=900,
+        )
+        if cp.returncode != 0:
+            stderr = _decode_output(cp.stderr).strip()
+            stdout = _decode_output(cp.stdout).strip()
+            detail = stderr or stdout or f"exit {cp.returncode}"
+            die(f"lubox: failed to install code-server in {cname}: {detail}")
+        lines = [line.strip() for line in _decode_output(cp.stdout).splitlines() if line.strip()]
+        if not lines:
+            die("lubox: code-server install did not report binary path")
+        return lines[-1]
+
+    def choose_random_high_port(self) -> int:
+        for _ in range(256):
+            port = 49152 + secrets.randbelow(65535 - 49152 + 1)
+            if self.local_port_available_on("127.0.0.1", port):
+                return port
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+        finally:
+            sock.close()
+
+    def local_port_available_on(self, host: str, port: int) -> bool:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind((host, port))
+            return True
+        except OSError:
+            return False
+        finally:
+            sock.close()
+
+    def start_code_server_foreground(
+        self,
+        name: str,
+        cname: str,
+        bin_path: str,
+        port: int,
+        target: str,
+        auth: str,
+        password: str,
+        bind_host: str,
+        host_exec: bool,
+    ) -> subprocess.Popen:
+        exec_args = [
+            "exec",
+            "-i",
+            "--user",
+            f"{self.ident.uid}:{self.ident.gid}",
+            "--env",
+            f"LUBOX_NAME={name}",
+            "--env",
+            f"LUBOX_CONTAINER_NAME={name}",
+            "--env",
+            f"LUBOX_ENGINE_CONTAINER_NAME={cname}",
+            "--env",
+            f"LUBOX_HOST_LUBOX={host_lubox_path()}",
+            "--env",
+            f"LUBOX_HOST_EXEC={'1' if host_exec else '0'}",
+            "--env",
+            f"LUBOX_HOSTEXEC_CONFIG={CONTAINER_CONFIG_PATH}",
+            "--env",
+            f"PATH={self.container_path_value()}",
+        ]
+        if auth == "password":
+            exec_args += ["--env", f"PASSWORD={password}"]
+        if self.ssh_agent_enabled(name):
+            exec_args += ["--env", f"SSH_AUTH_SOCK={container_ssh_auth_sock(self.ident.uid)}"]
+        if self.gpg_agent_enabled(name) and not is_linux():
+            exec_args += ["--env", f"GNUPGHOME={container_gpg_home(self.ident.uid)}"]
+            exec_args += ["--env", "LUBOX_GPG_AGENT_PROXY=1"]
+        exec_args += [
+            cname,
+            bin_path,
+            "--bind-addr",
+            f"{bind_host}:{port}",
+            "--auth",
+            auth,
+            target,
+        ]
+        return self.engine.popen(exec_args, stdin=subprocess.DEVNULL, stdout=None, stderr=None)
+
+    def wait_code_server_ready(self, cname: str, port: int, proc: subprocess.Popen) -> None:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                die(f"lubox: code-server exited early with status {normalize_exit_code(proc.returncode)}")
+            if self.container_port_open(cname, port):
+                return
+            time.sleep(0.25)
+        die(f"lubox: timed out waiting for code-server on port {port}")
+
+    def start_code_server_proxy_foreground(
+        self,
+        name: str,
+        cname: str,
+        listen_host: str,
+        host_port: int,
+        container_port: int,
+    ) -> subprocess.Popen:
+        log_path = self.paths.code_server_tunnel_log_file(name, host_port)
+        pid_file = self.paths.code_server_tunnel_pid_file(name, host_port)
+        safe_unlink(pid_file)
+        script = str(pathlib.Path(__file__).resolve())
+        argv = [
+            sys.executable,
+            script,
+            "__code-server-proxy-server",
+            "--engine",
+            self.engine.name,
+            "--container",
+            cname,
+            "--listen-host",
+            listen_host,
+            "--listen-port",
+            str(host_port),
+            "--target-port",
+            str(container_port),
+            "--pid-file",
+            str(pid_file),
+            "--log-file",
+            str(log_path),
+        ]
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if tcp_port_open("127.0.0.1", host_port):
+                return proc
+            if proc.poll() is not None:
+                stderr = _decode_output(proc.stderr.read() if proc.stderr is not None else b"").strip()
+                stdout = _decode_output(proc.stdout.read() if proc.stdout is not None else b"").strip()
+                detail = stderr or stdout or f"exit {proc.returncode}"
+                die(f"lubox: failed to start code-server proxy: {detail}")
+            time.sleep(0.2)
+        self.terminate_process(proc)
+        die(f"lubox: timed out waiting for code-server proxy on port {host_port}")
+
+    def terminate_process(self, proc: subprocess.Popen, signum: int = signal.SIGTERM) -> None:
+        if proc.poll() is not None:
+            return
+        try:
+            proc.send_signal(signum)
+        except OSError:
+            return
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            proc.wait()
+
+    def start_code_server_process(
+        self,
+        cname: str,
+        name: str,
+        bin_path: str,
+        port: int,
+        target: str,
+        auth: str,
+        password: str,
+        bind_host: str,
+    ) -> None:
+        if self.container_port_open(cname, port):
+            if bind_host == "127.0.0.1" or self.container_port_listens_publicly(cname, port):
+                return
+            self.stop_code_server_process(cname, port)
+        log_path = self.paths.code_server_log_file(name)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        env_prefix = f"PASSWORD={shlex.quote(password)} " if auth == "password" else ""
+        cmd = (
+            f"mkdir -p {shlex.quote(str(log_path.parent))}; "
+            f"{env_prefix}nohup {shlex.quote(bin_path)} "
+            f"--bind-addr {shlex.quote(bind_host)}:{port} --auth {shlex.quote(auth)} "
+            f"{shlex.quote(target)} > {shlex.quote(str(log_path))} 2>&1 &"
+        )
+        cp = self.engine.run(["exec", cname, "sh", "-lc", cmd], check=False, capture=True)
+        if cp.returncode != 0:
+            die(f"lubox: failed to start code-server: {_decode_output(cp.stderr).strip() or _decode_output(cp.stdout).strip()}")
+        deadline = time.time() + 25
+        while time.time() < deadline:
+            if self.container_port_open(cname, port):
+                return
+            time.sleep(0.25)
+        tail = ""
+        try:
+            tail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:].strip()
+        except OSError:
+            pass
+        detail = f"\nlog tail:\n{tail}" if tail else ""
+        die(f"lubox: timed out waiting for code-server on port {port}{detail}")
+
+    def container_port_open(self, cname: str, port: int) -> bool:
+        script = (
+            "import socket,sys\n"
+            "try:\n"
+            " s=socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=1); s.close(); raise SystemExit(0)\n"
+            "except OSError:\n"
+            " raise SystemExit(1)\n"
+        )
+        cp = self.engine.run(["exec", cname, "python3", "-c", script, str(port)], check=False, capture=True, timeout=5)
+        return cp.returncode == 0
+
+    def container_port_listens_publicly(self, cname: str, port: int) -> bool:
+        cp = self.engine.run(["exec", cname, "ss", "-ltn"], check=False, capture=True, timeout=5)
+        if cp.returncode != 0:
+            return False
+        suffix = f":{port}"
+        for line in _decode_output(cp.stdout).splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            local = parts[3]
+            if not local.endswith(suffix):
+                continue
+            if local.startswith("127.") or local.startswith("[::1]") or local.startswith("::1"):
+                continue
+            return True
+        return False
+
+    def stop_code_server_process(self, cname: str, port: int) -> None:
+        pattern = f"code-server.*--bind-addr .*:{port}"
+        self.engine.run(["exec", cname, "sh", "-lc", f"pkill -f {shlex.quote(pattern)} || true"], check=False, capture=True)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if not self.container_port_open(cname, port):
+                return
+            time.sleep(0.2)
+
+    def ensure_code_server_exposed(
+        self,
+        name: str,
+        cname: str,
+        info: Dict[str, Any],
+        host_port: Optional[int],
+        container_port: int,
+        *,
+        explicit_port: bool,
+    ) -> int:
+        if is_macos() and self.engine.name == "podman":
+            self.stop_code_server_tunnels(name)
+            public_port = self.choose_code_server_host_port(name, host_port or 8080, explicit=explicit_port)
+            self.ensure_code_server_proxy(name, cname, public_port, container_port)
+            return public_port
+        if is_linux():
+            if host_port is not None and host_port != container_port:
+                eprint("lubox: --port cannot remap on Linux host-network containers; using --container-port")
+            return container_port
+        die("lubox: code-server host tunnel currently supports Linux host-network containers and macOS Podman")
+
+    def choose_code_server_host_port(self, name: str, preferred: int, *, explicit: bool) -> int:
+        if self.code_server_tunnel_running(name, preferred):
+            return preferred
+        if self.local_port_available(preferred):
+            return preferred
+        if explicit:
+            die(f"lubox: local port already in use: {preferred}")
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+        finally:
+            sock.close()
+
+    def local_port_available(self, port: int) -> bool:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+        finally:
+            sock.close()
+
+    def code_server_tunnel_running(self, name: str, port: int) -> bool:
+        pid_file = self.paths.code_server_tunnel_pid_file(name, port)
+        if not pid_file.exists() or not tcp_port_open("127.0.0.1", port):
+            return False
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return False
+        return looks_like_pid_running(pid)
+
+    def ensure_podman_code_server_tunnel(
+        self,
+        name: str,
+        cname: str,
+        info: Dict[str, Any],
+        host_port: int,
+        container_port: int,
+    ) -> None:
+        if self.code_server_tunnel_running(name, host_port):
+            return
+        pid_file = self.paths.code_server_tunnel_pid_file(name, host_port)
+        safe_unlink(pid_file)
+        container_ip = self.container_ip(info) or self.container_ip(self.engine.inspect_container(cname, required=True) or {})
+        if not container_ip:
+            die(f"lubox: cannot determine container IP for {cname}")
+        user, host, ssh_port, identity = self.podman_ssh_connection()
+        ssh_bin = shutil.which("ssh")
+        if not ssh_bin:
+            die("lubox: ssh not found; cannot create Podman machine tunnel")
+        log_path = self.paths.code_server_tunnel_log_file(name, host_port)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        argv = [
+            ssh_bin,
+            "-N",
+            "-L",
+            f"127.0.0.1:{host_port}:{container_ip}:{container_port}",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=2",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+        ]
+        if identity:
+            argv += ["-i", identity]
+        if ssh_port:
+            argv += ["-p", str(ssh_port)]
+        argv.append(f"{user}@{host}")
+        log = log_path.open("ab")
+        try:
+            proc = subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
+        finally:
+            log.close()
+        atomic_write_text(pid_file, f"{proc.pid}\n", 0o600)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if tcp_port_open("127.0.0.1", host_port):
+                return
+            if proc.poll() is not None:
+                break
+            time.sleep(0.2)
+        safe_unlink(pid_file)
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        tail = ""
+        try:
+            tail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:].strip()
+        except OSError:
+            pass
+        detail = f"\nlog tail:\n{tail}" if tail else ""
+        die(f"lubox: failed to start code-server tunnel on localhost:{host_port}{detail}")
+
+    def ensure_code_server_proxy(self, name: str, cname: str, host_port: int, container_port: int) -> None:
+        if self.code_server_tunnel_running(name, host_port):
+            return
+        pid_file = self.paths.code_server_tunnel_pid_file(name, host_port)
+        safe_unlink(pid_file)
+        log_path = self.paths.code_server_tunnel_log_file(name, host_port)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        script = str(pathlib.Path(__file__).resolve())
+        argv = [
+            sys.executable,
+            script,
+            "__code-server-proxy-server",
+            "--engine",
+            self.engine.name,
+            "--container",
+            cname,
+            "--listen-port",
+            str(host_port),
+            "--target-port",
+            str(container_port),
+            "--pid-file",
+            str(pid_file),
+            "--log-file",
+            str(log_path),
+        ]
+        log = log_path.open("ab")
+        try:
+            proc = subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
+        finally:
+            log.close()
+        atomic_write_text(pid_file, f"{proc.pid}\n", 0o600)
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if tcp_port_open("127.0.0.1", host_port):
+                return
+            if proc.poll() is not None:
+                break
+            time.sleep(0.2)
+        safe_unlink(pid_file)
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        tail = ""
+        try:
+            tail = log_path.read_text(encoding="utf-8", errors="replace")[-4000:].strip()
+        except OSError:
+            pass
+        detail = f"\nlog tail:\n{tail}" if tail else ""
+        die(f"lubox: failed to start code-server proxy on localhost:{host_port}{detail}")
+
+    def podman_ssh_connection(self) -> Tuple[str, str, int, str]:
+        cp = self.engine.run(["system", "connection", "list", "--format", "json"], check=False, capture=True, timeout=15)
+        if cp.returncode != 0:
+            die(f"lubox: cannot inspect Podman SSH connection: {_decode_output(cp.stderr).strip()}")
+        try:
+            rows = json.loads(_decode_output(cp.stdout) or "[]")
+        except json.JSONDecodeError as exc:
+            die(f"lubox: cannot parse Podman connection JSON: {exc}")
+        if not isinstance(rows, list):
+            rows = []
+        choices = [row for row in rows if isinstance(row, dict) and row.get("IsMachine")]
+        choices.sort(key=lambda row: 0 if row.get("Default") else 1)
+        for row in choices:
+            uri_value = str(row.get("URI") or "")
+            parsed = urllib.parse.urlparse(uri_value)
+            if parsed.scheme != "ssh" or not parsed.hostname:
+                continue
+            user = urllib.parse.unquote(parsed.username or "core")
+            host = parsed.hostname
+            port = int(parsed.port or 22)
+            identity = str(row.get("Identity") or "")
+            return user, host, port, identity
+        die("lubox: no Podman machine SSH connection found")
+
+    def container_ip(self, info: Dict[str, Any]) -> str:
+        settings = info.get("NetworkSettings")
+        if not isinstance(settings, dict):
+            return ""
+        direct = str(settings.get("IPAddress") or "")
+        if direct:
+            return direct
+        networks = settings.get("Networks")
+        if isinstance(networks, dict):
+            for net in networks.values():
+                if isinstance(net, dict):
+                    ip = str(net.get("IPAddress") or "")
+                    if ip:
+                        return ip
+        return ""
+
+    def open_url(self, url: str) -> None:
+        if is_macos():
+            argv = ["open", url]
+        elif shutil.which("xdg-open"):
+            argv = ["xdg-open", url]
+        else:
+            return
+        try:
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
+
+    def stop_code_server_tunnels(self, name: str) -> None:
+        runtime_dir = self.paths.runtime_dir(name)
+        for pid_file in runtime_dir.glob("code-server-tunnel-*.pid"):
+            try:
+                pid = int(pid_file.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                safe_unlink(pid_file)
+                continue
+            if looks_like_pid_running(pid):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            safe_unlink(pid_file)
+
+    def exec_env_args(self, cname: str, name: str, *, auto_start_xquartz: bool = False) -> List[str]:
+        args: List[str] = []
+        args += ["--env", f"LUBOX_NAME={name}"]
+        args += ["--env", f"LUBOX_CONTAINER_NAME={name}"]
+        args += ["--env", f"LUBOX_ENGINE_CONTAINER_NAME={cname}"]
+        args += ["--env", f"LUBOX_HOST_LUBOX={host_lubox_path()}"]
+        args += ["--env", f"LUBOX_HOST_EXEC={'1' if self.hostexec_enabled(name) else '0'}"]
+        args += ["--env", f"LUBOX_HOSTEXEC_CONFIG={CONTAINER_CONFIG_PATH}"]
+        args += ["--env", f"PATH={self.container_path_value()}"]
+        if self.gpg_agent_enabled(name) and not is_linux():
+            args += ["--env", f"GNUPGHOME={container_gpg_home(self.ident.uid)}"]
+            args += ["--env", "LUBOX_GPG_AGENT_PROXY=1"]
+        for key, value in self.xquartz_env(auto_start=auto_start_xquartz).items():
+            args += ["--env", f"{key}={value}"]
+        keys = ["TERM", "COLORTERM", "LANG"] + [k for k in sorted(os.environ) if k.startswith("LC_")]
+        for key in keys:
+            value = os.environ.get(key)
+            if value:
+                args += ["--env", f"{key}={value}"]
+        return args
+
+    def xquartz_env(self, *, auto_start: bool) -> Dict[str, str]:
+        if not is_macos():
+            return {}
+        mode = os.environ.get("LUBOX_XQUARTZ", "")
+        if env_flag_disabled(mode):
+            return {}
+        if env_flag_enabled(mode):
+            auto_start = True
+        if not auto_start:
+            return {}
+        display_number = parse_display_number(os.environ.get("DISPLAY", ":0"))
+        if not self.ensure_xquartz(display_number, auto_start=auto_start):
+            return {}
+        return {
+            "DISPLAY": f"{self.hostexec_host()}:{display_number}",
+            "LIBGL_ALWAYS_INDIRECT": "1",
+            "LUBOX_XQUARTZ": "1",
+        }
+
+    def enable(self, args: argparse.Namespace) -> int:
+        if args.feature == "xquartz":
+            env = self.xquartz_env(auto_start=True)
+            if not env:
+                eprint("lubox: XQuartz not available or failed to start")
+                return 1
+            self.print_env_exports(env, args.shell)
+            return 0
+        die(f"lubox: unsupported feature: {args.feature}")
+
+    def print_env_exports(self, env: Dict[str, str], shell: str) -> None:
+        if shell == "json":
+            print(json.dumps(env, sort_keys=True))
+            return
+        for key in sorted(env):
+            value = shlex.quote(env[key])
+            if shell == "fish":
+                print(f"set -gx {key} {value}")
+            else:
+                print(f"export {key}={value}")
+
+    def ensure_xquartz(self, display_number: int, *, auto_start: bool) -> bool:
+        port = 6000 + display_number
+        if tcp_port_open("127.0.0.1", port):
+            self.allow_xquartz_clients(display_number)
+            return True
+        if not auto_start:
+            return False
+        if x11_binary("Xquartz") is None and xquartz_app_path() is None:
+            eprint("lubox: XQuartz not found; GUI DISPLAY not forwarded")
+            return False
+        subprocess.run(
+            ["defaults", "write", "org.xquartz.X11", "nolisten_tcp", "-bool", "false"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        was_running = self.xquartz_running()
+        if not was_running:
+            self.start_xquartz()
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if tcp_port_open("127.0.0.1", port):
+                self.allow_xquartz_clients(display_number)
+                return True
+            time.sleep(0.2)
+        if was_running:
+            eprint("lubox: XQuartz TCP listener is disabled; quit XQuartz and run lubox enter again")
+        else:
+            eprint("lubox: XQuartz started but TCP listener did not appear; GUI DISPLAY not forwarded")
+        return False
+
+    def xquartz_running(self) -> bool:
+        cp = subprocess.run(
+            ["pgrep", "-x", "Xquartz"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return cp.returncode == 0
+
+    def start_xquartz(self) -> None:
+        app = xquartz_app_path()
+        if app is not None:
+            argv = ["open", "-g", str(app)]
+        else:
+            argv = ["open", "-g", "-a", "XQuartz"]
+        subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+    def allow_xquartz_clients(self, display_number: int) -> None:
+        xhost = x11_binary("xhost")
+        if xhost is None:
+            eprint("lubox: xhost not found; GUI apps may be refused by XQuartz")
+            return
+        env = os.environ.copy()
+        env["DISPLAY"] = f":{display_number}"
+        targets = ["+localhost", "+127.0.0.1"]
+        if self.engine.name == "podman":
+            for ip in self.podman_machine_ips():
+                targets.append(f"+{ip}")
+        for target in sorted(set(targets)):
+            subprocess.run([xhost, target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
+
+    def podman_machine_ips(self) -> List[str]:
+        if not (is_macos() and self.engine.name == "podman"):
+            return []
+        cp = self.engine.run(
+            ["machine", "ssh", "--", "sh", "-lc", "hostname -I 2>/dev/null || true"],
+            check=False,
+            capture=True,
+            timeout=8,
+        )
+        ips: List[str] = []
+        for token in _decode_output(cp.stdout).replace("\n", " ").split():
+            ip = token.split("/", 1)[0]
+            if self.valid_ipv4(ip) and not ip.startswith("127."):
+                ips.append(ip)
+        return ips
+
+    def valid_ipv4(self, value: str) -> bool:
+        parts = value.split(".")
+        if len(parts) != 4:
+            return False
+        try:
+            nums = [int(part) for part in parts]
+        except ValueError:
+            return False
+        return all(0 <= num <= 255 for num in nums)
+
+    def container_locale_names(self, cname: str) -> List[str]:
+        cached = self._locale_cache.get(cname)
+        if cached is not None:
+            return cached
+        cp = self.engine.run(["exec", cname, "locale", "-a"], check=False, capture=True)
+        if cp.returncode != 0:
+            names = ["C", "POSIX"]
+        else:
+            names = [line.strip() for line in _decode_output(cp.stdout).splitlines() if line.strip()]
+        self._locale_cache[cname] = names
+        return names
+
+    def locale_available(self, cname: str, value: str) -> bool:
+        wanted = self.normalize_locale(value)
+        return any(self.normalize_locale(name) == wanted for name in self.container_locale_names(cname))
+
+    def container_locale_value(self, cname: str, value: str) -> str:
+        if not value or value in ("C", "POSIX") or self.locale_available(cname, value):
+            return value
+        for fallback in ("C.UTF-8", "C.utf8", "en_US.UTF-8", "en_US.utf8", "C"):
+            if fallback in ("C", "POSIX") or self.locale_available(cname, fallback):
+                return fallback
+        return "C"
+
+    def normalize_locale(self, value: str) -> str:
+        return value.strip().lower().replace("-", "").replace("utf8", "utf8")
+
+    def container_cwd(self, cname: str) -> str:
+        cwd = pathlib.Path.cwd()
+        if cwd.exists() and path_under(cwd, self.ident.home):
+            return str(cwd)
+        cp = self.engine.run(["exec", cname, "test", "-d", str(cwd)], check=False, capture=True)
+        if cp.returncode == 0:
+            return str(cwd)
+        eprint(f"lubox: cwd not available in container, using home: {cwd}")
+        return str(self.ident.home)
+
+    def read_container_shell(self, cname: str, info: Optional[Dict[str, Any]] = None) -> str:
+        if info:
+            shell = self.env_from_info(info).get("SHELL", "").strip()
+            if shell.startswith("/"):
+                return shell
+        cp = self.engine.run(["exec", cname, "cat", "/etc/lubox/shell"], check=False, capture=True)
+        if cp.returncode == 0:
+            shell = _decode_output(cp.stdout).strip()
+            if shell:
+                return shell
+        return self.container_shell_path()
+
+    def list_infos(self) -> List[ContainerInfo]:
+        infos: List[ContainerInfo] = []
+        for cname in self.engine.list_lubox_names():
+            info = self.engine.inspect_container(cname, required=False)
+            if not info:
+                continue
+            labels = self.labels_from_info(info)
+            name = labels.get(f"{LABEL_PREFIX}.name", cname.removeprefix("lubox-"))
+            state = info.get("State", {})
+            status = "unknown"
+            if isinstance(state, dict):
+                status = str(state.get("Status") or ("running" if state.get("Running") else "stopped"))
+            config = info.get("Config", {})
+            image = ""
+            if isinstance(config, dict):
+                image = str(config.get("Image") or "")
+            infos.append(
+                ContainerInfo(
+                    name=name,
+                    status=status,
+                    image=image,
+                    host_exec=labels.get(f"{LABEL_PREFIX}.host_exec", "?"),
+                    base_image=labels.get(f"{LABEL_PREFIX}.base_image", "?"),
+                )
+            )
+        return sorted(infos, key=lambda item: item.name)
+
+    def print_list(self) -> None:
+        infos = self.list_infos()
+        if not infos:
+            print("no lubox containers")
+            return
+        rows = [["NAME", "STATUS", "IMAGE", "HOST-EXEC", "BASE-IMAGE"]]
+        for info in infos:
+            rows.append([info.name, info.status, info.image, info.host_exec, info.base_image])
+        widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+        for row in rows:
+            print("  ".join(row[i].ljust(widths[i]) for i in range(len(row))))
+
+    def stop_server(self, name: str) -> None:
+        pid_file = self.paths.pid_file(name)
+        pid = None
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text(encoding="utf-8").strip())
+            except (ValueError, OSError):
+                pid = None
+        current_server_pid = os.environ.get("LUBOX_HOSTEXEC_SERVER_PID")
+        if pid and looks_like_pid_running(pid):
+            if current_server_pid == str(pid):
+                safe_unlink(pid_file)
+            else:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                deadline = time.time() + 5
+                while time.time() < deadline and looks_like_pid_running(pid):
+                    time.sleep(0.1)
+                if looks_like_pid_running(pid):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        safe_unlink(pid_file)
+        safe_unlink(self.paths.runtime_dir(name) / "ssh-agent-proxy.stamp")
+        safe_unlink(self.paths.runtime_dir(name) / "gpg-agent-proxy.stamp")
+        try:
+            mount_dir = self.paths.mount_dir(name, self.engine.name)
+            if (mount_dir / "hostexec.json").exists():
+                self.write_initial_config(name, False, mount_dir)
+        except LuboxError:
+            pass
+
+    def ensure_hostexec_server(
+        self,
+        name: str,
+        host_exec_enabled: Optional[bool] = None,
+        ssh_agent_enabled: Optional[bool] = None,
+        gpg_agent_enabled: Optional[bool] = None,
+    ) -> None:
+        if host_exec_enabled is None:
+            host_exec_enabled = self.hostexec_enabled(name)
+        if not host_exec_enabled:
+            return
+        lock_path = self.paths.lock_file(name)
+        with lock_path.open("a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            pid_file = self.paths.pid_file(name)
+            if pid_file.exists():
+                try:
+                    pid = int(pid_file.read_text(encoding="utf-8").strip())
+                except (ValueError, OSError):
+                    pid = 0
+                if pid and looks_like_pid_running(pid):
+                    if not self.hostexec_server_needs_restart_for_agents(name, ssh_agent_enabled, gpg_agent_enabled):
+                        return
+                    self.stop_server(name)
+            self.ensure_runtime_mount_files(name, host_exec_enabled, running=True)
+            bind_candidates = ["127.0.0.1"]
+            if is_macos() and self.engine.name == "podman":
+                discovered = self.discover_podman_host_bind_address()
+                if discovered and discovered not in bind_candidates:
+                    bind_candidates.append(discovered)
+                bind_candidates.append("0.0.0.0")
+            last_error = ""
+            for bind_addr in bind_candidates:
+                port = self.choose_port(bind_addr)
+                ssh_auth_sock = self.ssh_agent_host_socket(name, ssh_agent_enabled)
+                ssh_port = self.choose_port(bind_addr) if ssh_auth_sock is not None else 0
+                gpg_sockets = self.gpg_agent_host_sockets(name, gpg_agent_enabled)
+                proc = self.start_server_process(name, bind_addr, port, ssh_auth_sock, ssh_port, gpg_sockets)
+                try:
+                    self.wait_server_config(name, port, proc)
+                    probe = self.probe_hostexec(name)
+                    if probe.returncode == 0:
+                        return
+                    last_error = _decode_output(probe.stderr).strip() or f"probe exited {probe.returncode}"
+                    self.stop_server(name)
+                    if bind_addr == "0.0.0.0":
+                        break
+                    self.append_server_log(name, f"probe failed on {bind_addr}:{port}: {last_error}\n")
+                except LuboxError as exc:
+                    last_error = str(exc)
+                    self.stop_server(name)
+            die(f"lubox: host-exec server failed probe for {name}: {last_error}")
+
+    def hostexec_server_needs_restart_for_agents(
+        self,
+        name: str,
+        ssh_agent_enabled: Optional[bool] = None,
+        gpg_agent_enabled: Optional[bool] = None,
+    ) -> bool:
+        if ssh_agent_enabled is None:
+            ssh_agent_enabled = self.ssh_agent_enabled(name)
+        if gpg_agent_enabled is None:
+            gpg_agent_enabled = self.gpg_agent_enabled(name)
+        if is_linux() or ((not ssh_agent_enabled or current_ssh_auth_sock() is None) and (not gpg_agent_enabled or not current_gpg_info()[1])):
+            return False
+        cfg_path = self.paths.mount_dir(name, self.engine.name) / "hostexec.json"
+        try:
+            cfg = load_json_file(cfg_path)
+        except (OSError, json.JSONDecodeError, LuboxError):
+            return True
+        if ssh_agent_enabled and current_ssh_auth_sock() is not None:
+            ssh_cfg = cfg.get("ssh_agent")
+            if not (isinstance(ssh_cfg, dict) and ssh_cfg.get("enabled")):
+                return True
+        if gpg_agent_enabled:
+            _home, gpg_sockets = current_gpg_info()
+            if gpg_sockets:
+                gpg_cfg = cfg.get("gpg_agent")
+                cfg_sockets = gpg_cfg.get("sockets") if isinstance(gpg_cfg, dict) else None
+                if not (isinstance(gpg_cfg, dict) and gpg_cfg.get("enabled") and isinstance(cfg_sockets, dict)):
+                    return True
+                if not set(gpg_sockets).issubset(set(cfg_sockets)):
+                    return True
+        return False
+
+    def ssh_agent_host_socket(self, name: str, ssh_agent_enabled: Optional[bool] = None) -> Optional[pathlib.Path]:
+        if ssh_agent_enabled is None:
+            ssh_agent_enabled = self.ssh_agent_enabled(name)
+        if is_linux() or not ssh_agent_enabled:
+            return None
+        sock = current_ssh_auth_sock()
+        if sock is None:
+            eprint("lubox: SSH_AUTH_SOCK was requested for this container, but host SSH_AUTH_SOCK is unset or not a socket")
+            return None
+        return sock
+
+    def gpg_agent_host_sockets(self, name: str, gpg_agent_enabled: Optional[bool] = None) -> Dict[str, pathlib.Path]:
+        if gpg_agent_enabled is None:
+            gpg_agent_enabled = self.gpg_agent_enabled(name)
+        if is_linux() or not gpg_agent_enabled:
+            return {}
+        _home, sockets = current_gpg_info()
+        if not sockets:
+            eprint("lubox: GPG agent was requested for this container, but no host GPG sockets are available")
+        return sockets
+
+    def ensure_ssh_agent_proxy(self, name: str, ssh_agent_enabled: Optional[bool] = None, container_id: str = "") -> None:
+        if ssh_agent_enabled is None:
+            ssh_agent_enabled = self.ssh_agent_enabled(name)
+        if is_linux() or not ssh_agent_enabled:
+            return
+        ssh_sock = current_ssh_auth_sock()
+        if ssh_sock is None:
+            return
+        marker = self.paths.runtime_dir(name) / "ssh-agent-proxy.stamp"
+        marker_text = f"{container_id}:{ssh_sock}"
+        cname = container_name(name)
+        try:
+            if marker.read_text(encoding="utf-8").strip() == marker_text:
+                if self.container_ssh_agent_proxy_healthy(cname):
+                    return
+        except OSError:
+            pass
+        self.stop_container_ssh_agent_proxy(cname)
+        self.engine.run(
+            [
+                "exec",
+                "-d",
+                "--user",
+                f"{self.ident.uid}:{self.ident.gid}",
+                "--env",
+                f"LUBOX_NAME={name}",
+                "--env",
+                f"LUBOX_CONTAINER_NAME={name}",
+                "--env",
+                f"LUBOX_ENGINE_CONTAINER_NAME={cname}",
+                "--env",
+                "LUBOX_HOST_EXEC=1",
+                "--env",
+                f"LUBOX_HOSTEXEC_CONFIG={CONTAINER_CONFIG_PATH}",
+                cname,
+                "/usr/local/bin/lubox",
+                "__ssh-agent-proxy-client",
+                "--socket-path",
+                container_ssh_auth_sock(self.ident.uid),
+                "--pid-file",
+                container_ssh_agent_pid(self.ident.uid),
+            ],
+            check=False,
+            capture=True,
+        )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            cp = self.engine.run(
+                ["exec", cname, "test", "-S", container_ssh_auth_sock(self.ident.uid)],
+                check=False,
+                capture=True,
+            )
+            if cp.returncode == 0 and self.container_ssh_agent_proxy_healthy(cname):
+                atomic_write_text(marker, marker_text + "\n", 0o600)
+                return
+            time.sleep(0.1)
+        self.append_server_log(name, "WARNING: SSH agent proxy socket did not appear in container\n")
+
+    def container_ssh_agent_proxy_healthy(self, cname: str) -> bool:
+        script = r'''
+import socket, struct, sys
+path = sys.argv[1]
+try:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(3)
+    sock.connect(path)
+    sock.sendall(struct.pack(">I", 1) + b"\x0b")
+    header = sock.recv(5)
+    sock.close()
+except OSError:
+    raise SystemExit(1)
+if len(header) == 5 and header[4] == 12:
+    raise SystemExit(0)
+raise SystemExit(1)
+'''
+        cp = self.engine.run(
+            ["exec", cname, "python3", "-c", script, container_ssh_auth_sock(self.ident.uid)],
+            check=False,
+            capture=True,
+            timeout=8,
+        )
+        return cp.returncode == 0
+
+    def stop_container_ssh_agent_proxy(self, cname: str) -> None:
+        sock = container_ssh_auth_sock(self.ident.uid)
+        pid_file = container_ssh_agent_pid(self.ident.uid)
+        script = f"if [ -f {shlex.quote(pid_file)} ]; then kill $(cat {shlex.quote(pid_file)}) 2>/dev/null || true; fi; rm -f {shlex.quote(sock)} {shlex.quote(pid_file)}"
+        self.engine.run(["exec", cname, "sh", "-lc", script], check=False, capture=True)
+
+    def ensure_gpg_agent_proxy(self, name: str, gpg_agent_enabled: Optional[bool] = None, container_id: str = "") -> None:
+        if gpg_agent_enabled is None:
+            gpg_agent_enabled = self.gpg_agent_enabled(name)
+        if is_linux() or not gpg_agent_enabled:
+            return
+        host_home, sockets = current_gpg_info()
+        if not sockets:
+            return
+        marker = self.paths.runtime_dir(name) / "gpg-agent-proxy.stamp"
+        socket_text = ",".join(f"{key}={sockets[key]}" for key in sorted(sockets))
+        marker_text = f"{container_id}:{host_home}:{socket_text}"
+        try:
+            if marker.read_text(encoding="utf-8").strip() == marker_text:
+                return
+        except OSError:
+            pass
+        cname = container_name(name)
+        self.engine.run(
+            [
+                "exec",
+                "-d",
+                "--user",
+                f"{self.ident.uid}:{self.ident.gid}",
+                "--env",
+                f"LUBOX_NAME={name}",
+                "--env",
+                f"LUBOX_CONTAINER_NAME={name}",
+                "--env",
+                f"LUBOX_ENGINE_CONTAINER_NAME={cname}",
+                "--env",
+                "LUBOX_HOST_EXEC=1",
+                "--env",
+                f"LUBOX_HOSTEXEC_CONFIG={CONTAINER_CONFIG_PATH}",
+                "--env",
+                f"GNUPGHOME={container_gpg_home(self.ident.uid)}",
+                cname,
+                "/usr/local/bin/lubox",
+                "__gpg-agent-proxy-client",
+                "--home",
+                container_gpg_home(self.ident.uid),
+                "--pid-file",
+                container_gpg_agent_pid(self.ident.uid),
+            ],
+            check=False,
+            capture=True,
+        )
+        wait_socket = container_gpg_proxy_socket_path(next(iter(sorted(sockets))))
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            cp = self.engine.run(
+                ["exec", cname, "test", "-S", wait_socket],
+                check=False,
+                capture=True,
+            )
+            if cp.returncode == 0:
+                atomic_write_text(marker, marker_text + "\n", 0o600)
+                return
+            time.sleep(0.1)
+        self.append_server_log(name, "WARNING: GPG agent proxy socket did not appear in container\n")
+
+    def choose_port(self, bind_addr: str) -> int:
+        attempts = HOSTEXEC_MAX_PORT - HOSTEXEC_MIN_PORT + 1
+        for _ in range(min(attempts, 256)):
+            port = HOSTEXEC_MIN_PORT + secrets.randbelow(HOSTEXEC_MAX_PORT - HOSTEXEC_MIN_PORT + 1)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((bind_addr, port))
+                return port
+            except OSError:
+                continue
+            finally:
+                sock.close()
+        die(f"lubox: could not choose free host-exec port on {bind_addr}")
+
+    def start_server_process(
+        self,
+        name: str,
+        bind_addr: str,
+        port: int,
+        ssh_auth_sock: Optional[pathlib.Path],
+        ssh_port: int,
+        gpg_sockets: Dict[str, pathlib.Path],
+    ) -> subprocess.Popen:
+        if bind_addr == "0.0.0.0":
+            self.append_server_log(
+                name,
+                "WARNING: binding host-exec server to 0.0.0.0; token authentication remains mandatory\n",
+            )
+        script = str(pathlib.Path(__file__).resolve())
+        mount_dir = self.paths.mount_dir(name, self.engine.name)
+        token_file = self.paths.token_file(name)
+        log_file = self.paths.log_file(name)
+        pid_file = self.paths.pid_file(name)
+        argv = [
+            sys.executable,
+            script,
+            "__hostexec-server",
+            "--engine",
+            self.engine.name,
+            "--name",
+            name,
+            "--container",
+            container_name(name),
+            "--port",
+            str(port),
+            "--token-file",
+            str(token_file),
+            "--config-file",
+            str(mount_dir / "hostexec.json"),
+            "--bind-address",
+            bind_addr,
+            "--host",
+            self.hostexec_host(),
+            "--token-path",
+            self.container_token_path(),
+            "--pid-file",
+            str(pid_file),
+        ]
+        if ssh_auth_sock is not None and ssh_port > 0:
+            argv += [
+                "--ssh-auth-sock",
+                str(ssh_auth_sock),
+                "--ssh-port",
+                str(ssh_port),
+                "--ssh-socket-path",
+                container_ssh_auth_sock(self.ident.uid),
+            ]
+        for key in sorted(gpg_sockets):
+            argv += ["--gpg-socket", f"{key}={gpg_sockets[key]}"]
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        log = log_file.open("ab")
+        proc = subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
+        atomic_write_text(pid_file, f"{proc.pid}\n", 0o600)
+        return proc
+
+    def wait_server_config(self, name: str, port: int, proc: subprocess.Popen) -> None:
+        cfg_path = self.paths.mount_dir(name, self.engine.name) / "hostexec.json"
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                die(f"lubox: host-exec server exited early; see {self.paths.log_file(name)}")
+            if cfg_path.exists():
+                try:
+                    cfg = load_json_file(cfg_path)
+                    if cfg.get("enabled") is True and int(cfg.get("port", 0)) == port:
+                        return
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
+            time.sleep(0.1)
+        die(f"lubox: timed out waiting for host-exec server; see {self.paths.log_file(name)}")
+
+    def probe_hostexec(self, name: str) -> subprocess.CompletedProcess:
+        cname = container_name(name)
+        return self.engine.run(
+            ["exec"] + self.exec_env_args(cname, name) + [cname, "/usr/local/bin/lubox", "__hostexec-probe"],
+            check=False,
+            capture=True,
+            timeout=15,
+        )
+
+    def append_server_log(self, name: str, text: str) -> None:
+        log_path = self.paths.log_file(name)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(text)
+
+    def discover_podman_host_bind_address(self) -> Optional[str]:
+        if not (is_macos() and self.engine.name == "podman"):
+            return None
+        cp = self.engine.run(
+            ["machine", "ssh", "--", "sh", "-lc", "getent hosts host.containers.internal 2>/dev/null || true"],
+            check=False,
+            capture=True,
+            timeout=8,
+        )
+        if cp.returncode != 0:
+            return None
+        for line in _decode_output(cp.stdout).splitlines():
+            parts = line.split()
+            if parts and self.can_bind_address(parts[0]):
+                return parts[0]
+        return None
+
+    def can_bind_address(self, addr: str) -> bool:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind((addr, 0))
+            return True
+        except OSError:
+            return False
+        finally:
+            sock.close()
+
+
+def send_control(sock: socket.socket, obj: Dict[str, Any]) -> None:
+    data = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(data) > CONTROL_MAX:
+        raise LuboxError("lubox: control message too large")
+    sock.sendall(struct.pack(">I", len(data)) + data)
+
+
+def recv_exact(sock: socket.socket, n: int) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < n:
+        chunk = sock.recv(n - len(chunks))
+        if not chunk:
+            raise EOFError("connection closed")
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def recv_control(sock: socket.socket) -> Dict[str, Any]:
+    header = recv_exact(sock, 4)
+    (length,) = struct.unpack(">I", header)
+    if length > CONTROL_MAX:
+        raise LuboxError("lubox: control message too large")
+    data = recv_exact(sock, length)
+    obj = json.loads(data.decode("utf-8"))
+    if not isinstance(obj, dict):
+        raise LuboxError("lubox: expected control object")
+    return obj
+
+
+def send_frame(sock: socket.socket, channel: int, payload: bytes) -> None:
+    if len(payload) > FRAME_MAX:
+        raise LuboxError("lubox: frame too large")
+    sock.sendall(struct.pack(">BI", channel, len(payload)) + payload)
+
+
+def recv_frame(sock: socket.socket) -> Tuple[int, bytes]:
+    header = recv_exact(sock, 5)
+    channel, length = struct.unpack(">BI", header)
+    if length > FRAME_MAX:
+        raise LuboxError("lubox: frame too large")
+    return channel, recv_exact(sock, length)
+
+
+def canonical_request(obj: Dict[str, Any]) -> bytes:
+    return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def hmac_for_request(token: bytes, nonce: bytes, request: Dict[str, Any]) -> str:
+    return hmac.new(token, nonce + b"\0" + canonical_request(request), hashlib.sha256).hexdigest()
+
+
+def safe_forward_env() -> Dict[str, str]:
+    env: Dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key in ("TERM", "COLORTERM", "LANG") or key.startswith("LC_"):
+            env[key] = value
+    return env
+
+
+def normalize_exit_code(code: int) -> int:
+    if code < 0:
+        return 128 + min(abs(code), 127)
+    return code
+
+
+def lubox_config_matches_env(cfg: Dict[str, Any], env_name: str) -> bool:
+    names = {str(value) for value in (cfg.get("box_name"), cfg.get("name"), cfg.get("container_name")) if value}
+    engine_name = str(cfg.get("container_name") or "")
+    if engine_name.startswith("lubox-"):
+        names.add(engine_name.removeprefix("lubox-"))
+    return env_name in names
+
+
+def raw_socket_proxy(left: socket.socket, right: socket.socket) -> None:
+    def copy(src: socket.socket, dst: socket.socket) -> None:
+        try:
+            while True:
+                data = src.recv(65536)
+                if not data:
+                    break
+                dst.sendall(data)
+        except OSError:
+            pass
+        try:
+            dst.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+    t1 = threading.Thread(target=copy, args=(left, right), daemon=True)
+    t2 = threading.Thread(target=copy, args=(right, left), daemon=True)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+
+class HostExecClient:
+    def __init__(self, argv: Sequence[str], *, probe: bool = False):
+        self.argv = list(argv)
+        self.probe = probe
+        self.stop = threading.Event()
+        self.send_lock = threading.Lock()
+        self.exit_code = 1
+
+    def run(self) -> int:
+        config_path = os.environ.get("LUBOX_HOSTEXEC_CONFIG", CONTAINER_CONFIG_PATH)
+        env_container = os.environ.get("LUBOX_CONTAINER_NAME")
+        if not env_container:
+            eprint("lubox: host-exec must be run inside a lubox container")
+            return 126
+        if os.environ.get("LUBOX_HOST_EXEC") == "0":
+            eprint("lubox: host-exec is disabled for this container")
+            return 126
+        cfg_file = pathlib.Path(config_path)
+        if not cfg_file.exists():
+            eprint(f"lubox: host-exec config missing: {cfg_file}")
+            return 126
+        cfg = load_json_file(cfg_file)
+        if not lubox_config_matches_env(cfg, env_container):
+            eprint("lubox: host-exec config does not match this container")
+            return 126
+        if not cfg.get("enabled"):
+            eprint("lubox: host-exec is disabled for this container")
+            return 126
+        token_path = pathlib.Path(str(cfg.get("token_path") or ""))
+        if not token_path.exists():
+            eprint(f"lubox: host-exec token missing: {token_path}")
+            return 126
+        token = token_path.read_bytes()
+        host = str(cfg.get("host") or "")
+        port = int(cfg.get("port") or 0)
+        if not host or port <= 0:
+            eprint("lubox: host-exec endpoint is not configured")
+            return 126
+        sock = socket.create_connection((host, port), timeout=10)
+        sock.settimeout(None)
+        try:
+            send_control(
+                sock,
+                {
+                    "type": "hello",
+                    "version": 1,
+                    "container_name": cfg.get("container_name"),
+                    "container_id": cfg.get("container_id"),
+                },
+            )
+            challenge = recv_control(sock)
+            if challenge.get("type") != "challenge":
+                eprint("lubox: host-exec auth failed")
+                return 126
+            nonce = base64.b64decode(str(challenge.get("nonce") or ""))
+            request = self.request(cfg)
+            request["hmac"] = hmac_for_request(token, nonce, request)
+            send_control(sock, request)
+            if self.probe:
+                return self.read_until_exit(sock)
+            return self.stream(sock)
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def request(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
+        rows, cols = terminal_size()
+        req_type = "probe" if self.probe else "exec"
+        return {
+            "type": req_type,
+            "version": 1,
+            "container_name": cfg.get("container_name"),
+            "container_id": cfg.get("container_id"),
+            "argv": [] if self.probe else self.argv,
+            "cwd": os.getcwd(),
+            "pty": False if self.probe else bool(sys.stdin.isatty() and sys.stdout.isatty()),
+            "rows": rows,
+            "cols": cols,
+            "env": safe_forward_env(),
+        }
+
+    def read_until_exit(self, sock: socket.socket) -> int:
+        while True:
+            channel, payload = recv_frame(sock)
+            if channel == 3:
+                data = json.loads(payload.decode("utf-8"))
+                return normalize_exit_code(int(data.get("exit_code", 1)))
+            if channel == 6:
+                data = json.loads(payload.decode("utf-8"))
+                eprint(str(data.get("error", "host-exec error")))
+                return 126
+
+    def stream(self, sock: socket.socket) -> int:
+        pty_mode = sys.stdin.isatty() and sys.stdout.isatty()
+        old_term = None
+        old_winch = None
+        old_int = signal.getsignal(signal.SIGINT)
+
+        def on_int(signum: int, frame: object) -> None:
+            try:
+                with self.send_lock:
+                    send_frame(sock, 7, json.dumps({"signal": int(signum)}).encode("utf-8"))
+            except OSError:
+                self.stop.set()
+
+        signal.signal(signal.SIGINT, on_int)
+        if pty_mode:
+            old_term = termios.tcgetattr(sys.stdin.fileno())
+            tty.setraw(sys.stdin.fileno())
+            old_winch = signal.getsignal(signal.SIGWINCH)
+
+            def on_winch(signum: int, frame: object) -> None:
+                rows, cols = terminal_size()
+                payload = json.dumps({"rows": rows, "cols": cols}).encode("utf-8")
+                try:
+                    with self.send_lock:
+                        send_frame(sock, 4, payload)
+                except OSError:
+                    self.stop.set()
+
+            signal.signal(signal.SIGWINCH, on_winch)
+        stdin_thread = threading.Thread(target=self.stdin_loop, args=(sock,), daemon=True)
+        stdin_thread.start()
+        try:
+            while True:
+                channel, payload = recv_frame(sock)
+                if channel == 1:
+                    os.write(sys.stdout.fileno(), payload)
+                elif channel == 2:
+                    os.write(sys.stderr.fileno(), payload)
+                elif channel == 3:
+                    data = json.loads(payload.decode("utf-8"))
+                    return normalize_exit_code(int(data.get("exit_code", 1)))
+                elif channel == 6:
+                    data = json.loads(payload.decode("utf-8"))
+                    eprint(str(data.get("error", "host-exec error")))
+                    return 126
+        except EOFError:
+            eprint("lubox: host-exec connection closed")
+            return 1
+        finally:
+            self.stop.set()
+            if pty_mode and old_term is not None:
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_term)
+            if pty_mode and old_winch is not None:
+                signal.signal(signal.SIGWINCH, old_winch)
+            if old_int is not None:
+                signal.signal(signal.SIGINT, old_int)
+
+    def stdin_loop(self, sock: socket.socket) -> None:
+        fd = sys.stdin.fileno()
+        while not self.stop.is_set():
+            try:
+                data = os.read(fd, 65536)
+            except OSError as exc:
+                if exc.errno in (errno.EBADF, errno.EIO):
+                    data = b""
+                else:
+                    return
+            try:
+                with self.send_lock:
+                    if data:
+                        send_frame(sock, 0, data)
+                    else:
+                        send_frame(sock, 5, b"")
+                        return
+            except OSError:
+                return
+
+
+class SSHAgentProxyClient:
+    def __init__(self, args: argparse.Namespace):
+        self.config_path = pathlib.Path(os.environ.get("LUBOX_HOSTEXEC_CONFIG", CONTAINER_CONFIG_PATH))
+        self.socket_path = pathlib.Path(args.socket_path or container_ssh_auth_sock())
+        self.pid_file = pathlib.Path(args.pid_file or container_ssh_agent_pid())
+        self.check = bool(args.check)
+        self.stop = threading.Event()
+
+    def run(self) -> int:
+        if self.check:
+            try:
+                sock = self.connect_bridge()
+                sock.close()
+                return 0
+            except LuboxError as exc:
+                eprint(str(exc))
+                return 1
+        if self.existing_proxy_running():
+            return 0
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        safe_unlink(self.socket_path)
+        signal.signal(signal.SIGTERM, self.handle_signal)
+        signal.signal(signal.SIGINT, self.handle_signal)
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            srv.bind(str(self.socket_path))
+            os.chmod(self.socket_path, 0o600)
+            srv.listen(16)
+            srv.settimeout(0.5)
+            atomic_write_text(self.pid_file, f"{os.getpid()}\n", 0o600)
+            while not self.stop.is_set():
+                try:
+                    conn, _addr = srv.accept()
+                except socket.timeout:
+                    continue
+                thread = threading.Thread(target=self.handle_client_safe, args=(conn,), daemon=True)
+                thread.start()
+        finally:
+            try:
+                srv.close()
+            except OSError:
+                pass
+            safe_unlink(self.socket_path)
+            safe_unlink(self.pid_file)
+        return 0
+
+    def handle_signal(self, signum: int, frame: object) -> None:
+        self.stop.set()
+
+    def existing_proxy_running(self) -> bool:
+        if not self.pid_file.exists() or not self.socket_path.exists():
+            return False
+        try:
+            pid = int(self.pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return False
+        return looks_like_pid_running(pid)
+
+    def load_bridge_config(self) -> Dict[str, Any]:
+        env_container = os.environ.get("LUBOX_CONTAINER_NAME")
+        if not env_container:
+            raise LuboxError("lubox: SSH agent proxy must run inside a lubox container")
+        if not self.config_path.exists():
+            raise LuboxError(f"lubox: host-exec config missing: {self.config_path}")
+        cfg = load_json_file(self.config_path)
+        if not lubox_config_matches_env(cfg, env_container):
+            raise LuboxError("lubox: SSH agent proxy config does not match this container")
+        ssh_cfg = cfg.get("ssh_agent")
+        if not isinstance(ssh_cfg, dict) or not ssh_cfg.get("enabled"):
+            raise LuboxError("lubox: SSH agent proxy is disabled for this container")
+        return cfg
+
+    def connect_bridge(self) -> socket.socket:
+        cfg = self.load_bridge_config()
+        ssh_cfg = cfg.get("ssh_agent")
+        if not isinstance(ssh_cfg, dict):
+            raise LuboxError("lubox: SSH agent proxy config invalid")
+        host = str(ssh_cfg.get("host") or cfg.get("host") or "")
+        port = int(ssh_cfg.get("port") or 0)
+        token_path = pathlib.Path(str(ssh_cfg.get("token_path") or cfg.get("token_path") or ""))
+        if not host or port <= 0:
+            raise LuboxError("lubox: SSH agent proxy endpoint is not configured")
+        if not token_path.exists():
+            raise LuboxError(f"lubox: SSH agent proxy token missing: {token_path}")
+        token = token_path.read_bytes()
+        sock = socket.create_connection((host, port), timeout=10)
+        sock.settimeout(None)
+        ok = False
+        try:
+            send_control(
+                sock,
+                {
+                    "type": "hello",
+                    "version": 1,
+                    "container_name": cfg.get("container_name"),
+                    "container_id": cfg.get("container_id"),
+                },
+            )
+            challenge = recv_control(sock)
+            if challenge.get("type") != "challenge":
+                raise LuboxError("lubox: SSH agent proxy auth failed")
+            nonce = base64.b64decode(str(challenge.get("nonce") or ""))
+            request = {
+                "type": "ssh-agent",
+                "version": 1,
+                "container_name": cfg.get("container_name"),
+                "container_id": cfg.get("container_id"),
+            }
+            request["hmac"] = hmac_for_request(token, nonce, request)
+            send_control(sock, request)
+            reply = recv_control(sock)
+            if reply.get("type") != "ok":
+                error = str(reply.get("error") or "lubox: SSH agent proxy auth failed")
+                raise LuboxError(error)
+            ok = True
+            return sock
+        finally:
+            if not ok:
+                sock.close()
+
+    def handle_client_safe(self, conn: socket.socket) -> None:
+        try:
+            with conn:
+                bridge = self.connect_bridge()
+                with bridge:
+                    raw_socket_proxy(conn, bridge)
+        except (OSError, EOFError, json.JSONDecodeError, LuboxError) as exc:
+            eprint(f"lubox: SSH agent proxy client error: {exc}")
+
+
+class GPGAgentProxyClient:
+    def __init__(self, args: argparse.Namespace):
+        self.config_path = pathlib.Path(os.environ.get("LUBOX_HOSTEXEC_CONFIG", CONTAINER_CONFIG_PATH))
+        self.home = pathlib.Path(args.home or container_gpg_home())
+        self.pid_file = pathlib.Path(args.pid_file or container_gpg_agent_pid())
+        self.check = bool(args.check)
+        self.stop = threading.Event()
+
+    def run(self) -> int:
+        try:
+            cfg, gpg_cfg = self.load_bridge_config()
+            socket_keys = self.socket_keys(gpg_cfg)
+            if self.check:
+                for key in socket_keys:
+                    sock = self.connect_bridge(cfg, gpg_cfg, key)
+                    sock.close()
+                return 0
+            if self.existing_proxy_running(gpg_cfg, socket_keys):
+                return 0
+            self.setup_home(gpg_cfg)
+            signal.signal(signal.SIGTERM, self.handle_signal)
+            signal.signal(signal.SIGINT, self.handle_signal)
+            selector = selectors.DefaultSelector()
+            servers: List[Tuple[socket.socket, pathlib.Path]] = []
+            try:
+                for key in socket_keys:
+                    socket_path = self.socket_path(gpg_cfg, key)
+                    socket_path.parent.mkdir(parents=True, exist_ok=True)
+                    safe_unlink(socket_path)
+                    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    srv.bind(str(socket_path))
+                    os.chmod(socket_path, 0o600)
+                    srv.listen(16)
+                    srv.setblocking(False)
+                    selector.register(srv.fileno(), selectors.EVENT_READ, (srv, key))
+                    servers.append((srv, socket_path))
+                atomic_write_text(self.pid_file, f"{os.getpid()}\n", 0o600)
+                while not self.stop.is_set():
+                    for key, _mask in selector.select(0.5):
+                        srv, socket_key = key.data
+                        try:
+                            conn, _addr = srv.accept()
+                        except OSError:
+                            continue
+                        thread = threading.Thread(target=self.handle_client_safe, args=(conn, cfg, gpg_cfg, socket_key), daemon=True)
+                        thread.start()
+            finally:
+                selector.close()
+                for srv, socket_path in servers:
+                    try:
+                        srv.close()
+                    except OSError:
+                        pass
+                    safe_unlink(socket_path)
+                safe_unlink(self.pid_file)
+            return 0
+        except LuboxError as exc:
+            eprint(str(exc))
+            return 1
+
+    def handle_signal(self, signum: int, frame: object) -> None:
+        self.stop.set()
+
+    def socket_keys(self, gpg_cfg: Dict[str, Any]) -> List[str]:
+        sockets = gpg_cfg.get("sockets")
+        if not isinstance(sockets, dict):
+            raise LuboxError("lubox: GPG agent proxy config invalid")
+        keys = [key for key in sorted(sockets) if key in GPG_SOCKET_BASENAMES]
+        if not keys:
+            raise LuboxError("lubox: GPG agent proxy has no sockets")
+        return keys
+
+    def socket_path(self, gpg_cfg: Dict[str, Any], key: str) -> pathlib.Path:
+        sockets = gpg_cfg.get("sockets")
+        if isinstance(sockets, dict):
+            item = sockets.get(key)
+            if isinstance(item, dict) and item.get("socket_path"):
+                return pathlib.Path(str(item.get("socket_path")))
+        return pathlib.Path(container_gpg_proxy_socket_path(key))
+
+    def existing_proxy_running(self, gpg_cfg: Dict[str, Any], socket_keys: Sequence[str]) -> bool:
+        if not self.pid_file.exists():
+            return False
+        try:
+            pid = int(self.pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return False
+        if not looks_like_pid_running(pid):
+            return False
+        return all(self.socket_path(gpg_cfg, key).exists() for key in socket_keys)
+
+    def setup_home(self, gpg_cfg: Dict[str, Any]) -> None:
+        self.home.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.home, 0o700)
+        host_home_value = str(gpg_cfg.get("home") or "")
+        host_home = pathlib.Path(host_home_value) if host_home_value else None
+        if host_home is None or not host_home.exists():
+            return
+        socket_names = set(GPG_SOCKET_BASENAMES.values())
+        try:
+            children = list(host_home.iterdir())
+        except OSError:
+            return
+        for child in children:
+            if child.name in socket_names:
+                continue
+            dest = self.home / child.name
+            if dest.exists() or dest.is_symlink():
+                continue
+            try:
+                os.symlink(str(child), str(dest))
+            except OSError:
+                pass
+
+    def load_bridge_config(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        env_container = os.environ.get("LUBOX_CONTAINER_NAME")
+        if not env_container:
+            raise LuboxError("lubox: GPG agent proxy must run inside a lubox container")
+        if not self.config_path.exists():
+            raise LuboxError(f"lubox: host-exec config missing: {self.config_path}")
+        cfg = load_json_file(self.config_path)
+        if not lubox_config_matches_env(cfg, env_container):
+            raise LuboxError("lubox: GPG agent proxy config does not match this container")
+        gpg_cfg = cfg.get("gpg_agent")
+        if not isinstance(gpg_cfg, dict) or not gpg_cfg.get("enabled"):
+            raise LuboxError("lubox: GPG agent proxy is disabled for this container")
+        return cfg, gpg_cfg
+
+    def connect_bridge(self, cfg: Dict[str, Any], gpg_cfg: Dict[str, Any], socket_key: str) -> socket.socket:
+        host = str(gpg_cfg.get("host") or cfg.get("host") or "")
+        port = int(gpg_cfg.get("port") or 0)
+        token_path = pathlib.Path(str(gpg_cfg.get("token_path") or cfg.get("token_path") or ""))
+        if not host or port <= 0:
+            raise LuboxError("lubox: GPG agent proxy endpoint is not configured")
+        if not token_path.exists():
+            raise LuboxError(f"lubox: GPG agent proxy token missing: {token_path}")
+        token = token_path.read_bytes()
+        sock = socket.create_connection((host, port), timeout=10)
+        sock.settimeout(None)
+        ok = False
+        try:
+            send_control(
+                sock,
+                {
+                    "type": "hello",
+                    "version": 1,
+                    "container_name": cfg.get("container_name"),
+                    "container_id": cfg.get("container_id"),
+                },
+            )
+            challenge = recv_control(sock)
+            if challenge.get("type") != "challenge":
+                raise LuboxError("lubox: GPG agent proxy auth failed")
+            nonce = base64.b64decode(str(challenge.get("nonce") or ""))
+            request = {
+                "type": "gpg-agent",
+                "version": 1,
+                "container_name": cfg.get("container_name"),
+                "container_id": cfg.get("container_id"),
+                "socket": socket_key,
+            }
+            request["hmac"] = hmac_for_request(token, nonce, request)
+            send_control(sock, request)
+            reply = recv_control(sock)
+            if reply.get("type") != "ok":
+                error = str(reply.get("error") or "lubox: GPG agent proxy auth failed")
+                raise LuboxError(error)
+            ok = True
+            return sock
+        finally:
+            if not ok:
+                sock.close()
+
+    def handle_client_safe(self, conn: socket.socket, cfg: Dict[str, Any], gpg_cfg: Dict[str, Any], socket_key: str) -> None:
+        try:
+            with conn:
+                bridge = self.connect_bridge(cfg, gpg_cfg, socket_key)
+                with bridge:
+                    raw_socket_proxy(conn, bridge)
+        except (OSError, EOFError, json.JSONDecodeError, LuboxError) as exc:
+            eprint(f"lubox: GPG agent proxy client error: {exc}")
+
+
+class CodeServerProxyServer:
+    def __init__(self, args: argparse.Namespace):
+        self.engine = Engine.select(args.engine)
+        self.container = args.container
+        self.listen_host = args.listen_host
+        self.listen_port = int(args.listen_port)
+        self.target_port = int(args.target_port)
+        self.pid_file = pathlib.Path(args.pid_file)
+        self.log_file = pathlib.Path(args.log_file)
+        self.stop = threading.Event()
+
+    def run(self) -> int:
+        signal.signal(signal.SIGTERM, self.handle_signal)
+        signal.signal(signal.SIGINT, self.handle_signal)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((self.listen_host, self.listen_port))
+            sock.listen(32)
+            sock.settimeout(0.5)
+            atomic_write_text(self.pid_file, f"{os.getpid()}\n", 0o600)
+            while not self.stop.is_set():
+                try:
+                    conn, addr = sock.accept()
+                except socket.timeout:
+                    continue
+                thread = threading.Thread(target=self.handle_client_safe, args=(conn, addr), daemon=True)
+                thread.start()
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            safe_unlink(self.pid_file)
+        return 0
+
+    def handle_signal(self, signum: int, frame: object) -> None:
+        self.stop.set()
+
+    def handle_client_safe(self, conn: socket.socket, addr: Tuple[str, int]) -> None:
+        try:
+            with conn:
+                self.handle_client(conn)
+        except OSError as exc:
+            self.append_log(f"client {addr} error: {exc}\n")
+
+    def handle_client(self, conn: socket.socket) -> None:
+        log = self.log_file.open("ab")
+        try:
+            proc = subprocess.Popen(
+                self.engine.argv(["exec", "-i", self.container, "python3", "-c", CODE_SERVER_CONNECT_SCRIPT, str(self.target_port)]),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=log,
+                bufsize=0,
+            )
+        finally:
+            log.close()
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        t1 = threading.Thread(target=self.copy_socket_to_pipe, args=(conn, proc.stdin, proc), daemon=True)
+        t2 = threading.Thread(target=self.copy_pipe_to_socket, args=(proc.stdout.fileno(), conn, proc), daemon=True)
+        t1.start()
+        t2.start()
+        while proc.poll() is None and (t1.is_alive() or t2.is_alive()):
+            time.sleep(0.05)
+        if proc.poll() is None:
+            proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+    def copy_socket_to_pipe(self, conn: socket.socket, pipe: Any, proc: subprocess.Popen) -> None:
+        while proc.poll() is None:
+            try:
+                data = conn.recv(65536)
+            except OSError:
+                break
+            if not data:
+                break
+            try:
+                pipe.write(data)
+                pipe.flush()
+            except OSError:
+                break
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+    def copy_pipe_to_socket(self, fd: int, conn: socket.socket, proc: subprocess.Popen) -> None:
+        while proc.poll() is None:
+            try:
+                data = os.read(fd, 65536)
+            except OSError:
+                break
+            if not data:
+                break
+            try:
+                conn.sendall(data)
+            except OSError:
+                break
+        try:
+            conn.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+    def append_log(self, text: str) -> None:
+        try:
+            with self.log_file.open("a", encoding="utf-8") as f:
+                f.write(text)
+        except OSError:
+            pass
+
+
+class HostExecServer:
+    def __init__(self, args: argparse.Namespace):
+        self.engine = Engine.select(args.engine)
+        self.name = args.name
+        self.container = args.container
+        self.port = int(args.port)
+        self.token_file = pathlib.Path(args.token_file)
+        self.config_file = pathlib.Path(args.config_file)
+        self.bind_address = args.bind_address
+        self.host = args.host
+        self.token_path = args.token_path
+        self.pid_file = pathlib.Path(args.pid_file)
+        self.ssh_auth_sock = pathlib.Path(args.ssh_auth_sock) if args.ssh_auth_sock else None
+        self.ssh_port = int(args.ssh_port or 0)
+        self.ssh_socket_path = args.ssh_socket_path or container_ssh_auth_sock()
+        self.gpg_sockets = self.parse_gpg_sockets(args.gpg_socket or [])
+        self.stop = threading.Event()
+        self.token = read_token(self.token_file)
+
+    def parse_gpg_sockets(self, values: Sequence[str]) -> Dict[str, pathlib.Path]:
+        sockets: Dict[str, pathlib.Path] = {}
+        for value in values:
+            if "=" not in value:
+                continue
+            key, path = value.split("=", 1)
+            if key in GPG_SOCKET_BASENAMES and path:
+                sockets[key] = pathlib.Path(path)
+        return sockets
+
+    def run(self) -> int:
+        signal.signal(signal.SIGTERM, self.handle_signal)
+        signal.signal(signal.SIGINT, self.handle_signal)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ssh_sock: Optional[socket.socket] = None
+        try:
+            sock.bind((self.bind_address, self.port))
+            sock.listen(16)
+            sock.settimeout(0.5)
+            ssh_sock = self.create_ssh_listener()
+            cid = self.container_id()
+            self.write_config(True, cid)
+            if ssh_sock is not None:
+                thread = threading.Thread(target=self.ssh_accept_loop, args=(ssh_sock,), daemon=True)
+                thread.start()
+            monitor = threading.Thread(target=self.monitor_container, daemon=True)
+            monitor.start()
+            while not self.stop.is_set():
+                try:
+                    conn, addr = sock.accept()
+                except socket.timeout:
+                    continue
+                thread = threading.Thread(target=self.handle_client_safe, args=(conn, addr), daemon=True)
+                thread.start()
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            if ssh_sock is not None:
+                try:
+                    ssh_sock.close()
+                except OSError:
+                    pass
+            self.write_config(False, "")
+            safe_unlink(self.pid_file)
+        return 0
+
+    def create_ssh_listener(self) -> Optional[socket.socket]:
+        if self.ssh_auth_sock is None or self.ssh_port <= 0:
+            return None
+        try:
+            st = self.ssh_auth_sock.stat()
+        except OSError as exc:
+            eprint(f"lubox: SSH_AUTH_SOCK not available for proxy: {self.ssh_auth_sock}: {exc}")
+            self.ssh_auth_sock = None
+            self.ssh_port = 0
+            return None
+        if not stat.S_ISSOCK(st.st_mode):
+            eprint(f"lubox: SSH_AUTH_SOCK is not a socket: {self.ssh_auth_sock}")
+            self.ssh_auth_sock = None
+            self.ssh_port = 0
+            return None
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((self.bind_address, self.ssh_port))
+            sock.listen(16)
+            sock.settimeout(0.5)
+            return sock
+        except OSError:
+            self.ssh_auth_sock = None
+            self.ssh_port = 0
+            sock.close()
+            raise
+
+    def handle_signal(self, signum: int, frame: object) -> None:
+        self.stop.set()
+
+    def container_id(self) -> str:
+        info = self.engine.inspect_container(self.container, required=False)
+        if not info:
+            return ""
+        return str(info.get("Id") or "")
+
+    def container_running(self) -> bool:
+        return self.engine.is_running(self.container)
+
+    def monitor_container(self) -> None:
+        while not self.stop.is_set():
+            if not self.container_running():
+                self.stop.set()
+                return
+            time.sleep(1)
+
+    def write_config(self, enabled: bool, cid: str) -> None:
+        cfg = {
+            "version": 1,
+            "enabled": bool(enabled),
+            "box_name": self.name,
+            "container_name": self.container,
+            "container_id": cid if enabled else "",
+            "host": self.host,
+            "port": self.port if enabled else 0,
+            "token_path": self.token_path if enabled else "",
+            "pty_default": True,
+            "ssh_agent": {
+                "enabled": bool(enabled and self.ssh_auth_sock is not None and self.ssh_port > 0),
+                "host": self.host,
+                "port": self.ssh_port if enabled and self.ssh_auth_sock is not None else 0,
+                "socket_path": self.ssh_socket_path,
+                "token_path": self.token_path if enabled and self.ssh_auth_sock is not None else "",
+            },
+            "gpg_agent": {
+                "enabled": bool(enabled and self.gpg_sockets),
+                "host": self.host,
+                "port": self.port if enabled and self.gpg_sockets else 0,
+                "home": str(current_gpg_info()[0] or ""),
+                "proxy_home": container_gpg_home(),
+                "token_path": self.token_path if enabled and self.gpg_sockets else "",
+                "sockets": {
+                    key: {
+                        "socket_path": container_gpg_proxy_socket_path(key),
+                        "host_path": str(path),
+                    }
+                    for key, path in sorted(self.gpg_sockets.items())
+                },
+            },
+        }
+        try:
+            atomic_write_json(self.config_file, cfg, 0o644)
+        except OSError as exc:
+            eprint(f"lubox: failed to write host-exec config: {exc}")
+
+    def handle_client_safe(self, conn: socket.socket, addr: Tuple[str, int]) -> None:
+        try:
+            with conn:
+                self.handle_client(conn)
+        except (OSError, EOFError, json.JSONDecodeError, LuboxError) as exc:
+            eprint(f"lubox: host-exec client error from {addr}: {exc}")
+
+    def handle_client(self, conn: socket.socket) -> None:
+        hello = recv_control(conn)
+        if hello.get("type") != "hello" or hello.get("version") != 1:
+            raise LuboxError("invalid hello")
+        nonce = secrets.token_bytes(32)
+        send_control(conn, {"type": "challenge", "version": 1, "nonce": base64.b64encode(nonce).decode("ascii")})
+        request = recv_control(conn)
+        if not self.auth_ok(request, nonce):
+            eprint("lubox: host-exec auth failure")
+            send_frame(conn, 6, json.dumps({"error": "lubox: host-exec auth failed"}).encode("utf-8"))
+            return
+        req_type = request.get("type")
+        if req_type == "gpg-agent":
+            self.handle_gpg_client(conn, request)
+            return
+        if req_type == "probe":
+            send_frame(conn, 3, json.dumps({"exit_code": 0}).encode("utf-8"))
+            return
+        if req_type != "exec":
+            send_frame(conn, 6, json.dumps({"error": "lubox: unsupported host-exec request"}).encode("utf-8"))
+            return
+        self.run_command(conn, request)
+
+    def ssh_accept_loop(self, sock: socket.socket) -> None:
+        while not self.stop.is_set():
+            try:
+                conn, addr = sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                if self.stop.is_set():
+                    return
+                raise
+            thread = threading.Thread(target=self.handle_ssh_client_safe, args=(conn, addr), daemon=True)
+            thread.start()
+
+    def handle_ssh_client_safe(self, conn: socket.socket, addr: Tuple[str, int]) -> None:
+        try:
+            with conn:
+                self.handle_ssh_client(conn)
+        except (OSError, EOFError, json.JSONDecodeError, LuboxError) as exc:
+            eprint(f"lubox: SSH agent bridge client error from {addr}: {exc}")
+
+    def handle_ssh_client(self, conn: socket.socket) -> None:
+        hello = recv_control(conn)
+        if hello.get("type") != "hello" or hello.get("version") != 1:
+            raise LuboxError("invalid SSH agent hello")
+        nonce = secrets.token_bytes(32)
+        send_control(conn, {"type": "challenge", "version": 1, "nonce": base64.b64encode(nonce).decode("ascii")})
+        request = recv_control(conn)
+        if request.get("type") != "ssh-agent" or not self.auth_ok(request, nonce):
+            eprint("lubox: SSH agent bridge auth failure")
+            send_control(conn, {"type": "error", "error": "lubox: SSH agent bridge auth failed"})
+            return
+        if self.ssh_auth_sock is None:
+            send_control(conn, {"type": "error", "error": "lubox: SSH agent bridge disabled"})
+            return
+        agent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            agent.connect(str(self.ssh_auth_sock))
+            send_control(conn, {"type": "ok", "version": 1})
+            raw_socket_proxy(conn, agent)
+        finally:
+            agent.close()
+
+    def handle_gpg_client(self, conn: socket.socket, request: Dict[str, Any]) -> None:
+        socket_key = str(request.get("socket") or "")
+        agent_path = self.gpg_sockets.get(socket_key)
+        if agent_path is None:
+            send_control(conn, {"type": "error", "error": "lubox: GPG agent bridge disabled"})
+            return
+        sock_path = socket_path_if_socket(agent_path)
+        if sock_path is None:
+            send_control(conn, {"type": "error", "error": f"lubox: GPG socket unavailable: {agent_path}"})
+            return
+        agent = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            agent.connect(str(sock_path))
+            send_control(conn, {"type": "ok", "version": 1})
+            raw_socket_proxy(conn, agent)
+        finally:
+            agent.close()
+
+    def auth_ok(self, request: Dict[str, Any], nonce: bytes) -> bool:
+        supplied = request.get("hmac")
+        if not isinstance(supplied, str):
+            return False
+        if request.get("version") != 1:
+            return False
+        if request.get("container_name") != self.container:
+            return False
+        current_id = self.container_id()
+        if not current_id or request.get("container_id") != current_id:
+            return False
+        req = dict(request)
+        req.pop("hmac", None)
+        expected = hmac_for_request(self.token, nonce, req)
+        return hmac.compare_digest(supplied, expected)
+
+    def run_command(self, conn: socket.socket, request: Dict[str, Any]) -> None:
+        argv = request.get("argv")
+        if argv is None:
+            argv = []
+        if not isinstance(argv, list) or any(not isinstance(item, str) for item in argv):
+            send_frame(conn, 6, json.dumps({"error": "lubox: invalid argv"}).encode("utf-8"))
+            return
+        if not argv:
+            shell = HostIdentity.load().login_shell
+            if not shell.exists():
+                send_frame(conn, 6, json.dumps({"error": f"lubox: host login shell not found: {shell}"}).encode("utf-8"))
+                return
+            argv = [str(shell)]
+        cwd = self.host_cwd(str(request.get("cwd") or ""), conn)
+        env = os.environ.copy()
+        env["LUBOX_HOSTEXEC_SERVER_PID"] = str(os.getpid())
+        forwarded = request.get("env") or {}
+        if isinstance(forwarded, dict):
+            for key, value in forwarded.items():
+                if isinstance(key, str) and isinstance(value, str):
+                    if key in ("TERM", "COLORTERM", "LANG") or key.startswith("LC_"):
+                        env[key] = value
+        rows = int(request.get("rows") or 24)
+        cols = int(request.get("cols") or 80)
+        if bool(request.get("pty")):
+            self.run_pty(conn, argv, cwd, env, rows, cols)
+        else:
+            self.run_pipes(conn, argv, cwd, env)
+
+    def host_cwd(self, requested: str, conn: socket.socket) -> str:
+        if requested and pathlib.Path(requested).exists() and pathlib.Path(requested).is_dir():
+            return requested
+        home = str(HostIdentity.load().home)
+        warning = f"lubox: host cwd not found, using home: {requested}\n".encode("utf-8")
+        try:
+            send_frame(conn, 2, warning)
+        except OSError:
+            pass
+        return home
+
+    def run_pty(self, conn: socket.socket, argv: List[str], cwd: str, env: Dict[str, str], rows: int, cols: int) -> None:
+        master, slave = pty.openpty()
+        self.set_winsize(slave, rows, cols)
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                env=env,
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                close_fds=True,
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            os.close(master)
+            os.close(slave)
+            send_frame(conn, 6, json.dumps({"error": f"lubox: command not found: {argv[0]}"}).encode("utf-8"))
+            return
+        os.close(slave)
+        input_thread = threading.Thread(target=self.pty_input_loop, args=(conn, master, proc), daemon=True)
+        input_thread.start()
+        selector = selectors.DefaultSelector()
+        selector.register(master, selectors.EVENT_READ)
+        try:
+            while True:
+                events = selector.select(0.1)
+                for key, _mask in events:
+                    try:
+                        data = os.read(key.fd, 65536)
+                    except OSError as exc:
+                        if exc.errno == errno.EIO:
+                            data = b""
+                        else:
+                            raise
+                    if data:
+                        send_frame(conn, 1, data)
+                    else:
+                        selector.unregister(master)
+                        proc.wait()
+                        send_frame(conn, 3, json.dumps({"exit_code": proc.returncode}).encode("utf-8"))
+                        return
+                if proc.poll() is not None and not events:
+                    try:
+                        data = os.read(master, 65536)
+                        if data:
+                            send_frame(conn, 1, data)
+                            continue
+                    except OSError:
+                        pass
+                    send_frame(conn, 3, json.dumps({"exit_code": proc.returncode}).encode("utf-8"))
+                    return
+        finally:
+            try:
+                selector.close()
+            except OSError:
+                pass
+            try:
+                os.close(master)
+            except OSError:
+                pass
+
+    def pty_input_loop(self, conn: socket.socket, master: int, proc: subprocess.Popen) -> None:
+        while True:
+            try:
+                channel, payload = recv_frame(conn)
+            except (OSError, EOFError, LuboxError):
+                self.signal_process(proc, signal.SIGINT)
+                return
+            try:
+                if channel == 0 and payload:
+                    if b"\x03" in payload:
+                        self.signal_process(proc, signal.SIGINT)
+                    os.write(master, payload)
+                elif channel == 4:
+                    data = json.loads(payload.decode("utf-8"))
+                    self.set_winsize(master, int(data.get("rows") or 24), int(data.get("cols") or 80))
+                elif channel == 5:
+                    os.write(master, b"\x04")
+                elif channel == 7:
+                    self.signal_from_payload(proc, payload)
+            except OSError:
+                return
+
+    def run_pipes(self, conn: socket.socket, argv: List[str], cwd: str, env: Dict[str, str]) -> None:
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                close_fds=True,
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            send_frame(conn, 6, json.dumps({"error": f"lubox: command not found: {argv[0]}"}).encode("utf-8"))
+            return
+        input_thread = threading.Thread(target=self.pipe_input_loop, args=(conn, proc), daemon=True)
+        input_thread.start()
+        selector = selectors.DefaultSelector()
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+        selector.register(proc.stdout.fileno(), selectors.EVENT_READ, 1)
+        selector.register(proc.stderr.fileno(), selectors.EVENT_READ, 2)
+        try:
+            while selector.get_map():
+                for key, _mask in selector.select(0.1):
+                    data = os.read(key.fd, 65536)
+                    if data:
+                        send_frame(conn, int(key.data), data)
+                    else:
+                        selector.unregister(key.fd)
+                if proc.poll() is not None and not selector.get_map():
+                    break
+            proc.wait()
+            send_frame(conn, 3, json.dumps({"exit_code": proc.returncode}).encode("utf-8"))
+        finally:
+            selector.close()
+
+    def pipe_input_loop(self, conn: socket.socket, proc: subprocess.Popen) -> None:
+        assert proc.stdin is not None
+        stdin_open = True
+        while True:
+            try:
+                channel, payload = recv_frame(conn)
+            except (OSError, EOFError, LuboxError):
+                if stdin_open:
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass
+                self.signal_process(proc, signal.SIGINT)
+                return
+            if channel == 0 and stdin_open:
+                try:
+                    proc.stdin.write(payload)
+                    proc.stdin.flush()
+                except OSError:
+                    stdin_open = False
+            elif channel == 5 and stdin_open:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+                stdin_open = False
+            elif channel == 7:
+                self.signal_from_payload(proc, payload)
+            if proc.poll() is not None:
+                if stdin_open:
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass
+                return
+
+    def signal_from_payload(self, proc: subprocess.Popen, payload: bytes) -> None:
+        try:
+            data = json.loads(payload.decode("utf-8"))
+            signum = int(data.get("signal") or signal.SIGINT)
+        except (ValueError, json.JSONDecodeError):
+            signum = signal.SIGINT
+        if signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            self.signal_process(proc, signum)
+
+    def signal_process(self, proc: subprocess.Popen, signum: int) -> None:
+        if proc.poll() is not None:
+            return
+        try:
+            os.killpg(proc.pid, signum)
+        except ProcessLookupError:
+            return
+        except OSError:
+            try:
+                proc.send_signal(signum)
+            except OSError:
+                pass
+
+    def set_winsize(self, fd: int, rows: int, cols: int) -> None:
+        rows = max(1, rows)
+        cols = max(1, cols)
+        try:
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        except OSError:
+            pass
+
+
+def terminal_size() -> Tuple[int, int]:
+    size = shutil.get_terminal_size(fallback=(80, 24))
+    return size.lines, size.columns
+
+
+def command_doctor(args: argparse.Namespace) -> int:
+    paths = LuboxPaths.load()
+    ident = HostIdentity.load()
+    print(f"lubox version: {VERSION}")
+    print(f"platform: {platform.system()} {platform.release()}")
+    print(f"host user: {ident.username} uid={ident.uid} gid={ident.gid}")
+    print(f"host home: {ident.home}")
+    print(f"host login shell: {ident.login_shell}")
+    print(f"data: {paths.data}")
+    print(f"state: {paths.state}")
+    print(f"cache: {paths.cache}")
+    print(f"runtime: {paths.runtime}")
+    try:
+        engine = Engine.select(getattr(args, "engine", None))
+    except LuboxError as exc:
+        print(f"engine: FAIL: {exc}")
+        return 1
+    print(f"engine: {engine.name} ({engine.path})")
+    if is_macos() and engine.name == "podman":
+        try:
+            rows = engine.podman_machine_rows()
+            if not rows:
+                print('podman machine: FAIL: none; run: podman machine init -v "$HOME:$HOME" --now')
+                return 1
+            running = any(bool(row.get("Running")) or str(row.get("Status", "")).lower() == "running" for row in rows)
+            print(f"podman machine running: {'yes' if running else 'no'}")
+        except LuboxError as exc:
+            print(f"podman machine: FAIL: {exc}")
+            return 1
+    cp = engine.run(["version"], check=False, capture=True, timeout=30)
+    if cp.returncode != 0:
+        print(f"engine version: FAIL ({cp.returncode})")
+        stderr = _decode_output(cp.stderr).strip()
+        if stderr:
+            print(stderr)
+        return 1
+    first_line = _decode_output(cp.stdout).splitlines()[0] if _decode_output(cp.stdout).splitlines() else "ok"
+    print(f"engine version: {first_line}")
+    manager = ContainerManager(engine, ident, paths)
+    try:
+        infos = manager.list_infos()
+    except LuboxError as exc:
+        print(f"list lubox containers: FAIL: {exc}")
+        return 1
+    print(f"lubox containers: {len(infos)}")
+    for info in infos:
+        print(f"- {info.name}: {info.status}, host_exec={info.host_exec}, base={info.base_image}")
+    probe_done = False
+    for info in infos:
+        if info.status == "running" and info.host_exec == "true":
+            try:
+                manager.ensure_hostexec_server(info.name)
+                probe = manager.probe_hostexec(info.name)
+                if probe.returncode == 0:
+                    print(f"host-exec probe: ok ({info.name})")
+                    probe_done = True
+                    break
+                print(f"host-exec probe: FAIL ({info.name}): {_decode_output(probe.stderr).strip()}")
+                return 1
+            except LuboxError as exc:
+                print(f"host-exec probe: FAIL ({info.name}): {exc}")
+                return 1
+    if not probe_done:
+        print("host-exec probe: skipped (no running host-exec lubox container)")
+    return 0
+
+
+def command_container_init_check() -> int:
+    shell = pathlib.Path("/etc/lubox/shell")
+    user = pathlib.Path("/etc/lubox/user.json")
+    if not shell.exists():
+        eprint("lubox: missing /etc/lubox/shell")
+        return 1
+    shell_path = pathlib.Path(shell.read_text(encoding="utf-8").strip())
+    if not shell_path.exists():
+        eprint(f"lubox: configured shell missing: {shell_path}")
+        return 1
+    if not user.exists():
+        eprint("lubox: missing /etc/lubox/user.json")
+        return 1
+    return 0
+
+
+def command_fish_complete(args: argparse.Namespace) -> int:
+    kind = args.kind
+    if inside_lubox_container() and os.environ.get("LUBOX_HOST_EXEC") == "1":
+        return HostExecClient(host_lubox_command(["__fish-complete", kind]), probe=False).run()
+    if kind == "commands":
+        rows = [
+            ("doctor", "diagnose lubox setup"),
+            ("list", "list lubox containers"),
+            ("create", "create lubox container"),
+            ("destroy", "destroy lubox container"),
+            ("start", "start lubox container"),
+            ("stop", "stop lubox container"),
+            ("enter", "enter lubox container"),
+            ("exec", "execute command in lubox container"),
+            ("code-server", "start code-server in container"),
+            ("enable", "enable optional feature"),
+            ("host-exec", "run command on host"),
+        ]
+        for value, desc in rows:
+            print(f"{value}\t{desc}")
+        return 0
+    if kind == "engines":
+        print("podman\tPodman engine")
+        print("docker\tDocker engine")
+        return 0
+    if kind == "boxes":
+        try:
+            engine = Engine.select(None)
+            ident = HostIdentity.load()
+            paths = LuboxPaths.load()
+            manager = ContainerManager(engine, ident, paths)
+            for info in manager.list_infos():
+                desc = f"{info.status}, host_exec={info.host_exec}, base={info.base_image}"
+                print(f"{info.name}\t{desc}")
+        except LuboxError:
+            return 0
+        return 0
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    epilog = """examples:
+  lubox create dev --image docker.io/library/fedora:latest
+  lubox enter dev
+  lubox exec dev -- uname -a
+  lubox host-exec open .
+  lubox create safe --no-host-exec
+  lubox destroy dev
+
+destroy keeps lubox/NAME:latest by default; destroy --force also removes it.
+"""
+    parser = LuboxArgumentParser(
+        prog="lubox",
+        description="Small Distrobox-like wrapper around podman/docker.",
+        epilog=epilog,
+    )
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND", parser_class=LuboxArgumentParser)
+
+    def add_engine(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--engine", choices=["podman", "docker"], help="container engine (default: podman, then docker; env: LUBOX_ENGINE)")
+
+    p = sub.add_parser("doctor", help="diagnose lubox setup")
+    add_engine(p)
+
+    p = sub.add_parser("list", help="list lubox containers")
+    add_engine(p)
+
+    p = sub.add_parser("create", help="create lubox container")
+    p.add_argument("name", metavar="NAME")
+    p.add_argument("--image", default=DEFAULT_IMAGE, help=f"base image (default: {DEFAULT_IMAGE})")
+    add_engine(p)
+    p.add_argument("--no-host-exec", action="store_true", help="disable host-exec bridge")
+    p.add_argument("--rebuild", action="store_true", help="recreate existing container and rebuild image")
+
+    p = sub.add_parser("destroy", help="stop and remove container; --force also removes image")
+    add_engine(p)
+    p.add_argument("name", metavar="NAME")
+    p.add_argument("-f", "--force", action="store_true", help="force container removal and remove lubox image")
+
+    p = sub.add_parser("start", help="start container")
+    add_engine(p)
+    p.add_argument("name", metavar="NAME")
+
+    p = sub.add_parser("stop", help="stop container")
+    add_engine(p)
+    p.add_argument("name", metavar="NAME")
+
+    p = sub.add_parser("enter", help="enter container login shell, or run command after --")
+    add_engine(p)
+    p.add_argument("--xquartz", action="store_true", help="enable XQuartz DISPLAY forwarding on macOS")
+    p.add_argument("name", metavar="NAME")
+    p.add_argument("cmd", nargs=argparse.REMAINDER, metavar="CMD")
+
+    p = sub.add_parser("exec", help="execute command in container")
+    add_engine(p)
+    p.add_argument("name", metavar="NAME")
+    p.add_argument("cmd", nargs=argparse.REMAINDER, metavar="CMD")
+
+    p = sub.add_parser("code-server", help="start code-server in container and open browser")
+    add_engine(p)
+    p.add_argument("name", nargs="?", metavar="NAME")
+    p.add_argument("path", nargs="?", default=".", metavar="PATH", help="folder to open (default: current directory if mounted, else home)")
+    p.add_argument("--port", type=int, help="local browser port (default: random high port)")
+    p.add_argument("--container-port", type=int, help="container code-server port (default: same as local port)")
+    p.add_argument("--host", action="store_true", help="listen on all host interfaces with a random password")
+    p.add_argument("--auth", choices=["none", "password"], default="none", help="code-server auth mode (default: none, localhost tunnel only)")
+    p.add_argument("--password", help="password for --auth password; generated if omitted")
+    p.add_argument("--no-open", action="store_true", help="print URL without opening browser")
+    p.add_argument("--install-only", action="store_true", help="install code-server and print binary path")
+    p.add_argument("--reinstall", action="store_true", help="download latest code-server even if installed")
+
+    p = sub.add_parser("host-exec", help="run host command from inside lubox container")
+    p.add_argument("cmd", nargs=argparse.REMAINDER, metavar="CMD")
+
+    p = sub.add_parser("enable", help="enable optional feature in current shell")
+    add_engine(p)
+    p.add_argument("feature", choices=["xquartz"], metavar="FEATURE")
+    p.add_argument("--shell", choices=["sh", "fish", "json"], default="sh", help="output format for environment changes")
+
+    hidden_names: List[str] = []
+
+    p = sub.add_parser("__hostexec-server", help=argparse.SUPPRESS)
+    hidden_names.append("__hostexec-server")
+    p.add_argument("--engine", required=True, choices=["podman", "docker"])
+    p.add_argument("--name", required=True)
+    p.add_argument("--container", required=True)
+    p.add_argument("--port", required=True, type=int)
+    p.add_argument("--token-file", required=True)
+    p.add_argument("--config-file", required=True)
+    p.add_argument("--bind-address", required=True)
+    p.add_argument("--host", required=True)
+    p.add_argument("--token-path", required=True)
+    p.add_argument("--pid-file", required=True)
+    p.add_argument("--ssh-auth-sock")
+    p.add_argument("--ssh-port", type=int, default=0)
+    p.add_argument("--ssh-socket-path", default=container_ssh_auth_sock())
+    p.add_argument("--gpg-socket", action="append", default=[])
+
+    sub.add_parser("__hostexec-probe", help=argparse.SUPPRESS)
+    hidden_names.append("__hostexec-probe")
+    p = sub.add_parser("__ssh-agent-proxy-client", help=argparse.SUPPRESS)
+    hidden_names.append("__ssh-agent-proxy-client")
+    p.add_argument("--check", action="store_true")
+    p.add_argument("--socket-path")
+    p.add_argument("--pid-file")
+    p = sub.add_parser("__gpg-agent-proxy-client", help=argparse.SUPPRESS)
+    hidden_names.append("__gpg-agent-proxy-client")
+    p.add_argument("--check", action="store_true")
+    p.add_argument("--home")
+    p.add_argument("--pid-file")
+    p = sub.add_parser("__code-server-proxy-server", help=argparse.SUPPRESS)
+    hidden_names.append("__code-server-proxy-server")
+    p.add_argument("--engine", required=True, choices=["podman", "docker"])
+    p.add_argument("--container", required=True)
+    p.add_argument("--listen-host", default="127.0.0.1")
+    p.add_argument("--listen-port", required=True, type=int)
+    p.add_argument("--target-port", required=True, type=int)
+    p.add_argument("--pid-file", required=True)
+    p.add_argument("--log-file", required=True)
+    sub.add_parser("__container-init-check", help=argparse.SUPPRESS)
+    hidden_names.append("__container-init-check")
+    p = sub.add_parser("__fish-complete", help=argparse.SUPPRESS)
+    hidden_names.append("__fish-complete")
+    p.add_argument("kind", choices=["commands", "boxes", "engines"])
+    sub._choices_actions = [action for action in sub._choices_actions if action.dest not in hidden_names]
+    return parser
+
+
+def dispatch(args: argparse.Namespace) -> int:
+    if args.command == "doctor":
+        return command_doctor(args)
+    if args.command == "host-exec":
+        return HostExecClient(strip_dashdash(args.cmd), probe=False).run()
+    if args.command == "__hostexec-probe":
+        return HostExecClient([], probe=True).run()
+    if args.command == "__container-init-check":
+        return command_container_init_check()
+    if args.command == "__hostexec-server":
+        return HostExecServer(args).run()
+    if args.command == "__ssh-agent-proxy-client":
+        return SSHAgentProxyClient(args).run()
+    if args.command == "__gpg-agent-proxy-client":
+        return GPGAgentProxyClient(args).run()
+    if args.command == "__code-server-proxy-server":
+        return CodeServerProxyServer(args).run()
+    if args.command == "__fish-complete":
+        return command_fish_complete(args)
+    paths = LuboxPaths.load()
+    ident = HostIdentity.load()
+    engine = Engine.select(getattr(args, "engine", None))
+    manager = ContainerManager(engine, ident, paths)
+    if args.command == "list":
+        manager.print_list()
+        return 0
+    if args.command == "create":
+        manager.create(args.name, args.image, args.no_host_exec, args.rebuild)
+        return 0
+    if args.command == "destroy":
+        manager.destroy(args.name, args.force)
+        return 0
+    if args.command == "start":
+        manager.start(args.name, start_server=True)
+        return 0
+    if args.command == "stop":
+        manager.stop(args.name)
+        return 0
+    if args.command == "enter":
+        return manager.enter(args.name, args.cmd, xquartz=args.xquartz)
+    if args.command == "exec":
+        return manager.exec(args.name, args.cmd)
+    if args.command == "code-server":
+        if not args.name:
+            die("lubox: code-server requires NAME unless run inside a lubox container")
+        return manager.code_server(args.name, args)
+    if args.command == "enable":
+        return manager.enable(args)
+    return 0
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    forwarded = forward_lubox_command_if_needed(raw_args)
+    if forwarded is not None:
+        return forwarded
+    parser = build_parser()
+    args = parser.parse_args(raw_args)
+    if args.command is None:
+        parser.print_help()
+        return 0
+    try:
+        return dispatch(args)
+    except BrokenPipeError:
+        return 1
+    except KeyboardInterrupt:
+        eprint("lubox: interrupted")
+        return 130
+    except CommandError as exc:
+        eprint(str(exc))
+        return exc.code
+    except LuboxError as exc:
+        eprint(str(exc))
+        return exc.code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

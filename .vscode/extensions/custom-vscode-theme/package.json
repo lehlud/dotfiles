@@ -1,0 +1,21 @@
+{
+  "name": "custom-vscode-theme",
+  "displayName": "Custom VSCode Theme",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Themes"
+  ],
+  "contributes": {
+    "themes": [
+      {
+        "label": "custom",
+        "uiTheme": "vs-dark",
+        "path": "./themes/custom-color-theme.json"
+      }
+    ]
+  }
+}

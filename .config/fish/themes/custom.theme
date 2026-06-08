@@ -1,0 +1,42 @@
+# Syntax Highlighting Colors
+fish_color_normal f0f3f6
+fish_color_command 60a5fa
+fish_color_keyword ff79c6
+fish_color_quote 4ade80
+fish_color_redirection 8b949e
+fish_color_end fb923c
+fish_color_error ff6b7a
+fish_color_param c084fc
+fish_color_comment 8b949e
+fish_color_selection --background=1f6feb
+fish_color_search_match --background=facc15 05070a
+fish_color_operator 4ade80
+fish_color_escape ff6b7a
+fish_color_autosuggestion 8b949e
+fish_color_cancel ff6b7a --reverse
+fish_color_option fb923c
+fish_color_history_current --bold
+fish_color_status ff6b7a
+fish_color_valid_path --underline
+
+# Default Prompt Colors
+fish_color_cwd 4ade80
+fish_color_cwd_root ff6b7a
+fish_color_host c084fc
+fish_color_host_remote c084fc
+fish_color_user 60a5fa
+
+# Completion Pager Colors
+fish_pager_color_progress 8b949e
+fish_pager_color_background
+fish_pager_color_prefix 60a5fa
+fish_pager_color_completion f0f3f6
+fish_pager_color_description 8b949e
+fish_pager_color_selected_background --background=1f6feb
+fish_pager_color_selected_prefix ffffff
+fish_pager_color_selected_completion ffffff
+fish_pager_color_selected_description c9d1d9
+fish_pager_color_secondary_background
+fish_pager_color_secondary_prefix c084fc
+fish_pager_color_secondary_completion c9d1d9
+fish_pager_color_secondary_description 8b949e

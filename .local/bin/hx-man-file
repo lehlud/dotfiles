@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+selection=${1:-}
+
+# Keep only plausible man-page tokens: letters, digits, spaces, _, ., :, +, -
+selection=$(printf '%s' "$selection" | tr -cd '[:alnum:] _.:+-')
+
+# Split selection into words, so both "printf" and "3 printf" work.
+# shellcheck disable=SC2086
+set -- $selection
+
+if [ "$#" -eq 0 ]; then
+  echo "No man page selected" >&2
+  exit 1
+fi
+
+tmp=$(mktemp "${TMPDIR:-/tmp}/hx-man.XXXXXX")
+
+if man "$@" | col -b > "$tmp"; then
+  printf '%s\n' "$tmp"
+else
+  rm -f "$tmp"
+  exit 1
+fi

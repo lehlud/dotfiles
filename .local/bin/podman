@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+
+_podman_find_original() {
+  local dir
+  local candidate
+  local candidate_dir
+  local candidate_path
+  local self_dir
+  local self_path
+  local IFS=:
+
+  self_dir="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || return 1
+  self_path="$self_dir/$(basename -- "${BASH_SOURCE[0]}")"
+
+  for dir in $PATH; do
+    [ -n "$dir" ] || dir=.
+    candidate="$dir/podman"
+    [ -x "$candidate" ] || continue
+
+    candidate_dir="$(cd -P -- "$(dirname -- "$candidate")" 2>/dev/null && pwd)" || continue
+    candidate_path="$candidate_dir/$(basename -- "$candidate")"
+    [ "$candidate_path" = "$self_path" ] && continue
+
+    printf '%s\n' "$candidate_path"
+    return 0
+  done
+
+  return 1
+}
+
+_podman_original="$(_podman_find_original)" || {
+  _podman_original=
+}
+
+if [ -n "${LUBOX_CONTAINER_NAME:-}" ]; then
+  if [ "${LUBOX_HOST_EXEC:-0}" = 1 ]; then
+    if [ -x /usr/local/bin/lubox ]; then
+      exec /usr/local/bin/lubox host-exec podman "$@"
+    fi
+
+    if command -v lubox >/dev/null 2>&1; then
+      exec lubox host-exec podman "$@"
+    fi
+
+    printf 'podman wrapper failed: lubox command not found for host-exec\n' >&2
+    exit 127
+  fi
+
+  printf 'podman wrapper failed: lubox host-exec is disabled for this container\n' >&2
+  exit 126
+fi
+
+if [ -n "${CONTAINER_ID:-}" ]; then
+  if [ -n "$_podman_original" ] && [ -x /usr/bin/distrobox-host-exec ]; then
+    exec /usr/bin/distrobox-host-exec "$_podman_original" "$@"
+  fi
+
+  printf 'podman wrapper failed: distrobox host exec unavailable\n' >&2
+  exit 127
+elif [ -n "$_podman_original" ]; then
+  exec "$_podman_original" "$@"
+else
+  printf 'podman wrapper failed: original podman not found in PATH\n' >&2
+  exit 127
+fi

@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -u
+
+box="${LUBOX_KITTY_BOX:-fedora1}"
+lubox_bin="${LUBOX_BIN:-$HOME/.local/bin/lubox}"
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/lubox"
+log_file="$state_dir/kitty-shell.log"
+
+PATH="$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin:/Applications/kitty.app/Contents/MacOS:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+export PATH
+
+mkdir -p "$state_dir" 2>/dev/null || true
+chmod 700 "$state_dir" 2>/dev/null || true
+
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$log_file" 2>/dev/null || true
+}
+
+host_login_shell() {
+  /usr/bin/python3 -c 'import os,pwd; print(pwd.getpwuid(os.getuid()).pw_shell or "/bin/sh")' 2>>"$log_file" || printf '%s\n' "${SHELL:-/bin/sh}"
+}
+
+fallback_shell() {
+  local shell_path
+  shell_path="$(host_login_shell)"
+  log "fallback shell: $shell_path"
+  exec "$shell_path" -l
+}
+
+debug() {
+  printf 'kitty-lubox-shell debug\n'
+  printf 'box=%s\n' "$box"
+  printf 'lubox_bin=%s\n' "$lubox_bin"
+  printf 'host_login_shell=%s\n' "$(host_login_shell)"
+  printf 'PATH=%s\n' "${PATH:-}"
+  printf 'command -v lubox=%s\n' "$(command -v lubox 2>/dev/null || true)"
+  printf 'log_file=%s\n' "$log_file"
+
+  if [ -x "$lubox_bin" ]; then
+    printf '\nlubox list:\n'
+    "$lubox_bin" list 2>&1 || true
+    printf '\nlubox doctor tail:\n'
+    "$lubox_bin" doctor 2>&1 | tail -n 12 || true
+  else
+    printf '\nlubox missing or not executable: %s\n' "$lubox_bin"
+  fi
+}
+
+if [ "${1:-}" = --debug ]; then
+  debug
+  exit 0
+fi
+
+log "launch box=$box lubox=$lubox_bin path=${PATH:-}"
+
+if [ ! -x "$lubox_bin" ]; then
+  log "lubox missing or not executable"
+  fallback_shell
+fi
+
+if ! "$lubox_bin" list 2>/dev/null | awk -v box="$box" 'NR > 1 && $1 == box { found = 1 } END { exit found ? 0 : 1 }'; then
+  list_output="$("$lubox_bin" list 2>&1)"
+  list_status=$?
+  log "container not listed: $box; lubox list status=$list_status output=$(printf '%s' "$list_output" | tr '\n' ' ' | cut -c 1-500)"
+  fallback_shell
+fi
+
+log "entering lubox: $box"
+"$lubox_bin" enter "$box"
+status=$?
+log "lubox enter exited: $status"
+
+if [ "$status" -eq 0 ]; then
+  exit 0
+fi
+
+fallback_shell

@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+if len(sys.argv) < 3:
+    print("usage: authinfo-pass HOST LOGIN [PORT]", file=sys.stderr)
+    sys.exit(2)
+
+wanted_host = sys.argv[1]
+wanted_login = sys.argv[2]
+wanted_port = sys.argv[3] if len(sys.argv) > 3 else None
+
+authinfo = os.environ.get("AUTHINFO", str(Path.home() / ".authinfo.gpg"))
+
+try:
+    result = subprocess.run(
+        ["gpg", "--quiet", "--batch", "--decrypt", authinfo],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+except FileNotFoundError:
+    print("gpg not found", file=sys.stderr)
+    sys.exit(127)
+except subprocess.CalledProcessError as e:
+    print(e.stderr, file=sys.stderr)
+    sys.exit(e.returncode)
+
+for line in result.stdout.splitlines():
+    line = line.strip()
+
+    if not line or line.startswith("#"):
+        continue
+
+    try:
+        tokens = shlex.split(line, comments=True, posix=True)
+    except ValueError:
+        continue
+
+    fields = {}
+    i = 0
+    while i < len(tokens) - 1:
+        key = tokens[i]
+        value = tokens[i + 1]
+        fields[key] = value
+        i += 2
+
+    host_ok = fields.get("machine") == wanted_host
+    login_ok = fields.get("login") == wanted_login
+
+    # If the authinfo line has a port, require it to match.
+    # If it has no port, allow it as a fallback.
+    line_port = fields.get("port")
+    port_ok = wanted_port is None or line_port is None or line_port == wanted_port
+
+    if host_ok and login_ok and port_ok and "password" in fields:
+        print(fields["password"])
+        sys.exit(0)
+
+print(
+    f"no matching password for machine={wanted_host} login={wanted_login} port={wanted_port}",
+    file=sys.stderr,
+)
+sys.exit(1)
+
