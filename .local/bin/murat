@@ -5,6 +5,7 @@ import argparse
 import base64
 import binascii
 import curses
+import datetime
 import email.header
 import email.utils
 import getpass
@@ -65,10 +66,9 @@ quit = "q"
 force_quit = "Q"
 sync = "s"
 compose = "c"
-search = "/"
-clear_search = "esc"
-toggle_spam = "z"
+filter = "f"
 actions = "space"
+open = "enter"
 next = "j"
 prev = "k"
 down = "down"
@@ -126,6 +126,7 @@ class Paths:
     key_file: Path
     accounts_file: Path
     mail_file: Path
+    search_file: Path
 
 
 @dataclass
@@ -261,6 +262,7 @@ def xdg_paths() -> Paths:
         key_file=data_dir / "key.gpg",
         accounts_file=data_dir / "accounts.enc.json",
         mail_file=data_dir / "mail.enc.json",
+        search_file=data_dir / "search.enc.json",
     )
 
 
@@ -600,7 +602,7 @@ class EncryptedJsonFile:
 
     def save(self, value: dict[str, Any]) -> None:
         key = self.key_provider.ensure_key()
-        plaintext = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2).encode()
+        plaintext = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         envelope = CryptoBox(key).seal(plaintext)
         atomic_write(self.path, envelope, mode=0o600)
 
@@ -664,12 +666,14 @@ class MailStore:
 
 
 class EncryptedJsonMailStore(MailStore):
-    def __init__(self, encrypted_file: EncryptedJsonFile, key_provider: SymmetricKeyProvider, eml_dir: Path):
+    def __init__(self, encrypted_file: EncryptedJsonFile, search_file: EncryptedJsonFile, key_provider: SymmetricKeyProvider, eml_dir: Path):
         self.file = encrypted_file
+        self.search_file = search_file
         self.key_provider = key_provider
         self.eml_dir = eml_dir
         self._box: CryptoBox | None = None
         self._data_cache: dict[str, Any] | None = None
+        self._search_cache: dict[str, list[str]] | None = None
         self._cache_lock = threading.RLock()
 
     def warm_crypto(self) -> None:
@@ -679,7 +683,9 @@ class EncryptedJsonMailStore(MailStore):
     def data(self) -> dict[str, Any]:
         with self._cache_lock:
             if self._data_cache is None:
-                self._data_cache = self.normalize_data(self.file.load())
+                data = self.normalize_data(self.file.load())
+                self.migrate_search_index(data)
+                self._data_cache = data
             return self._data_cache
 
     def normalize_data(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -687,9 +693,28 @@ class EncryptedJsonMailStore(MailStore):
         data.setdefault("mailboxes", {})
         data.setdefault("messages", {})
         data.setdefault("bodies", {})
-        data.setdefault("search_index", {})
         data.setdefault("drafts", [])
         return data
+
+    def migrate_search_index(self, data: dict[str, Any]) -> None:
+        old_index = data.pop("search_index", None)
+        if not isinstance(old_index, dict):
+            return
+        self.save_search_index(normalize_search_index(old_index))
+        self.file.save(data)
+
+    def search_index(self) -> dict[str, list[str]]:
+        with self._cache_lock:
+            if self._search_cache is None:
+                data = self.search_file.load()
+                index = data.get("search_index") if isinstance(data.get("search_index"), dict) else {}
+                self._search_cache = normalize_search_index(index)
+            return self._search_cache
+
+    def save_search_index(self, index: dict[str, list[str]]) -> None:
+        with self._cache_lock:
+            self.search_file.save({"version": 1, "search_index": index})
+            self._search_cache = index
 
     def save_data(self, data: dict[str, Any]) -> None:
         with self._cache_lock:
@@ -724,7 +749,7 @@ class EncryptedJsonMailStore(MailStore):
                 raise MuratError(f"message missing encrypted EML: {message.get('key')}")
             data["messages"][message["key"]] = message
         data["bodies"] = {}
-        data["search_index"] = update_search_index(data.get("search_index", {}), old_keys, result.search_docs)
+        self.save_search_index(update_search_index(self.search_index(), old_keys, result.search_docs))
         data["updated_at"] = now_utc()
         self.save_data(data)
 
@@ -733,7 +758,7 @@ class EncryptedJsonMailStore(MailStore):
         tokens = tokenize(query)
         if not tokens:
             return []
-        index = data.get("search_index") if isinstance(data.get("search_index"), dict) else {}
+        index = self.search_index()
         posting_sets = []
         for token in tokens:
             keys = set(index.get(token, [])) if isinstance(index.get(token), list) else set()
@@ -763,7 +788,7 @@ class EncryptedJsonMailStore(MailStore):
     def save_body(self, message_key: str, body: dict[str, Any]) -> None:
         data = self.data()
         data["bodies"][message_key] = body
-        data["search_index"] = build_search_index(data)
+        self.save_search_index(build_search_index(data))
         self.save_data(data)
 
     def write_message_eml(self, message: dict[str, Any], body: str) -> str:
@@ -874,6 +899,17 @@ def update_search_index(existing: Any, remove_keys: set[str], add_docs: dict[str
     return {token: sorted(keys) for token, keys in sorted(index.items()) if keys}
 
 
+def normalize_search_index(value: dict[str, Any]) -> dict[str, list[str]]:
+    index: dict[str, list[str]] = {}
+    for token, keys in value.items():
+        if not isinstance(token, str) or not isinstance(keys, list):
+            continue
+        clean = sorted({key for key in keys if isinstance(key, str)})
+        if clean:
+            index[token] = clean
+    return index
+
+
 def report_progress(progress: Any, message: str) -> None:
     if progress is not None:
         progress(message)
@@ -910,6 +946,11 @@ def eml_body_text(value: bytes) -> str:
     text = value.decode(errors="replace")
     parts = re.split(r"\r?\n\r?\n", text, maxsplit=1)
     return parts[1] if len(parts) == 2 else text
+
+
+def eml_header_text(value: str) -> str:
+    parts = re.split(r"\r?\n\r?\n", value, maxsplit=1)
+    return parts[0].replace("\r", "") if parts else value.replace("\r", "")
 
 
 def account_capabilities(account: dict[str, Any]) -> set[str]:
@@ -1921,14 +1962,19 @@ def build_services() -> Services:
     mail_file = EncryptedJsonFile(
         paths.mail_file,
         key_provider,
-        {"version": 1, "mailboxes": {}, "messages": {}, "bodies": {}, "search_index": {}, "drafts": []},
+        {"version": 1, "mailboxes": {}, "messages": {}, "bodies": {}, "drafts": []},
+    )
+    search_file = EncryptedJsonFile(
+        paths.search_file,
+        key_provider,
+        {"version": 1, "search_index": {}},
     )
     return Services(
         paths=paths,
         config=config,
         key_provider=key_provider,
         accounts=AccountsStore(accounts_file),
-        mail=EncryptedJsonMailStore(mail_file, key_provider, paths.data_dir / "eml"),
+        mail=EncryptedJsonMailStore(mail_file, search_file, key_provider, paths.data_dir / "eml"),
         jmap=JmapClient(),
     )
 
@@ -2066,6 +2112,7 @@ def cmd_paths(_args: argparse.Namespace) -> None:
     print(f"key={paths.key_file}")
     print(f"accounts={paths.accounts_file}")
     print(f"mail={paths.mail_file}")
+    print(f"search={paths.search_file}")
 
 
 def prompt(label: str, default: str = "") -> str:
@@ -2317,8 +2364,8 @@ class TuiApp:
         self.services = services
         self.accounts = services.accounts.all()
         self.account_filter = 0
-        self.include_spam = False
-        self.search_query = ""
+        self.filter_kind = ""
+        self.filter_query = ""
         self.messages: list[dict[str, Any]] = []
         self.selected = 0
         self.list_scroll = 0
@@ -2326,6 +2373,11 @@ class TuiApp:
         self.preview_key: str | None = None
         self.preview_message: dict[str, Any] | None = None
         self.preview_body = ""
+        self.preview_headers = ""
+        self.preview_header_mode = False
+        self.selection_start: tuple[int, int] | None = None
+        self.selection_end: tuple[int, int] | None = None
+        self.selection_active = False
         self.action_scope: str | None = None
         self.status = ""
         self.error = False
@@ -2344,12 +2396,31 @@ class TuiApp:
 
     def refresh_messages(self) -> None:
         with self.store_lock:
-            if self.search_query:
-                self.messages = self.services.mail.search(self.search_query, include_spam=self.include_spam)
-            else:
-                self.messages = self.services.mail.messages(include_spam=self.include_spam)
+            self.messages = self.filtered_messages()
         self.selected = max(0, min(len(self.messages) - 1, self.selected)) if self.messages else 0
         self.list_scroll = min(self.list_scroll, self.selected)
+
+    def filtered_messages(self) -> list[dict[str, Any]]:
+        if self.filter_kind == "search" and self.filter_query:
+            return self.services.mail.search(self.filter_query, include_spam=False)
+        messages = self.services.mail.messages(include_spam=self.filter_kind == "spam")
+        if self.filter_kind == "spam":
+            return [message for message in messages if message.get("spam")]
+        if self.filter_kind == "read":
+            return [message for message in messages if message.get("read")]
+        if self.filter_kind == "unread":
+            return [message for message in messages if not message.get("read")]
+        if self.filter_kind == "today":
+            today = datetime.datetime.now(datetime.UTC).date()
+            return [message for message in messages if message_day(message) == today]
+        if self.filter_kind == "week":
+            today = datetime.datetime.now(datetime.UTC).date()
+            start = today - datetime.timedelta(days=today.weekday())
+            return [message for message in messages if (day := message_day(message)) is not None and start <= day <= today]
+        if self.filter_kind == "tag" and self.filter_query:
+            expr = parse_tag_filter(self.filter_query)
+            return [message for message in messages if expr_matches_tags(expr, message.get("tags", []))]
+        return messages
 
     def run(self, stdscr: Any) -> None:
         curses.curs_set(0)
@@ -2357,7 +2428,7 @@ class TuiApp:
         stdscr.timeout(100)
         self.setup_colors()
         try:
-            curses.mousemask(curses.ALL_MOUSE_EVENTS)
+            curses.mousemask(curses.ALL_MOUSE_EVENTS | getattr(curses, "REPORT_MOUSE_POSITION", 0))
             curses.mouseinterval(0)
         except curses.error:
             pass
@@ -2465,19 +2536,30 @@ class TuiApp:
         token = key_token(ch)
         action = self.action(ch)
         visible = self.visible_messages()
+        if token == "enter" and visible:
+            self.action_scope = None
+            self.open_selected(visible)
+            return
         if self.action_scope == "mail":
             self.handle_mail_action(stdscr, token, visible)
+            return
+        if self.action_scope == "filter":
+            self.handle_filter_action(stdscr, token)
             return
         if action == "actions" or token == "space":
             if self.current_action_message(visible):
                 self.action_scope = "mail"
                 self.set_status("mail actions")
             return
+        if action == "filter" or token == "f":
+            self.action_scope = "filter"
+            self.set_status("filters")
+            return
         if action == "force_quit":
             self.running = False
         elif action == "quit":
-            if self.search_query or self.include_spam:
-                self.clear_search_view()
+            if self.filter_kind:
+                self.clear_filter_view()
             elif self.preview_key is not None:
                 self.close_preview()
             else:
@@ -2495,6 +2577,8 @@ class TuiApp:
             self.list_scroll = 0
         elif action == "bottom" and visible:
             self.selected = len(visible) - 1
+        elif action == "open":
+            self.open_selected(visible)
         elif action == "sync":
             self.sync()
         elif action == "compose":
@@ -2503,25 +2587,11 @@ class TuiApp:
             self.account_filter = (self.account_filter + 1) % (len(self.accounts) + 1)
             self.selected = 0
             self.list_scroll = 0
-        elif action == "search":
-            query = self.prompt_line(stdscr, "search")
-            if query:
-                self.search_query = query
-                self.selected = 0
-                self.list_scroll = 0
-                self.refresh_messages()
-                self.set_status(f"search: {query} ({len(self.messages)} matches)")
-            else:
-                self.apply_deferred_status()
         elif action == "clear_search":
-            if self.search_query or self.include_spam:
-                self.clear_search_view()
+            if self.filter_kind:
+                self.clear_filter_view()
             elif self.preview_key:
                 self.close_preview()
-        elif action == "toggle_spam":
-            self.include_spam = not self.include_spam
-            self.refresh_messages()
-            self.set_status("spam visible" if self.include_spam else "spam hidden")
 
     def handle_mail_action(self, stdscr: Any, token: str, visible: list[dict[str, Any]]) -> None:
         message = self.current_action_message(visible)
@@ -2533,10 +2603,6 @@ class TuiApp:
             self.action_scope = None
             self.set_status("no selected mail", error=True)
             return
-        if token in ("o", "enter"):
-            self.action_scope = None
-            self.open_selected(visible)
-            return
         if token == "r":
             self.action_scope = None
             self.compose(stdscr, message)
@@ -2544,6 +2610,14 @@ class TuiApp:
         if token == "R" and self.can_reply_all(message):
             self.action_scope = None
             self.compose(stdscr, message, reply_all=True)
+            return
+        if token == "f":
+            self.action_scope = None
+            self.compose(stdscr, message, forward=True)
+            return
+        if token == "h":
+            self.action_scope = None
+            self.show_message_headers(message)
             return
         if token == "t":
             self.action_scope = None
@@ -2554,6 +2628,58 @@ class TuiApp:
             self.toggle_message_spam_async(message)
             return
         self.set_status(f"unknown mail action: {token}", error=True)
+
+    def handle_filter_action(self, stdscr: Any, token: str) -> None:
+        if token in ("esc", "q", "f"):
+            self.action_scope = None
+            self.set_status("default keys")
+            return
+        if token == "c":
+            self.action_scope = None
+            self.clear_filter_view()
+            return
+        if token == "s":
+            self.action_scope = None
+            self.set_filter("spam")
+            return
+        if token == "r":
+            self.action_scope = None
+            self.set_filter("read")
+            return
+        if token == "u":
+            self.action_scope = None
+            self.set_filter("unread")
+            return
+        if token == "d":
+            self.action_scope = None
+            self.set_filter("today")
+            return
+        if token == "w":
+            self.action_scope = None
+            self.set_filter("week")
+            return
+        if token == "/":
+            query = self.prompt_line(stdscr, "search")
+            self.action_scope = None
+            if query:
+                self.set_filter("search", query)
+            else:
+                self.apply_deferred_status()
+            return
+        if token == "t":
+            query = self.prompt_line(stdscr, "tags (,=or +=and parens ok)")
+            self.action_scope = None
+            if query:
+                try:
+                    parse_tag_filter(query)
+                except MuratError as error:
+                    self.set_status(str(error), error=True)
+                    return
+                self.set_filter("tag", query)
+            else:
+                self.apply_deferred_status()
+            return
+        self.set_status(f"unknown filter: {token}", error=True)
 
     def handle_mouse(self, stdscr: Any) -> None:
         try:
@@ -2570,6 +2696,17 @@ class TuiApp:
             else:
                 self.scroll_list(wheel * 3, visible)
             return
+        if self.selection_active and has_mouse_any(state, ["BUTTON1_RELEASED"]):
+            self.update_selection(x, y)
+            self.finish_selection()
+            return
+        if self.selection_active and has_mouse_any(state, ["REPORT_MOUSE_POSITION", "BUTTON1_CLICKED"]):
+            self.update_selection(x, y)
+            return
+        if self.preview_key and point_in_area(x, y, self.body_area):
+            if has_mouse_any(state, ["BUTTON1_PRESSED"]):
+                self.start_selection(x, y)
+                return
         if not has_mouse_any(state, ["BUTTON1_PRESSED", "BUTTON1_CLICKED", "BUTTON1_DOUBLE_CLICKED"]):
             return
         if list_h > 0 and list_x <= x < list_x + list_w and list_y <= y < list_y + list_h:
@@ -2579,21 +2716,24 @@ class TuiApp:
                 self.action_scope = None
                 self.open_selected(visible)
         elif self.preview_key and body_h > 0 and body_x <= x < body_x + body_w and body_y <= y < body_y + body_h:
-            self.body_scroll = max(0, self.body_scroll + (1 if y > body_y + body_h // 2 else -1))
+            self.start_selection(x, y)
 
     def current_shortcuts(self) -> str:
         visible = self.visible_messages()
         if self.action_scope == "mail":
             return self.mail_action_shortcuts(self.current_action_message(visible))
+        if self.action_scope == "filter":
+            return "filter: s spam  r read  u unread  d today  w week  / search  t tags  c clear  esc back"
         items = []
         if len(visible) > 1:
             items.append("j/k move")
         if visible:
+            items.append("enter open")
             items.append("SPC actions")
-            items.append("/ search")
+        items.append("f filters")
         if len(self.accounts) > 1:
             items.append("a acct")
-        if self.search_query or self.include_spam:
+        if self.filter_kind:
             items.append("esc/q default")
         elif self.preview_key:
             items.append("esc/q close")
@@ -2601,9 +2741,7 @@ class TuiApp:
             items.append("s sync")
         if self.accounts:
             items.append("c compose")
-        if visible or self.include_spam:
-            items.append("z spam view")
-        if self.search_query or self.include_spam or self.preview_key:
+        if self.filter_kind or self.preview_key:
             items.append("Q quit")
         else:
             items.append("q quit")
@@ -2615,19 +2753,39 @@ class TuiApp:
         items = ["mail:", "r reply"]
         if self.can_reply_all(message):
             items.append("R reply-all")
-        items.extend(["t trash", "s not-spam" if message.get("spam") else "s spam", "o open", "esc back"])
+        items.extend(["f forward", "h headers", "t trash", "s not-spam" if message.get("spam") else "s spam", "esc back"])
         return "  ".join(items)
 
-    def clear_search_view(self) -> None:
-        self.search_query = ""
-        self.include_spam = False
+    def clear_filter_view(self) -> None:
+        self.filter_kind = ""
+        self.filter_query = ""
         self.refresh_messages()
-        self.set_status("default listing")
+        self.set_status("default filter")
+
+    def set_filter(self, kind: str, query: str = "") -> None:
+        self.filter_kind = kind
+        self.filter_query = query
+        self.selected = 0
+        self.list_scroll = 0
+        self.refresh_messages()
+        self.set_status(f"filter: {self.filter_label()} ({len(self.messages)} matches)")
+
+    def filter_label(self) -> str:
+        if self.filter_kind == "search":
+            return f"search {self.filter_query}"
+        if self.filter_kind == "tag":
+            return f"tags {self.filter_query}"
+        if self.filter_kind == "week":
+            return "this week"
+        return self.filter_kind or "default"
 
     def close_preview(self) -> None:
         self.preview_key = None
         self.preview_message = None
         self.preview_body = ""
+        self.preview_headers = ""
+        self.preview_header_mode = False
+        self.clear_selection()
         self.action_scope = None
 
     def move_selection(self, delta: int, visible: list[dict[str, Any]]) -> None:
@@ -2678,7 +2836,52 @@ class TuiApp:
         message = self.preview_message
         if not message:
             return []
-        return preview_header_rows(message) + [None] + wrap_lines(self.preview_body or "(no body)", max(10, width - 1))
+        content = self.preview_headers if self.preview_header_mode else self.preview_body
+        fallback = "(no headers)" if self.preview_header_mode else "(no body)"
+        return preview_header_rows(message) + [("View", "headers" if self.preview_header_mode else "body"), None] + wrap_lines(content or fallback, max(10, width - 1))
+
+    def start_selection(self, x: int, y: int) -> None:
+        point = self.body_point(x, y)
+        self.selection_start = point
+        self.selection_end = point
+        self.selection_active = True
+
+    def update_selection(self, x: int, y: int) -> None:
+        self.selection_end = self.body_point(x, y)
+
+    def finish_selection(self) -> None:
+        text = self.selected_text()
+        self.selection_active = False
+        if not text:
+            self.clear_selection()
+            return
+        message = copy_to_clipboard(text)
+        self.set_status(message)
+
+    def clear_selection(self) -> None:
+        self.selection_start = None
+        self.selection_end = None
+        self.selection_active = False
+
+    def body_point(self, x: int, y: int) -> tuple[int, int]:
+        body_y, body_x, body_h, body_w = self.body_area
+        line = self.body_scroll + max(0, min(max(0, body_h - 1), y - body_y))
+        col = max(0, min(max(0, body_w - 1), x - body_x))
+        return line, col
+
+    def selected_text(self) -> str:
+        if self.selection_start is None or self.selection_end is None:
+            return ""
+        body_y, body_x, body_h, body_w = self.body_area
+        lines = self.preview_lines(body_w)
+        start, end = normalized_selection(self.selection_start, self.selection_end)
+        chunks = []
+        for index in range(start[0], min(end[0], len(lines) - 1) + 1):
+            text = preview_line_plain_text(lines[index])
+            left = start[1] if index == start[0] else 0
+            right = end[1] if index == end[0] else len(text)
+            chunks.append(text[left:right])
+        return "\n".join(chunks).strip("\n")
 
     def current_message(self, visible: list[dict[str, Any]]) -> dict[str, Any] | None:
         if not visible:
@@ -2712,9 +2915,27 @@ class TuiApp:
         self.preview_key = str(message["key"])
         self.preview_message = dict(message)
         self.preview_body = body
+        self.preview_headers = eml_header_text(str(cached.get("eml") or ""))
+        self.preview_header_mode = False
+        self.clear_selection()
         self.body_scroll = 0
         if status:
             self.set_status(status, error=error)
+
+    def show_message_headers(self, message: dict[str, Any]) -> None:
+        with self.store_lock:
+            cached = self.services.mail.body_from_message(message)
+        if cached is None:
+            self.set_status("mail not on disk; sync first", error=True)
+            return
+        self.preview_key = str(message["key"])
+        self.preview_message = dict(message)
+        self.preview_body = str(cached.get("body") or "")
+        self.preview_headers = eml_header_text(str(cached.get("eml") or ""))
+        self.preview_header_mode = True
+        self.clear_selection()
+        self.body_scroll = 0
+        self.set_status("headers")
 
     def sync(self) -> None:
         def task() -> None:
@@ -2751,12 +2972,18 @@ class TuiApp:
             stdscr.timeout(100)
             self.drain_events(apply_status=False)
 
-    def compose(self, stdscr: Any, source: dict[str, Any] | None, reply_all: bool = False) -> None:
+    def compose(self, stdscr: Any, source: dict[str, Any] | None, reply_all: bool = False, forward: bool = False) -> None:
         if not self.accounts:
             self.set_status("no accounts; run `murat account add`", error=True)
             return
         account = self.account_for(str(source.get("account_id"))) if source else self.accounts[0]
-        draft = reply_draft(account, source, self.preview_body, reply_all=reply_all) if source else ComposeDraft(account.id, "", "", "", "", "")
+        if source:
+            body = self.message_body_for_compose(source)
+            if body is None:
+                return
+            draft = forward_draft(account, source, body) if forward else reply_draft(account, source, body, reply_all=reply_all)
+        else:
+            draft = ComposeDraft(account.id, "", "", "", "", "")
         while True:
             curses.def_prog_mode()
             curses.endwin()
@@ -2777,6 +3004,19 @@ class TuiApp:
                 return
             self.set_status("compose cancelled")
             return
+
+    def message_body_for_compose(self, message: dict[str, Any]) -> str | None:
+        if self.preview_key == message.get("key") and self.preview_body:
+            return self.preview_body
+        with self.store_lock:
+            cached = self.services.mail.body_from_message(message)
+        if cached is None:
+            self.set_status("mail not on disk; sync first", error=True)
+            return None
+        body, status, error = process_pgp_body(self.services.config, str(cached.get("body") or ""))
+        if status:
+            self.set_status(status, error=error)
+        return body
 
     def send_async(self, account: Account, draft: ComposeDraft) -> None:
         def task() -> None:
@@ -2826,7 +3066,7 @@ class TuiApp:
             self.post_refresh()
             self.post_status("marked spam" if target else "marked not spam")
 
-        if target and not self.include_spam and self.preview_key == message_key:
+        if target and self.filter_kind != "spam" and self.preview_key == message_key:
             self.close_preview()
         self.start_task("spam", task)
 
@@ -2885,7 +3125,7 @@ class TuiApp:
         if self.preview_key:
             split = str(config_value(self.services.config, "ui", "split", "vertical"))
             if split == "vertical":
-                top = max(1, body_height // 2)
+                top = max(1, body_height // 3)
                 bottom = max(0, body_height - top - 1)
                 self.list_area = (1, 0, top, width)
                 self.body_area = (2 + top, 0, bottom, width)
@@ -2893,7 +3133,7 @@ class TuiApp:
                 self.draw_hdivider(stdscr, 1 + top, 0, width)
                 self.draw_body(stdscr, 2 + top, 0, bottom, width, visible)
             else:
-                left = min(max(32, width // 3), max(32, width - 40))
+                left = max(10, (width - 1) // 2)
                 right = max(0, width - left - 1)
                 self.list_area = (1, 0, body_height, left)
                 self.body_area = (1, left + 1, body_height, right)
@@ -2908,9 +3148,8 @@ class TuiApp:
 
     def draw_header(self, stdscr: Any, width: int) -> None:
         filter_label = "all accounts" if self.account_filter == 0 else self.accounts[self.account_filter - 1].email
-        search = f" | /{self.search_query}" if self.search_query else ""
-        spam = " | spam shown" if self.include_spam else ""
-        text = f" murat | {filter_label} | {len(self.visible_messages())} messages{search}{spam} "
+        active_filter = f" | {self.filter_label()}" if self.filter_kind else ""
+        text = f" murat | {filter_label} | {len(self.visible_messages())} messages{active_filter} "
         safe_addstr(stdscr, 0, 0, text, width, self.color("header") | curses.A_BOLD)
 
     def draw_hdivider(self, stdscr: Any, y: int, x: int, width: int) -> None:
@@ -2960,7 +3199,10 @@ class TuiApp:
         label_width = 9
         for row, line in enumerate(lines[self.body_scroll : self.body_scroll + height]):
             target_y = y + row
-            if line is None:
+            selected = self.selection_range_for_line(self.body_scroll + row, line)
+            if selected is not None:
+                self.draw_selected_line(stdscr, target_y, x, width, line, selected)
+            elif line is None:
                 safe_addstr(stdscr, target_y, x, "", width)
             elif isinstance(line, tuple):
                 label, value = line
@@ -2970,16 +3212,39 @@ class TuiApp:
             else:
                 safe_add_rich_line(stdscr, target_y, x, str(line), width)
 
+    def selection_range_for_line(self, index: int, line: Any) -> tuple[int, int] | None:
+        if self.selection_start is None or self.selection_end is None:
+            return None
+        start, end = normalized_selection(self.selection_start, self.selection_end)
+        if index < start[0] or index > end[0]:
+            return None
+        text = preview_line_plain_text(line)
+        left = start[1] if index == start[0] else 0
+        right = end[1] if index == end[0] else len(text)
+        left = max(0, min(len(text), left))
+        right = max(0, min(len(text), right))
+        if right <= left:
+            return None
+        return left, right
+
+    def draw_selected_line(self, stdscr: Any, y: int, x: int, width: int, line: Any, selected: tuple[int, int]) -> None:
+        text = preview_line_plain_text(line)
+        left, right = selected
+        safe_addstr(stdscr, y, x, "", width)
+        safe_addraw(stdscr, y, x, text[:left], width)
+        safe_addraw(stdscr, y, x + left, text[left:right], max(0, width - left), curses.A_REVERSE)
+        safe_addraw(stdscr, y, x + right, text[right:], max(0, width - right))
+
 
 DEFAULT_KEYMAP = {
     "quit": "q",
     "force_quit": "Q",
     "sync": "s",
     "compose": "c",
-    "search": "/",
+    "filter": "f",
     "clear_search": "esc",
-    "toggle_spam": "z",
     "actions": "space",
+    "open": "enter",
     "next": "j",
     "prev": "k",
     "page_down": "pagedown",
@@ -3101,12 +3366,161 @@ def safe_add_rich_line(window: Any, y: int, x: int, text: str, width: int, attr:
         col += len(chunk)
 
 
+def preview_line_plain_text(line: Any, label_width: int = 9) -> str:
+    if line is None:
+        return ""
+    if isinstance(line, tuple):
+        label, value = line
+        return f"{label}:".ljust(label_width) + str(value)
+    return rich_display_text(str(line))
+
+
+def rich_display_text(text: str) -> str:
+    output = []
+    index = 0
+    while index < len(text):
+        if text.startswith("**", index) or text.startswith("__", index):
+            index += 2
+            continue
+        if text[index] == "*":
+            index += 1
+            continue
+        output.append(text[index])
+        index += 1
+    return "".join(output)
+
+
+def normalized_selection(start: tuple[int, int], end: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]]:
+    return (start, end) if start <= end else (end, start)
+
+
+def copy_to_clipboard(text: str) -> str:
+    data = text.encode()
+    commands = [
+        ["pbcopy"],
+        ["wl-copy"],
+        ["xclip", "-selection", "clipboard"],
+        ["xsel", "--clipboard", "--input"],
+    ]
+    for command in commands:
+        if not shutil.which(command[0]):
+            continue
+        proc = subprocess.run(command, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if proc.returncode == 0:
+            return f"copied {len(text)} chars"
+    if osc52_copy(text):
+        return f"copied {len(text)} chars"
+    return "no clipboard tool found"
+
+
+def osc52_copy(text: str) -> bool:
+    try:
+        payload = base64.b64encode(text.encode()).decode()
+        with open("/dev/tty", "w", encoding="utf-8", errors="ignore") as tty:
+            tty.write(f"\033]52;c;{payload}\a")
+            tty.flush()
+        return True
+    except OSError:
+        return False
+
+
 def compact(text: str, width: int) -> str:
     return text if len(text) <= width else text[: max(0, width - 3)] + "..."
 
 
 def short_date(value: str) -> str:
     return value[:10] if len(value) >= 10 else value
+
+
+def message_day(message: dict[str, Any]) -> datetime.date | None:
+    value = str(message.get("received_at") or message.get("sent_at") or "")[:10]
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def parse_tag_filter(text: str) -> Any:
+    parser = TagFilterParser(text)
+    expr = parser.parse_expr()
+    parser.skip_ws()
+    if parser.pos != len(parser.text):
+        raise MuratError(f"invalid tag filter near: {parser.text[parser.pos:]}")
+    return expr
+
+
+class TagFilterParser:
+    def __init__(self, text: str):
+        self.text = text
+        self.pos = 0
+
+    def parse_expr(self) -> Any:
+        items = [self.parse_term()]
+        while True:
+            self.skip_ws()
+            if not self.consume(","):
+                break
+            items.append(self.parse_term())
+        return items[0] if len(items) == 1 else ("or", items)
+
+    def parse_term(self) -> Any:
+        items = [self.parse_factor()]
+        while True:
+            self.skip_ws()
+            if not self.consume("+"):
+                break
+            items.append(self.parse_factor())
+        return items[0] if len(items) == 1 else ("and", items)
+
+    def parse_factor(self) -> Any:
+        self.skip_ws()
+        if self.consume("("):
+            expr = self.parse_expr()
+            self.skip_ws()
+            if not self.consume(")"):
+                raise MuratError("tag filter missing ')'")
+            return expr
+        return self.parse_tag()
+
+    def parse_tag(self) -> Any:
+        start = self.pos
+        while self.pos < len(self.text) and self.text[self.pos] not in ",+()":
+            self.pos += 1
+        value = self.text[start : self.pos].strip().lower()
+        if not value:
+            raise MuratError("tag filter expected tag")
+        return ("tag", value)
+
+    def skip_ws(self) -> None:
+        while self.pos < len(self.text) and self.text[self.pos].isspace():
+            self.pos += 1
+
+    def consume(self, char: str) -> bool:
+        if self.pos < len(self.text) and self.text[self.pos] == char:
+            self.pos += 1
+            return True
+        return False
+
+
+def expr_matches_tags(expr: Any, tags: Any) -> bool:
+    clean_tags = [str(tag).strip().lower() for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
+    kind = expr[0]
+    if kind == "tag":
+        return tag_matches(clean_tags, expr[1])
+    if kind == "and":
+        return all(expr_matches_tags(item, clean_tags) for item in expr[1])
+    if kind == "or":
+        return any(expr_matches_tags(item, clean_tags) for item in expr[1])
+    return False
+
+
+def tag_matches(tags: list[str], token: str) -> bool:
+    for tag in tags:
+        if tag == token:
+            return True
+        if token in [part.strip() for part in tag.split("/")]:
+            return True
+    return False
 
 
 def reply_draft(account: Account, message: dict[str, Any] | None, body: str, reply_all: bool = False) -> ComposeDraft:
@@ -3145,6 +3559,32 @@ def reply_all_fields(account: Account, message: dict[str, Any]) -> tuple[str, st
     if not to_addrs:
         to_addrs = unique_addresses(sender)
     return render_addresses(to_addrs), render_addresses(cc_addrs)
+
+
+def forward_draft(account: Account, message: dict[str, Any], body: str) -> ComposeDraft:
+    subject = str(message.get("subject") or "")
+    if not subject.lower().startswith("fwd:"):
+        subject = f"Fwd: {subject}"
+    forwarded = [
+        "",
+        "",
+        "---------- Forwarded message ---------",
+        f"From: {message.get('from') or ''}",
+        f"Date: {message.get('received_at') or message.get('sent_at') or ''}",
+        f"Subject: {message.get('subject') or ''}",
+        f"To: {', '.join(str(item) for item in message.get('to', []) if isinstance(item, str))}",
+        "",
+        body,
+        "",
+    ]
+    return ComposeDraft(
+        account_id=account.id,
+        to="",
+        cc="",
+        bcc="",
+        subject=subject,
+        body="\n".join(forwarded),
+    )
 
 
 def cmd_tui(_args: argparse.Namespace) -> None:
