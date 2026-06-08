@@ -43,6 +43,7 @@
 !/.local/bin/hx-man-file
 !/.local/bin/man
 !/.local/bin/hx-git-blame
+!/.local/bin/cht.sh
 
 !/.config/
 /.config/*

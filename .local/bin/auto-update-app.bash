@@ -70,6 +70,81 @@ auto_update_online() {
     curl --fail --silent --location --head --connect-timeout 3 --max-time 5 "$probe_url" >/dev/null 2>&1
 }
 
+_auto_update_progress_enabled() {
+    case "${AUTO_UPDATE_PROGRESS:-auto}" in
+        always | yes | true | 1)
+            return 0
+            ;;
+        never | no | false | 0)
+            return 1
+            ;;
+        *)
+            [ -t 2 ]
+            ;;
+    esac
+}
+
+_auto_update_progress_bar() {
+    local label="$1"
+    local width=24
+    local step=0
+    local pos
+    local left
+    local right
+
+    while :; do
+        pos=$((step % width))
+        left=$(printf '%*s' "$pos" '' | tr ' ' '=')
+        right=$(printf '%*s' "$((width - pos - 1))" '' | tr ' ' ' ')
+        printf '\r%s [%s>%s]' "$label" "$left" "$right" >&2
+        step=$((step + 1))
+        sleep 0.1
+    done
+}
+
+_auto_update_run_with_progress() {
+    local label="$1"
+    local status
+    local progress_pid
+    shift
+
+    if ! _auto_update_progress_enabled; then
+        "$@"
+        return $?
+    fi
+
+    _auto_update_progress_bar "$label" &
+    progress_pid=$!
+
+    "$@"
+    status=$?
+
+    kill "$progress_pid" 2>/dev/null
+    wait "$progress_pid" 2>/dev/null
+
+    if [ "$status" -eq 0 ]; then
+        printf '\r%s [%s] done\n' "$label" "$(printf '%*s' 24 '' | tr ' ' '=')" >&2
+    else
+        printf '\r%s [%s] failed\n' "$label" "$(printf '%*s' 24 '' | tr ' ' '=')" >&2
+    fi
+
+    return "$status"
+}
+
+_auto_update_download() {
+    local name="$1"
+    local action="$2"
+    local url="$3"
+    local archive="$4"
+
+    if _auto_update_progress_enabled; then
+        printf '%s %s: downloading\n' "$name" "$action" >&2
+        curl --fail --location --progress-bar --output "$archive" "$url"
+    else
+        curl --fail --silent --show-error --location --output "$archive" "$url"
+    fi
+}
+
 auto_update_latest_release_tag() {
     local repo="$1"
     local latest_url
@@ -92,18 +167,20 @@ _auto_update_extract_tar() {
     local url="$1"
     local archive="$2"
     local extract_dir="$3"
+    local label="${4:-extracting}"
     local tar_flag
 
     tar_flag="$(_auto_update_tar_flag "$url")"
-    tar -C "$extract_dir" "$tar_flag" "$archive" >/dev/null
+    _auto_update_run_with_progress "$label" tar -C "$extract_dir" "$tar_flag" "$archive" >/dev/null
 }
 
 _auto_update_extract_zip() {
     local _url="$1"
     local archive="$2"
     local extract_dir="$3"
+    local label="${4:-extracting}"
 
-    unzip -q "$archive" -d "$extract_dir" >/dev/null
+    _auto_update_run_with_progress "$label" unzip -q "$archive" -d "$extract_dir" >/dev/null
 }
 
 _auto_update_install_app() {
@@ -138,13 +215,13 @@ _auto_update_install_app() {
         return 1
     fi
 
-    if ! curl --fail --silent --show-error --location --output "$archive" "$url"; then
+    if ! _auto_update_download "$name" "$action" "$url" "$archive"; then
         printf '%s %s failed: download failed\n' "$name" "$action" >&2
         rm -rf "$tmp_dir"
         return 1
     fi
 
-    if ! "$extractor" "$url" "$archive" "$extract_dir"; then
+    if ! "$extractor" "$url" "$archive" "$extract_dir" "$name $action: extracting"; then
         printf '%s %s failed: archive extract failed\n' "$name" "$action" >&2
         rm -rf "$tmp_dir"
         return 1
