@@ -1612,7 +1612,19 @@ def subject_text(message: dict[str, Any]) -> str:
     for key, value in message.items():
         if key.lower() in ("header:subject", "header:subject:asraw", "header:subject:astext") and isinstance(value, str) and value.strip():
             return decode_mime_header(value.strip())
-    return decode_mime_header(str(message.get("subject") or ""))
+    return decode_mime_header(scalar_text(message.get("subject")))
+
+
+def scalar_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        return " ".join(scalar_text(item) for item in value if scalar_text(item)).strip()
+    if isinstance(value, dict):
+        for key in ("value", "text", "name"):
+            if key in value:
+                return scalar_text(value.get(key))
+    return ""
 
 
 def decode_mime_header(value: str) -> str:
@@ -1630,19 +1642,31 @@ def decode_mime_header(value: str) -> str:
 
 
 def address_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [format_address(name, addr) for name, addr in email.utils.getaddresses([decode_mime_header(value)]) if addr]
+    if isinstance(value, dict):
+        value = [value]
     if not isinstance(value, list):
         return []
     output = []
     for item in value:
+        if isinstance(item, str):
+            output.extend(address_strings(item))
+            continue
         if not isinstance(item, dict):
             continue
         addr = str(item.get("email") or "")
         name = decode_mime_header(str(item.get("name") or ""))
-        if name and addr:
-            output.append(f"{name} <{addr}>")
-        elif addr:
-            output.append(addr)
+        formatted = format_address(name, addr)
+        if formatted:
+            output.append(formatted)
     return output
+
+
+def format_address(name: str, addr: str) -> str:
+    if name and addr:
+        return f"{name} <{addr}>"
+    return addr
 
 
 def addresses_from_strings(values: Any) -> list[tuple[str, str]]:
@@ -2432,12 +2456,16 @@ class TuiApp:
             curses.mouseinterval(0)
         except curses.error:
             pass
-        while self.running:
-            self.drain_events()
-            self.draw(stdscr)
-            ch = stdscr.getch()
-            if ch != -1:
-                self.handle(stdscr, ch)
+        enable_terminal_mouse_tracking()
+        try:
+            while self.running:
+                self.drain_events()
+                self.draw(stdscr)
+                ch = stdscr.getch()
+                if ch != -1:
+                    self.handle(stdscr, ch)
+        finally:
+            disable_terminal_mouse_tracking()
 
     def setup_colors(self) -> None:
         try:
@@ -2482,6 +2510,9 @@ class TuiApp:
                 self.refresh_messages()
             elif kind == "task_done":
                 self.active_tasks.discard(message)
+            elif kind == "clear_selection":
+                if not self.selection_active:
+                    self.clear_selection()
 
     def apply_deferred_status(self) -> None:
         if self.deferred_status is None:
@@ -2700,12 +2731,20 @@ class TuiApp:
             self.update_selection(x, y)
             self.finish_selection()
             return
-        if self.selection_active and has_mouse_any(state, ["REPORT_MOUSE_POSITION", "BUTTON1_CLICKED"]):
+        if self.selection_active and has_mouse_any(state, ["BUTTON1_CLICKED"]):
+            self.update_selection(x, y)
+            self.finish_selection()
+            return
+        if self.selection_active:
             self.update_selection(x, y)
             return
         if self.preview_key and point_in_area(x, y, self.body_area):
-            if has_mouse_any(state, ["BUTTON1_PRESSED"]):
-                self.start_selection(x, y)
+            if has_mouse_any(state, ["BUTTON1_PRESSED", "BUTTON1_CLICKED"]):
+                if self.selection_start is not None and not self.selection_active:
+                    self.update_selection(x, y)
+                    self.finish_selection()
+                else:
+                    self.start_selection(x, y)
                 return
         if not has_mouse_any(state, ["BUTTON1_PRESSED", "BUTTON1_CLICKED", "BUTTON1_DOUBLE_CLICKED"]):
             return
@@ -2838,13 +2877,14 @@ class TuiApp:
             return []
         content = self.preview_headers if self.preview_header_mode else self.preview_body
         fallback = "(no headers)" if self.preview_header_mode else "(no body)"
-        return preview_header_rows(message) + [("View", "headers" if self.preview_header_mode else "body"), None] + wrap_lines(content or fallback, max(10, width - 1))
+        return preview_header_rows(message) + [None] + wrap_lines(content or fallback, max(10, width - 1))
 
     def start_selection(self, x: int, y: int) -> None:
         point = self.body_point(x, y)
         self.selection_start = point
         self.selection_end = point
         self.selection_active = True
+        self.set_status("selecting; release or click end to copy")
 
     def update_selection(self, x: int, y: int) -> None:
         self.selection_end = self.body_point(x, y)
@@ -2857,6 +2897,9 @@ class TuiApp:
             return
         message = copy_to_clipboard(text)
         self.set_status(message)
+        timer = threading.Timer(0.5, lambda: self.events.put(("clear_selection", "", False)))
+        timer.daemon = True
+        timer.start()
 
     def clear_selection(self) -> None:
         self.selection_start = None
@@ -3171,23 +3214,15 @@ class TuiApp:
             self.list_scroll = self.selected - height + 1
         for row, message in enumerate(messages[self.list_scroll : self.list_scroll + height]):
             index = self.list_scroll + row
-            attr = self.color("selected") | curses.A_REVERSE | curses.A_BOLD if index == self.selected else 0
+            attr = self.selected_attr() if index == self.selected else 0
             if not message.get("read"):
                 attr |= curses.A_BOLD
-            marker = "*" if not message.get("read") else " "
-            date = short_date(str(message.get("received_at") or message.get("sent_at") or ""))
-            sender = compact(str(message.get("from") or ""), 22)
-            tags = compact("/".join(str(item) for item in message.get("tags", [])[:2]), 18)
-            subject = str(message.get("subject") or "(no subject)")
-            attach = "@" if message.get("has_attachment") else " "
-            spam = "!" if message.get("spam") else " "
-            line = f"{marker}{attach}{spam} {date:10} {sender:22} {tags:18} {subject}"
+            line, tag_x, tag_text, spam_x = table_row_text(message, width)
             safe_addstr(stdscr, y + row, x, line, width, attr)
-            if index != self.selected and tags:
-                tag_x = x + len(f"{marker}{attach}{spam} {date:10} {sender:22} ")
-                safe_addraw(stdscr, y + row, tag_x, f"{tags:18}", max(0, width - (tag_x - x)), self.color("tag"))
+            if index != self.selected and tag_text:
+                safe_addraw(stdscr, y + row, x + tag_x, tag_text, max(0, width - tag_x), self.color("tag"))
             if index != self.selected and message.get("spam"):
-                safe_addraw(stdscr, y + row, x + 2, "!", max(0, width - 2), self.color("spam") | curses.A_BOLD)
+                safe_addraw(stdscr, y + row, x + spam_x, "!", max(0, width - spam_x), self.color("spam") | curses.A_BOLD)
 
     def draw_body(self, stdscr: Any, y: int, x: int, height: int, width: int, messages: list[dict[str, Any]]) -> None:
         message = self.preview_message
@@ -3226,6 +3261,9 @@ class TuiApp:
         if right <= left:
             return None
         return left, right
+
+    def selected_attr(self) -> int:
+        return curses.A_REVERSE | curses.A_BOLD
 
     def draw_selected_line(self, stdscr: Any, y: int, x: int, width: int, line: Any, selected: tuple[int, int]) -> None:
         text = preview_line_plain_text(line)
@@ -3296,6 +3334,28 @@ def mouse_wheel_delta(state: int) -> int:
     return 0
 
 
+def enable_terminal_mouse_tracking() -> None:
+    write_tty("\033[?1000h\033[?1002h\033[?1003h\033[?1006h")
+
+
+def disable_terminal_mouse_tracking() -> None:
+    write_tty("\033[?1006l\033[?1003l\033[?1002l\033[?1000l")
+
+
+def write_tty(value: str) -> None:
+    try:
+        sys.stdout.write(value)
+        sys.stdout.flush()
+    except OSError:
+        pass
+    try:
+        with open("/dev/tty", "w", encoding="utf-8", errors="ignore") as tty:
+            tty.write(value)
+            tty.flush()
+    except OSError:
+        pass
+
+
 def point_in_area(x: int, y: int, area: tuple[int, int, int, int]) -> bool:
     area_y, area_x, area_h, area_w = area
     return area_h > 0 and area_w > 0 and area_x <= x < area_x + area_w and area_y <= y < area_y + area_h
@@ -3303,11 +3363,11 @@ def point_in_area(x: int, y: int, area: tuple[int, int, int, int]) -> bool:
 
 def preview_header_rows(message: dict[str, Any]) -> list[tuple[str, str]]:
     return [
-        ("Subject", str(message.get("subject") or "(no subject)")),
-        ("From", str(message.get("from") or "")),
-        ("To", ", ".join(str(item) for item in message.get("to") or [])),
-        ("Date", str(message.get("received_at") or message.get("sent_at") or "")),
-        ("Tags", ", ".join(str(item) for item in message.get("tags") or [])),
+        ("Subject", subject_label(message)),
+        ("From", sender_label(message)),
+        ("To", display_text(", ".join(str(item) for item in message.get("to") or []))),
+        ("Date", display_text(str(message.get("received_at") or message.get("sent_at") or ""))),
+        ("Tags", display_text(", ".join(str(item) for item in message.get("tags") or []))),
     ]
 
 
@@ -3426,6 +3486,51 @@ def osc52_copy(text: str) -> bool:
 
 def compact(text: str, width: int) -> str:
     return text if len(text) <= width else text[: max(0, width - 3)] + "..."
+
+
+def sender_label(message: dict[str, Any]) -> str:
+    sender = display_text(str(message.get("from") or ""))
+    if sender:
+        return sender
+    account = display_text(str(message.get("account_email") or ""))
+    return f"({account})" if account else "(unknown)"
+
+
+def subject_label(message: dict[str, Any]) -> str:
+    subject = display_text(str(message.get("subject") or ""))
+    return subject if subject else "(no subject)"
+
+
+def display_text(value: str) -> str:
+    decoded = decode_mime_header(value)
+    decoded = decoded.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    return re.sub(r"\s+", " ", decoded).strip()
+
+
+def table_row_text(message: dict[str, Any], width: int) -> tuple[str, int, str, int]:
+    marker = "*" if not message.get("read") else " "
+    attach = "@" if message.get("has_attachment") else " "
+    spam = "!" if message.get("spam") else " "
+    date = short_date(str(message.get("received_at") or message.get("sent_at") or ""))
+    sender = sender_label(message)
+    subject = subject_label(message)
+    tags = "/".join(str(item) for item in message.get("tags", [])[:2] if isinstance(item, str))
+    prefix = f"{marker}{attach}{spam} "
+    spam_x = 2
+    if width < 72:
+        sender_width = max(10, min(20, width // 3))
+        line = f"{prefix}{compact(sender, sender_width):{sender_width}} {subject}"
+        return line, 0, "", spam_x
+    if width < 100:
+        sender_width = 22
+        line = f"{prefix}{date:10} {compact(sender, sender_width):{sender_width}} {subject}"
+        return line, 0, "", spam_x
+    sender_width = 22
+    tag_width = 18
+    tag_x = len(f"{prefix}{date:10} {compact(sender, sender_width):{sender_width}} ")
+    tag_text = f"{compact(tags, tag_width):{tag_width}}" if tags else ""
+    line = f"{prefix}{date:10} {compact(sender, sender_width):{sender_width}} {tag_text:{tag_width}} {subject}"
+    return line, tag_x, tag_text, spam_x
 
 
 def short_date(value: str) -> str:
