@@ -17,10 +17,10 @@ cursor-line = "warning"
 f = "file_picker_in_current_directory"
 F = "file_picker"
 
-W = ":write"
-q = ":quit"
-Q = ":quit!"
-x = ":write-quit"
+W = ":w"
+q = ":q"
+Q = ":qa!"
+x = ":wq"
 
 B = ':sh hx-git-blame %{cursor_line} "%{buffer_name}"'
 
