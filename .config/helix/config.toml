@@ -22,10 +22,9 @@ q = ":quit"
 Q = ":quit!"
 x = ":write-quit"
 
-B = ":sh git log -n 5 --format='format:%%h %%an (%%ar) \"%%s\"' --no-patch -L %{cursor_line},+1:%{buffer_name}"
+B = ':sh hx-git-blame %{cursor_line} "%{buffer_name}"'
 
 m = ':vs %sh{hx-man-file "%{selection}"}'
 
 [keys.insert]
 v = { p = "normal_mode" }
-

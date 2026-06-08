@@ -41,6 +41,8 @@
 !/.local/bin/lubox
 !/.local/bin/kitty-lubox-shell
 !/.local/bin/hx-man-file
+!/.local/bin/man
+!/.local/bin/hx-git-blame
 
 !/.config/
 /.config/*

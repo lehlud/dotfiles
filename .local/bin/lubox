@@ -1150,35 +1150,42 @@ COPY user.json /tmp/lubox-user.json
 RUN chmod 0755 /usr/local/bin/lubox \
  && set -eux \
  && shell_pkg="" \
- && if [ "$LUBOX_SHELL_BASENAME" != "sh" ]; then shell_pkg="$LUBOX_SHELL_BASENAME"; fi \
- && if command -v apt-get >/dev/null 2>&1; then \
+    && if [ "$LUBOX_SHELL_BASENAME" != "sh" ]; then shell_pkg="$LUBOX_SHELL_BASENAME"; fi \
+    && if command -v apt-get >/dev/null 2>&1; then \
+      if [ -d /etc/dpkg/dpkg.cfg.d ]; then sed -i '/path-exclude=.*usr.*share.*man/d' /etc/dpkg/dpkg.cfg.d/* 2>/dev/null || true; fi; \
       export DEBIAN_FRONTEND=noninteractive; \
       apt-get update; \
-      apt-get install -y --no-install-recommends python3 sudo ca-certificates passwd coreutils procps hostname locales openssh-client git ncurses-bin debianutils grep net-tools vim-tiny nano man-db less findutils sed gawk diffutils patch tar gzip bzip2 xz-utils zip unzip file curl wget rsync iproute2 iputils-ping libcap2-bin dnsutils lsof psmisc util-linux $shell_pkg; \
+      if command -v unminimize >/dev/null 2>&1; then yes | unminimize || true; fi; \
+      apt-get install -y --no-install-recommends python3 sudo ca-certificates passwd coreutils procps hostname locales openssh-client git ncurses-bin debianutils grep net-tools vim-tiny nano man-db manpages manpages-dev less findutils sed gawk diffutils patch tar gzip bzip2 xz-utils zip unzip file curl wget rsync iproute2 iputils-ping libcap2-bin dnsutils lsof psmisc util-linux $shell_pkg; \
+      if [ -x /usr/bin/man.REAL ] && grep -q 'This system has been minimized' /usr/bin/man 2>/dev/null; then dpkg-divert --quiet --remove /usr/bin/man || true; mv -f /usr/bin/man.REAL /usr/bin/man; fi; \
+      mandb -q || true; \
       for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf; do apt-get install -y --no-install-recommends "$p" || true; done; \
       rm -rf /var/lib/apt/lists/*; \
     elif command -v dnf >/dev/null 2>&1; then \
-      dnf install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
-      for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf; do dnf install -y "$p" || true; done; \
+      sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf /etc/yum.conf 2>/dev/null || true; \
+      dnf install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
+      for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf man-pages-posix; do dnf install -y "$p" || true; done; \
       dnf clean all; \
     elif command -v microdnf >/dev/null 2>&1; then \
-      microdnf install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
-      for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf; do microdnf install -y "$p" || true; done; \
+      sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf /etc/yum.conf 2>/dev/null || true; \
+      microdnf install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
+      for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf man-pages-posix; do microdnf install -y "$p" || true; done; \
       microdnf clean all; \
     elif command -v yum >/dev/null 2>&1; then \
-      yum install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
-      for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf; do yum install -y "$p" || true; done; \
+      sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf /etc/yum.conf 2>/dev/null || true; \
+      yum install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
+      for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf man-pages-posix; do yum install -y "$p" || true; done; \
       yum clean all; \
     elif command -v apk >/dev/null 2>&1; then \
-      apk add --no-cache python3 sudo ca-certificates shadow coreutils procps hostname libc-utils openssh-client git ncurses which grep net-tools vim nano mandoc less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap bind-tools lsof psmisc util-linux $shell_pkg; \
-      for p in musl-locales musl-locales-lang jq tree tmux htop strace make bash-completion ripgrep fd fzf; do apk add --no-cache "$p" || true; done; \
+      apk add --no-cache python3 sudo ca-certificates shadow coreutils procps hostname libc-utils openssh-client git ncurses which grep net-tools vim nano mandoc man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap bind-tools lsof psmisc util-linux $shell_pkg; \
+      for p in musl-locales musl-locales-lang jq tree tmux htop strace make bash-completion ripgrep fd fzf less-doc mandoc-apropos; do apk add --no-cache "$p" || true; done; \
     elif command -v pacman >/dev/null 2>&1; then \
-      pacman -Syu --noconfirm python sudo ca-certificates shadow coreutils procps-ng inetutils openssh git ncurses which grep net-tools vim nano man-db less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap bind lsof psmisc util-linux $shell_pkg; \
+      pacman -Syu --noconfirm python sudo ca-certificates shadow coreutils procps-ng inetutils openssh git ncurses which grep net-tools vim nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap bind lsof psmisc util-linux $shell_pkg; \
       for p in jq tree tmux htop strace make bash-completion ripgrep fd fzf; do pacman -S --noconfirm "$p" || true; done; \
       pacman -Scc --noconfirm || true; \
     elif command -v zypper >/dev/null 2>&1; then \
       zypper --non-interactive refresh; \
-      zypper --non-interactive install -y python3 sudo ca-certificates shadow coreutils procps hostname glibc-locale openssh git ncurses-utils which grep net-tools vim nano man less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap-progs bind-utils lsof psmisc util-linux $shell_pkg; \
+      zypper --non-interactive install -y python3 sudo ca-certificates shadow coreutils procps hostname glibc-locale openssh git ncurses-utils which grep net-tools vim nano man man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap-progs bind-utils lsof psmisc util-linux $shell_pkg; \
       for p in jq tree tmux htop strace make bash-completion ripgrep fd fzf; do zypper --non-interactive install -y "$p" || true; done; \
       zypper clean -a || true; \
     else \
@@ -1901,6 +1908,15 @@ class ContainerManager:
             return f"{VERSION}:{int(st.st_mtime)}:{st.st_size}"
         except OSError:
             return VERSION
+
+    def hostexec_server_stamp_file(self, name: str) -> pathlib.Path:
+        return self.paths.runtime_dir(name) / "hostexec-server.stamp"
+
+    def hostexec_server_stamp_current(self, name: str) -> bool:
+        try:
+            return self.hostexec_server_stamp_file(name).read_text(encoding="utf-8").strip() == self.script_sync_stamp()
+        except OSError:
+            return False
 
     def sync_container_lubox(self, cname: str, name: str) -> None:
         stamp = self.script_sync_stamp()
@@ -2952,6 +2968,7 @@ class ContainerManager:
                     except ProcessLookupError:
                         pass
         safe_unlink(pid_file)
+        safe_unlink(self.hostexec_server_stamp_file(name))
         safe_unlink(self.paths.runtime_dir(name) / "ssh-agent-proxy.stamp")
         safe_unlink(self.paths.runtime_dir(name) / "gpg-agent-proxy.stamp")
         try:
@@ -2982,7 +2999,7 @@ class ContainerManager:
                 except (ValueError, OSError):
                     pid = 0
                 if pid and looks_like_pid_running(pid):
-                    if not self.hostexec_server_needs_restart_for_agents(name, ssh_agent_enabled, gpg_agent_enabled):
+                    if self.hostexec_server_stamp_current(name) and not self.hostexec_server_needs_restart_for_agents(name, ssh_agent_enabled, gpg_agent_enabled):
                         return
                     self.stop_server(name)
             self.ensure_runtime_mount_files(name, host_exec_enabled, running=True)
@@ -3329,6 +3346,7 @@ class ContainerManager:
         log = log_file.open("ab")
         proc = subprocess.Popen(argv, stdout=log, stderr=log, start_new_session=True)
         atomic_write_text(pid_file, f"{proc.pid}\n", 0o600)
+        atomic_write_text(self.hostexec_server_stamp_file(name), self.script_sync_stamp() + "\n", 0o600)
         return proc
 
     def wait_server_config(self, name: str, port: int, proc: subprocess.Popen) -> None:
@@ -4439,6 +4457,7 @@ class HostExecServer:
 
     def run_pty(self, conn: socket.socket, argv: List[str], cwd: str, env: Dict[str, str], rows: int, cols: int) -> None:
         master, slave = pty.openpty()
+        os.set_blocking(master, False)
         self.set_winsize(slave, rows, cols)
         try:
             proc = subprocess.Popen(
@@ -4449,7 +4468,7 @@ class HostExecServer:
                 stdout=slave,
                 stderr=slave,
                 close_fds=True,
-                start_new_session=True,
+                preexec_fn=setup_child_pty,
             )
         except FileNotFoundError:
             os.close(master)
@@ -4470,6 +4489,8 @@ class HostExecServer:
                     except OSError as exc:
                         if exc.errno == errno.EIO:
                             data = b""
+                        elif exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                            continue
                         else:
                             raise
                     if data:
@@ -4485,7 +4506,9 @@ class HostExecServer:
                         if data:
                             send_frame(conn, 1, data)
                             continue
-                    except OSError:
+                    except OSError as exc:
+                        if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EIO):
+                            raise
                         pass
                     send_frame(conn, 3, json.dumps({"exit_code": proc.returncode}).encode("utf-8"))
                     return
@@ -4628,6 +4651,17 @@ class HostExecServer:
 def terminal_size() -> Tuple[int, int]:
     size = shutil.get_terminal_size(fallback=(80, 24))
     return size.lines, size.columns
+
+
+def setup_child_pty() -> None:
+    try:
+        os.setsid()
+    except OSError:
+        pass
+    try:
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+    except OSError:
+        pass
 
 
 def command_doctor(args: argparse.Namespace) -> int:
@@ -4946,15 +4980,15 @@ def dispatch(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
-    forwarded = forward_lubox_command_if_needed(raw_args)
-    if forwarded is not None:
-        return forwarded
-    parser = build_parser()
-    args = parser.parse_args(raw_args)
-    if args.command is None:
-        parser.print_help()
-        return 0
     try:
+        forwarded = forward_lubox_command_if_needed(raw_args)
+        if forwarded is not None:
+            return forwarded
+        parser = build_parser()
+        args = parser.parse_args(raw_args)
+        if args.command is None:
+            parser.print_help()
+            return 0
         return dispatch(args)
     except BrokenPipeError:
         return 1

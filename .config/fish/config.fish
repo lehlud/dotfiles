@@ -2,6 +2,8 @@ source ~/.config/fish/functions/fish_prompt.fish
 
 fish_config theme choose custom
 
+fish_add_path --move --prepend ~/.local/bin ~/bin
+
 if status is-interactive
     if set -q SSH_CONNECTION; and set -q SSH_CONTAINER; and not set -q CONTAINER_ID; and not set -q LUBOX_CONTAINER_NAME; and not set -q FISH_SSH_CONTAINER_ATTEMPTED
         set -gx FISH_SSH_CONTAINER_ATTEMPTED 1

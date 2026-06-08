@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+line=${1:-}
+file=${2:-}
+
+case "$line" in
+  ''|*[!0-9]*)
+    echo "usage: hx-git-blame LINE FILE" >&2
+    exit 2
+    ;;
+esac
+
+if [ -z "$file" ]; then
+  echo "usage: hx-git-blame LINE FILE" >&2
+  exit 2
+fi
+
+git log \
+  -n 5 \
+  --format='format:%h %an (%ar) "%s"' \
+  --no-patch \
+  -L "$line,+1:$file"
