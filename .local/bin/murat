@@ -51,7 +51,6 @@ DEFAULT_CONFIG = """# murat: standalone JMAP-only TUI mail user agent
 [ui]
 split = "vertical" # vertical = top/bottom, horizontal = side-by-side
 page_size = 50
-show_help = true
 editor = "" # empty = $EDITOR, then vi
 
 [theme]
@@ -66,11 +65,10 @@ quit = "q"
 force_quit = "Q"
 sync = "s"
 compose = "c"
-reply = "r"
 search = "/"
 clear_search = "esc"
 toggle_spam = "z"
-open = "enter"
+actions = "space"
 next = "j"
 prev = "k"
 down = "down"
@@ -80,10 +78,17 @@ page_up = "pageup"
 top = "g"
 bottom = "G"
 cycle_account = "a"
-help = "?"
 
 [crypto]
 gpg_recipient = ""
+
+[pgp]
+enabled = true
+sign = false
+encrypt = false
+encrypt_to_self = true
+attach_public_key = false
+public_key = ""
 """
 
 
@@ -173,6 +178,13 @@ class Account:
 
 
 @dataclass
+class DraftAttachment:
+    name: str
+    content_type: str
+    data: bytes
+
+
+@dataclass
 class ComposeDraft:
     account_id: str
     to: str
@@ -182,6 +194,7 @@ class ComposeDraft:
     body: str
     reply_to_message_id: str | None = None
     references: list[str] | None = None
+    attachments: list[DraftAttachment] | None = None
 
 
 @dataclass
@@ -195,6 +208,7 @@ class SendIdentity:
 class JmapSession:
     api_url: str
     download_url: str | None
+    upload_url: str | None
     capabilities: set[str]
     accounts: dict[str, dict[str, Any]]
     primary_accounts: dict[str, str]
@@ -645,6 +659,9 @@ class MailStore:
     def save_draft(self, draft: ComposeDraft) -> None:
         raise NotImplementedError
 
+    def update_message(self, message_key: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        raise NotImplementedError
+
 
 class EncryptedJsonMailStore(MailStore):
     def __init__(self, encrypted_file: EncryptedJsonFile, key_provider: SymmetricKeyProvider, eml_dir: Path):
@@ -685,7 +702,7 @@ class EncryptedJsonMailStore(MailStore):
         messages = [
             item
             for item in values
-            if isinstance(item, dict) and self.message_has_eml(item) and (include_spam or not item.get("spam"))
+            if isinstance(item, dict) and self.message_has_eml(item) and not item.get("trashed") and (include_spam or not item.get("spam"))
         ]
         messages.sort(key=lambda item: item.get("received_at") or item.get("sent_at") or "", reverse=True)
         return messages
@@ -729,7 +746,7 @@ class EncryptedJsonMailStore(MailStore):
             candidates &= keys
         messages_by_key = data.get("messages") if isinstance(data.get("messages"), dict) else {}
         messages = [messages_by_key[key] for key in sorted(candidates) if isinstance(messages_by_key.get(key), dict)]
-        messages = [item for item in messages if self.message_has_eml(item) and (include_spam or not item.get("spam"))]
+        messages = [item for item in messages if self.message_has_eml(item) and not item.get("trashed") and (include_spam or not item.get("spam"))]
         messages.sort(key=lambda item: item.get("received_at") or item.get("sent_at") or "", reverse=True)
         return messages
 
@@ -793,6 +810,17 @@ class EncryptedJsonMailStore(MailStore):
             }
         )
         self.save_data(data)
+
+    def update_message(self, message_key: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        data = self.data()
+        messages = data.get("messages") if isinstance(data.get("messages"), dict) else {}
+        message = messages.get(message_key) if isinstance(messages.get(message_key), dict) else None
+        if message is None:
+            return None
+        message.update(updates)
+        data["updated_at"] = now_utc()
+        self.save_data(data)
+        return message
 
 
 def tokenize(text: str) -> list[str]:
@@ -867,6 +895,7 @@ def message_to_eml(message: dict[str, Any], body: str) -> bytes:
         ("X-Murat-Key", str(message.get("key") or "")),
         ("X-Murat-Tags", ", ".join(str(item) for item in message.get("tags", []) if isinstance(item, str))),
         ("X-Murat-Spam", "yes" if message.get("spam") else "no"),
+        ("X-Murat-Trashed", "yes" if message.get("trashed") else "no"),
         ("Content-Type", "text/plain; charset=utf-8"),
     ]
     rendered = [f"{name}: {sanitize_header(value)}" for name, value in headers if value]
@@ -905,6 +934,7 @@ class JmapClient:
         return JmapSession(
             api_url=api_url,
             download_url=body.get("downloadUrl") if isinstance(body.get("downloadUrl"), str) else None,
+            upload_url=body.get("uploadUrl") if isinstance(body.get("uploadUrl"), str) else None,
             capabilities=capabilities,
             accounts=clean_accounts,
             primary_accounts={str(key): str(value) for key, value in primary.items() if isinstance(value, str)},
@@ -958,6 +988,38 @@ class JmapClient:
         payload = {"using": using, "methodCalls": calls}
         return self.http_json("POST", session.api_url, account.auth_header(), payload)
 
+    def upload_blob(self, account: Account, session: JmapSession, account_id: str, attachment: DraftAttachment) -> dict[str, Any]:
+        if not session.upload_url:
+            raise MuratError("server did not advertise JMAP uploadUrl")
+        url = expand_upload_url(session.upload_url, account_id)
+        request = urllib.request.Request(
+            url,
+            data=attachment.data,
+            headers={
+                "Accept": "application/json",
+                "Authorization": account.auth_header(),
+                "Content-Type": attachment.content_type,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as error:
+            raise MuratError(http_error_message(error, url)) from error
+        except urllib.error.URLError as error:
+            raise MuratError(f"JMAP upload failed for {url}: {error.reason}") from error
+        try:
+            payload = json.loads(raw.decode())
+        except json.JSONDecodeError as error:
+            raise MuratError("JMAP upload returned invalid JSON") from error
+        if not isinstance(payload, dict) or not isinstance(payload.get("blobId"), str):
+            raise MuratError("JMAP upload omitted blobId")
+        payload.setdefault("name", attachment.name)
+        payload.setdefault("type", attachment.content_type)
+        payload.setdefault("size", len(attachment.data))
+        return payload
+
     def http_json(self, method: str, url: str, auth_header: str | None, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         data = None if payload is None else json.dumps(payload).encode()
         headers = {"Accept": "application/json"}
@@ -1004,6 +1066,7 @@ class JmapClient:
         clean_mailboxes = [box for box in mailboxes if isinstance(box, dict)]
         paths = mailbox_paths(clean_mailboxes)
         spam_ids = spam_mailbox_ids(clean_mailboxes)
+        trash_ids = trash_mailbox_ids(clean_mailboxes)
         messages = []
         search_docs: dict[str, str] = {}
         position = 0
@@ -1075,7 +1138,7 @@ class JmapClient:
             for item in email_args.get("list", []):
                 if not isinstance(item, dict):
                     continue
-                message = normalize_message(account, mail_account_id, item, paths, spam_ids)
+                message = normalize_message(account, mail_account_id, item, paths, spam_ids, trash_ids)
                 body = body_text(item)
                 if message_sink is not None:
                     search_docs[message["key"]] = message_sink(message, body)
@@ -1133,7 +1196,8 @@ class JmapClient:
         recipients = recipient_map(draft)
         if not any(recipients.values()):
             raise MuratError("add at least one recipient")
-        email_create = compose_email(account, identity, draft, drafts_id, recipients)
+        uploaded = [self.upload_blob(account, session, mail_account_id, attachment) for attachment in (draft.attachments or [])]
+        email_create = compose_email(account, identity, draft, drafts_id, recipients, uploaded)
         submission_create = {"emailId": "#draft", "identityId": identity.id}
         cleanup = {"keywords/$draft": None}
         if sent_id:
@@ -1191,6 +1255,60 @@ class JmapClient:
         )
         return [item for item in args.get("list", []) if isinstance(item, dict)]
 
+    def set_message_spam(self, account: Account, message: dict[str, Any], spam: bool) -> None:
+        session, mail_account_id = self.message_session(account, message)
+        mailboxes = self.fetch_mailboxes(account, session, mail_account_id)
+        patch: dict[str, Any] = {"keywords/$junk": True if spam else None}
+        mailbox_ids = [str(item) for item in message.get("mailbox_ids", []) if isinstance(item, str)]
+        junk_id = mailbox_id_by_role(mailboxes, "junk") or mailbox_id_by_name(mailboxes, {"spam", "junk", "junk mail"})
+        inbox_id = mailbox_id_by_role(mailboxes, "inbox")
+        if spam and junk_id:
+            patch[f"mailboxIds/{patch_path(junk_id)}"] = True
+        if not spam and inbox_id and any(mailbox_id in spam_mailbox_ids(mailboxes) for mailbox_id in mailbox_ids):
+            patch[f"mailboxIds/{patch_path(inbox_id)}"] = True
+            for mailbox_id in mailbox_ids:
+                if mailbox_id in spam_mailbox_ids(mailboxes):
+                    patch[f"mailboxIds/{patch_path(mailbox_id)}"] = None
+        self.update_email(account, session, mail_account_id, str(message.get("id") or ""), patch, "server rejected spam update")
+
+    def trash_message(self, account: Account, message: dict[str, Any]) -> None:
+        session, mail_account_id = self.message_session(account, message)
+        mailboxes = self.fetch_mailboxes(account, session, mail_account_id)
+        trash_id = mailbox_id_by_role(mailboxes, "trash") or mailbox_id_by_name(mailboxes, {"trash", "deleted", "deleted items"})
+        if not trash_id:
+            raise MuratError("server did not advertise a Trash mailbox")
+        patch: dict[str, Any] = {f"mailboxIds/{patch_path(trash_id)}": True}
+        for mailbox_id in [str(item) for item in message.get("mailbox_ids", []) if isinstance(item, str)]:
+            if mailbox_id != trash_id:
+                patch[f"mailboxIds/{patch_path(mailbox_id)}"] = None
+        self.update_email(account, session, mail_account_id, str(message.get("id") or ""), patch, "server rejected trash update")
+
+    def message_session(self, account: Account, message: dict[str, Any]) -> tuple[JmapSession, str]:
+        session = self.fetch_session(account)
+        mail_account_id = str(message.get("jmap_account_id") or account.primary_mail_account_id or session.primary_mail_account_id or "")
+        if not mail_account_id:
+            raise MuratError("no JMAP mail account found")
+        return session, mail_account_id
+
+    def update_email(
+        self,
+        account: Account,
+        session: JmapSession,
+        mail_account_id: str,
+        message_id: str,
+        patch: dict[str, Any],
+        error_message: str,
+    ) -> None:
+        if not message_id:
+            raise MuratError("message id missing")
+        response = self.request(
+            account,
+            session,
+            [CAP_MAIL],
+            [["Email/set", {"accountId": mail_account_id, "update": {message_id: patch}}, "murat-email-update"]],
+        )
+        throw_if_update_rejected(response_args(response, "murat-email-update"), message_id, error_message)
+
 
 def response_args(response: dict[str, Any], call_id: str) -> dict[str, Any]:
     for item in reversed(response.get("methodResponses", [])):
@@ -1213,6 +1331,10 @@ def require_str(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value:
         raise MuratError(f"JMAP omitted {name}")
     return value
+
+
+def expand_upload_url(template: str, account_id: str) -> str:
+    return template.replace("{accountId}", urllib.parse.quote(account_id, safe=""))
 
 
 def domain_from_email(email_addr: str) -> str:
@@ -1349,6 +1471,7 @@ def normalize_message(
     message: dict[str, Any],
     paths: dict[str, str],
     spam_mailboxes: set[str],
+    trash_mailboxes: set[str],
 ) -> dict[str, Any]:
     message_id = str(message.get("id") or "")
     key = f"{account.id}:{urllib.parse.quote(jmap_account_id, safe='')}:{urllib.parse.quote(message_id, safe='')}"
@@ -1356,8 +1479,11 @@ def normalize_message(
     mailbox_ids = list((message.get("mailboxIds") or {}).keys()) if isinstance(message.get("mailboxIds"), dict) else []
     tags = sorted({paths.get(mailbox_id, mailbox_id) for mailbox_id in mailbox_ids if paths.get(mailbox_id, mailbox_id)})
     spam = is_spam_message(keywords, tags) or any(mailbox_id in spam_mailboxes for mailbox_id in mailbox_ids)
+    trashed = any(mailbox_id in trash_mailboxes for mailbox_id in mailbox_ids)
     if spam and "spam" not in tags:
         tags.append("spam")
+    if trashed and "trash" not in tags:
+        tags.append("trash")
     return {
         "key": key,
         "id": message_id,
@@ -1367,6 +1493,7 @@ def normalize_message(
         "mailbox_ids": mailbox_ids,
         "tags": tags,
         "spam": spam,
+        "trashed": trashed,
         "subject": subject_text(message),
         "from": ", ".join(address_strings(message.get("from"))),
         "to": address_strings(message.get("to")),
@@ -1418,6 +1545,17 @@ def spam_mailbox_ids(mailboxes: list[dict[str, Any]]) -> set[str]:
     return ids
 
 
+def trash_mailbox_ids(mailboxes: list[dict[str, Any]]) -> set[str]:
+    ids = set()
+    for box in mailboxes:
+        mailbox_id = box.get("id")
+        role = str(box.get("role") or "").lower()
+        name = str(box.get("name") or "").lower()
+        if isinstance(mailbox_id, str) and (role == "trash" or name in {"trash", "deleted", "deleted items"}):
+            ids.add(mailbox_id)
+    return ids
+
+
 def is_spam_message(keywords: dict[str, Any], tags: list[str]) -> bool:
     if keywords.get("$junk") is True or keywords.get("junk") is True or keywords.get("spam") is True:
         return True
@@ -1463,6 +1601,32 @@ def address_strings(value: Any) -> list[str]:
             output.append(f"{name} <{addr}>")
         elif addr:
             output.append(addr)
+    return output
+
+
+def addresses_from_strings(values: Any) -> list[tuple[str, str]]:
+    if not isinstance(values, list):
+        return []
+    return [(name, addr) for name, addr in email.utils.getaddresses(values) if addr]
+
+
+def render_addresses(addresses: list[tuple[str, str]]) -> str:
+    rendered = []
+    for name, addr in addresses:
+        rendered.append(f"{name} <{addr}>" if name else addr)
+    return ", ".join(rendered)
+
+
+def unique_addresses(addresses: list[tuple[str, str]], blocked: set[str] | None = None) -> list[tuple[str, str]]:
+    blocked = {item.lower() for item in (blocked or set())}
+    seen = set(blocked)
+    output = []
+    for name, addr in addresses:
+        key = addr.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append((name, addr))
     return output
 
 
@@ -1649,6 +1813,14 @@ def mailbox_id_by_role(mailboxes: list[dict[str, Any]], role: str) -> str | None
     return None
 
 
+def mailbox_id_by_name(mailboxes: list[dict[str, Any]], names: set[str]) -> str | None:
+    for mailbox in mailboxes:
+        name = str(mailbox.get("name") or "").strip().lower()
+        if name in names and mailbox.get("id"):
+            return str(mailbox["id"])
+    return None
+
+
 def patch_path(value: str) -> str:
     return value.replace("~", "~0").replace("/", "~1")
 
@@ -1675,6 +1847,7 @@ def compose_email(
     draft: ComposeDraft,
     drafts_id: str,
     recipients: dict[str, list[dict[str, str]]],
+    uploaded_attachments: list[dict[str, Any]],
 ) -> dict[str, Any]:
     data: dict[str, Any] = {
         "mailboxIds": {drafts_id: True},
@@ -1694,12 +1867,35 @@ def compose_email(
         refs = list(dict.fromkeys((draft.references or []) + [draft.reply_to_message_id]))
         if refs:
             data["references"] = refs
+    if uploaded_attachments:
+        data["attachments"] = [attachment_body_part(item) for item in uploaded_attachments]
     return data
+
+
+def attachment_body_part(upload: dict[str, Any]) -> dict[str, Any]:
+    part = {
+        "blobId": upload["blobId"],
+        "type": str(upload.get("type") or "application/octet-stream"),
+        "name": str(upload.get("name") or "attachment"),
+        "disposition": "attachment",
+    }
+    if isinstance(upload.get("size"), int):
+        part["size"] = upload["size"]
+    return part
 
 
 def throw_if_rejected(args: dict[str, Any], create_id: str, message: str) -> None:
     not_created = args.get("notCreated") if isinstance(args.get("notCreated"), dict) else {}
     rejection = not_created.get(create_id) if isinstance(not_created, dict) else None
+    if not isinstance(rejection, dict):
+        return
+    details = ". ".join(str(rejection.get(key)) for key in ("type", "description") if rejection.get(key))
+    raise MuratError(f"{message}{': ' + details if details else ''}")
+
+
+def throw_if_update_rejected(args: dict[str, Any], update_id: str, message: str) -> None:
+    not_updated = args.get("notUpdated") if isinstance(args.get("notUpdated"), dict) else {}
+    rejection = not_updated.get(update_id) if isinstance(not_updated, dict) else None
     if not isinstance(rejection, dict):
         return
     details = ". ".join(str(rejection.get(key)) for key in ("type", "description") if rejection.get(key))
@@ -1851,7 +2047,12 @@ def cmd_compose(_args: argparse.Namespace) -> None:
     print(format_draft_preview(draft))
     choice = prompt("Send? [y/N/draft]", "n").lower()
     if choice in ("y", "yes"):
-        services.jmap.send(accounts[0], draft)
+        outgoing, pgp_status = transform_draft_pgp(services.config, accounts[0], draft)
+        if pgp_attach_public_key(services.config):
+            outgoing = attach_public_key(services.config, accounts[0], outgoing)
+        if pgp_status:
+            print(pgp_status, file=sys.stderr)
+        services.jmap.send(accounts[0], outgoing)
         print("sent")
     elif choice in ("d", "draft"):
         services.mail.save_draft(draft)
@@ -1959,6 +2160,137 @@ def format_draft_preview(draft: ComposeDraft) -> str:
     )
 
 
+def pgp_enabled(config: dict[str, Any]) -> bool:
+    return bool(config_value(config, "pgp", "enabled", True))
+
+
+def process_pgp_body(config: dict[str, Any], body: str) -> tuple[str, str | None, bool]:
+    if not pgp_enabled(config):
+        return body, None, False
+    if "-----BEGIN PGP MESSAGE-----" in body:
+        text = pgp_run(["--decrypt"], body.encode())
+        if text.returncode == 0:
+            return text.stdout.decode(errors="replace"), "pgp: decrypted", False
+        return body, f"pgp decrypt failed: {stderr_text(text)}", True
+    if "-----BEGIN PGP SIGNED MESSAGE-----" in body:
+        verify = pgp_run(["--verify"], body.encode())
+        cleartext = extract_clearsigned_text(body)
+        if verify.returncode == 0:
+            return cleartext, "pgp: signature valid", False
+        return cleartext, f"pgp verify failed: {stderr_text(verify)}", True
+    return body, None, False
+
+
+def transform_draft_pgp(config: dict[str, Any], account: Account, draft: ComposeDraft) -> tuple[ComposeDraft, str | None]:
+    if not pgp_enabled(config):
+        return draft, None
+    sign = bool(config_value(config, "pgp", "sign", False))
+    encrypt = bool(config_value(config, "pgp", "encrypt", False))
+    if not sign and not encrypt:
+        return draft, None
+
+    recipients = pgp_recipients(account, draft, include_self=bool(config_value(config, "pgp", "encrypt_to_self", True)))
+    args = ["--armor"]
+    if encrypt:
+        args.append("--encrypt")
+        if sign:
+            args.append("--sign")
+        for recipient in recipients:
+            args.extend(["--recipient", recipient])
+    elif sign:
+        args.append("--clearsign")
+
+    result = pgp_run(args, draft.body.encode())
+    if result.returncode != 0:
+        raise MuratError(f"pgp failed: {stderr_text(result)}")
+    transformed = ComposeDraft(
+        account_id=draft.account_id,
+        to=draft.to,
+        cc=draft.cc,
+        bcc=draft.bcc,
+        subject=draft.subject,
+        body=result.stdout.decode(errors="replace"),
+        reply_to_message_id=draft.reply_to_message_id,
+        references=draft.references,
+        attachments=draft.attachments,
+    )
+    if encrypt and sign:
+        return transformed, "pgp: signed+encrypted"
+    if encrypt:
+        return transformed, "pgp: encrypted"
+    return transformed, "pgp: signed"
+
+
+def pgp_run(args: list[str], data: bytes) -> subprocess.CompletedProcess[bytes]:
+    if not shutil.which("gpg"):
+        raise MuratError("gpg not found")
+    return subprocess.run(
+        ["gpg", "--batch", "--yes", *args],
+        input=data,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def pgp_attach_public_key(config: dict[str, Any]) -> bool:
+    return pgp_enabled(config) and bool(config_value(config, "pgp", "attach_public_key", False))
+
+
+def attach_public_key(config: dict[str, Any], account: Account, draft: ComposeDraft) -> ComposeDraft:
+    key_id = str(config_value(config, "pgp", "public_key", "") or account.email)
+    result = pgp_run(["--armor", "--export", key_id], b"")
+    if result.returncode != 0 or not result.stdout:
+        raise MuratError(f"pgp public key export failed for {key_id}: {stderr_text(result)}")
+    attachment = DraftAttachment(
+        name=f"{safe_filename(key_id)}.asc",
+        content_type="application/pgp-keys",
+        data=result.stdout,
+    )
+    return ComposeDraft(
+        account_id=draft.account_id,
+        to=draft.to,
+        cc=draft.cc,
+        bcc=draft.bcc,
+        subject=draft.subject,
+        body=draft.body,
+        reply_to_message_id=draft.reply_to_message_id,
+        references=draft.references,
+        attachments=[*(draft.attachments or []), attachment],
+    )
+
+
+def safe_filename(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.@+-]+", "-", value).strip("-._")
+    return cleaned or "public-key"
+
+
+def pgp_recipients(account: Account, draft: ComposeDraft, include_self: bool) -> list[str]:
+    values = [draft.to, draft.cc, draft.bcc]
+    recipients = [addr for _name, addr in email.utils.getaddresses(values) if addr]
+    if include_self and account.email:
+        recipients.append(account.email)
+    return list(dict.fromkeys(recipients))
+
+
+def extract_clearsigned_text(body: str) -> str:
+    lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out: list[str] = []
+    in_text = False
+    for line in lines:
+        if line.startswith("-----BEGIN PGP SIGNED MESSAGE-----"):
+            in_text = False
+            continue
+        if not in_text and line == "":
+            in_text = True
+            continue
+        if line.startswith("-----BEGIN PGP SIGNATURE-----"):
+            break
+        if in_text:
+            out.append(line[2:] if line.startswith("- ") else line)
+    return "\n".join(out).strip()
+
+
 def wrap_lines(text: str, width: int) -> list[str]:
     output: list[str] = []
     for raw in text.splitlines() or [""]:
@@ -1967,6 +2299,17 @@ def wrap_lines(text: str, width: int) -> list[str]:
             continue
         output.extend(textwrap.wrap(raw, max(10, width), replace_whitespace=False) or [""])
     return output
+
+
+COLOR_NAMES = {
+    "header": 1,
+    "selected": 2,
+    "status": 3,
+    "error": 4,
+    "divider": 5,
+    "tag": 6,
+    "spam": 7,
+}
 
 
 class TuiApp:
@@ -1983,14 +2326,17 @@ class TuiApp:
         self.preview_key: str | None = None
         self.preview_message: dict[str, Any] | None = None
         self.preview_body = ""
+        self.action_scope: str | None = None
         self.status = ""
-        self.shortcuts = "s sync  c compose  r reply  / search  esc clear  z spam  enter open  ? help  q back/quit"
         self.error = False
         self.deferred_status: tuple[str, bool] | None = None
         self.running = True
         self.events: queue.Queue[tuple[str, str, bool]] = queue.Queue()
         self.active_tasks: set[str] = set()
         self.store_lock = threading.Lock()
+        self.colors_enabled = False
+        self.list_area = (1, 0, 0, 0)
+        self.body_area = (1, 0, 0, 0)
         self.keys = services.config.get("keys", {})
         if not isinstance(self.keys, dict):
             self.keys = {}
@@ -2009,13 +2355,40 @@ class TuiApp:
         curses.curs_set(0)
         stdscr.keypad(True)
         stdscr.timeout(100)
-        curses.use_default_colors()
+        self.setup_colors()
+        try:
+            curses.mousemask(curses.ALL_MOUSE_EVENTS)
+            curses.mouseinterval(0)
+        except curses.error:
+            pass
         while self.running:
             self.drain_events()
             self.draw(stdscr)
             ch = stdscr.getch()
             if ch != -1:
                 self.handle(stdscr, ch)
+
+    def setup_colors(self) -> None:
+        try:
+            if not curses.has_colors():
+                return
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(COLOR_NAMES["header"], curses.COLOR_CYAN, -1)
+            curses.init_pair(COLOR_NAMES["selected"], -1, -1)
+            curses.init_pair(COLOR_NAMES["status"], curses.COLOR_GREEN, -1)
+            curses.init_pair(COLOR_NAMES["error"], curses.COLOR_RED, -1)
+            curses.init_pair(COLOR_NAMES["divider"], curses.COLOR_BLUE, -1)
+            curses.init_pair(COLOR_NAMES["tag"], curses.COLOR_CYAN, -1)
+            curses.init_pair(COLOR_NAMES["spam"], curses.COLOR_YELLOW, -1)
+            self.colors_enabled = True
+        except curses.error:
+            self.colors_enabled = False
+
+    def color(self, name: str) -> int:
+        if not self.colors_enabled:
+            return 0
+        return curses.color_pair(COLOR_NAMES[name])
 
     def post_status(self, message: str, error: bool = False) -> None:
         self.events.put(("status", message, error))
@@ -2086,8 +2459,20 @@ class TuiApp:
         return [message for message in self.messages if message.get("account_id") == account_id]
 
     def handle(self, stdscr: Any, ch: int) -> None:
+        if ch == curses.KEY_MOUSE:
+            self.handle_mouse(stdscr)
+            return
+        token = key_token(ch)
         action = self.action(ch)
         visible = self.visible_messages()
+        if self.action_scope == "mail":
+            self.handle_mail_action(stdscr, token, visible)
+            return
+        if action == "actions" or token == "space":
+            if self.current_action_message(visible):
+                self.action_scope = "mail"
+                self.set_status("mail actions")
+            return
         if action == "force_quit":
             self.running = False
         elif action == "quit":
@@ -2110,14 +2495,10 @@ class TuiApp:
             self.list_scroll = 0
         elif action == "bottom" and visible:
             self.selected = len(visible) - 1
-        elif action == "open":
-            self.open_selected(visible)
         elif action == "sync":
             self.sync()
         elif action == "compose":
             self.compose(stdscr, None)
-        elif action == "reply":
-            self.compose(stdscr, self.preview_message if self.preview_key else self.current_message(visible))
         elif action == "cycle_account":
             self.account_filter = (self.account_filter + 1) % (len(self.accounts) + 1)
             self.selected = 0
@@ -2141,8 +2522,101 @@ class TuiApp:
             self.include_spam = not self.include_spam
             self.refresh_messages()
             self.set_status("spam visible" if self.include_spam else "spam hidden")
-        elif action == "help":
-            self.set_status("keys: j/k/arrows move, / search, esc/q clear search, z spam, s sync, c compose, r reply, enter open, q back/quit")
+
+    def handle_mail_action(self, stdscr: Any, token: str, visible: list[dict[str, Any]]) -> None:
+        message = self.current_action_message(visible)
+        if token in ("esc", "q", "space"):
+            self.action_scope = None
+            self.set_status("default keys")
+            return
+        if not message:
+            self.action_scope = None
+            self.set_status("no selected mail", error=True)
+            return
+        if token in ("o", "enter"):
+            self.action_scope = None
+            self.open_selected(visible)
+            return
+        if token == "r":
+            self.action_scope = None
+            self.compose(stdscr, message)
+            return
+        if token == "R" and self.can_reply_all(message):
+            self.action_scope = None
+            self.compose(stdscr, message, reply_all=True)
+            return
+        if token == "t":
+            self.action_scope = None
+            self.trash_message_async(message)
+            return
+        if token == "s":
+            self.action_scope = None
+            self.toggle_message_spam_async(message)
+            return
+        self.set_status(f"unknown mail action: {token}", error=True)
+
+    def handle_mouse(self, stdscr: Any) -> None:
+        try:
+            _mouse_id, x, y, _z, state = curses.getmouse()
+        except curses.error:
+            return
+        visible = self.visible_messages()
+        list_y, list_x, list_h, list_w = self.list_area
+        body_y, body_x, body_h, body_w = self.body_area
+        wheel = mouse_wheel_delta(state)
+        if wheel:
+            if self.preview_key and point_in_area(x, y, self.body_area):
+                self.scroll_body(wheel * 3)
+            else:
+                self.scroll_list(wheel * 3, visible)
+            return
+        if not has_mouse_any(state, ["BUTTON1_PRESSED", "BUTTON1_CLICKED", "BUTTON1_DOUBLE_CLICKED"]):
+            return
+        if list_h > 0 and list_x <= x < list_x + list_w and list_y <= y < list_y + list_h:
+            index = self.list_scroll + (y - list_y)
+            if 0 <= index < len(visible):
+                self.selected = index
+                self.action_scope = None
+                self.open_selected(visible)
+        elif self.preview_key and body_h > 0 and body_x <= x < body_x + body_w and body_y <= y < body_y + body_h:
+            self.body_scroll = max(0, self.body_scroll + (1 if y > body_y + body_h // 2 else -1))
+
+    def current_shortcuts(self) -> str:
+        visible = self.visible_messages()
+        if self.action_scope == "mail":
+            return self.mail_action_shortcuts(self.current_action_message(visible))
+        items = []
+        if len(visible) > 1:
+            items.append("j/k move")
+        if visible:
+            items.append("SPC actions")
+            items.append("/ search")
+        if len(self.accounts) > 1:
+            items.append("a acct")
+        if self.search_query or self.include_spam:
+            items.append("esc/q default")
+        elif self.preview_key:
+            items.append("esc/q close")
+        if self.accounts and "sync" not in self.active_tasks:
+            items.append("s sync")
+        if self.accounts:
+            items.append("c compose")
+        if visible or self.include_spam:
+            items.append("z spam view")
+        if self.search_query or self.include_spam or self.preview_key:
+            items.append("Q quit")
+        else:
+            items.append("q quit")
+        return "  ".join(items)
+
+    def mail_action_shortcuts(self, message: dict[str, Any] | None) -> str:
+        if not message:
+            return "mail: esc back"
+        items = ["mail:", "r reply"]
+        if self.can_reply_all(message):
+            items.append("R reply-all")
+        items.extend(["t trash", "s not-spam" if message.get("spam") else "s spam", "o open", "esc back"])
+        return "  ".join(items)
 
     def clear_search_view(self) -> None:
         self.search_query = ""
@@ -2154,24 +2628,76 @@ class TuiApp:
         self.preview_key = None
         self.preview_message = None
         self.preview_body = ""
+        self.action_scope = None
 
     def move_selection(self, delta: int, visible: list[dict[str, Any]]) -> None:
         if not visible:
             return
         self.selected = max(0, min(len(visible) - 1, self.selected + delta))
+        self.ensure_selected_visible()
 
     def page(self, direction: int, visible: list[dict[str, Any]]) -> None:
         if self.preview_key:
-            self.body_scroll = max(0, self.body_scroll + direction * 10)
+            self.scroll_body(direction * max(1, self.body_area[2] - 1))
             return
         if visible:
-            self.selected = max(0, min(len(visible) - 1, self.selected + direction * 10))
+            self.selected = max(0, min(len(visible) - 1, self.selected + direction * max(1, self.list_area[2] - 1)))
+            self.ensure_selected_visible()
+
+    def scroll_list(self, delta: int, visible: list[dict[str, Any]]) -> None:
+        if not visible:
+            return
+        height = max(1, self.list_area[2])
+        max_scroll = max(0, len(visible) - height)
+        self.list_scroll = max(0, min(max_scroll, self.list_scroll + delta))
+        self.selected = max(self.list_scroll, min(len(visible) - 1, self.selected))
+        bottom = min(len(visible) - 1, self.list_scroll + height - 1)
+        if self.selected > bottom:
+            self.selected = bottom
+
+    def ensure_selected_visible(self) -> None:
+        height = self.list_area[2]
+        if height <= 0:
+            return
+        if self.selected < self.list_scroll:
+            self.list_scroll = self.selected
+        elif self.selected >= self.list_scroll + height:
+            self.list_scroll = self.selected - height + 1
+
+    def scroll_body(self, delta: int) -> None:
+        self.body_scroll = max(0, min(self.body_max_scroll(), self.body_scroll + delta))
+
+    def body_max_scroll(self) -> int:
+        height = self.body_area[2]
+        width = self.body_area[3]
+        if height <= 0 or width <= 0 or not self.preview_message:
+            return 0
+        return max(0, len(self.preview_lines(width)) - height)
+
+    def preview_lines(self, width: int) -> list[Any]:
+        message = self.preview_message
+        if not message:
+            return []
+        return preview_header_rows(message) + [None] + wrap_lines(self.preview_body or "(no body)", max(10, width - 1))
 
     def current_message(self, visible: list[dict[str, Any]]) -> dict[str, Any] | None:
         if not visible:
             return None
         self.selected = max(0, min(len(visible) - 1, self.selected))
         return visible[self.selected]
+
+    def current_action_message(self, visible: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if self.preview_key and self.preview_message:
+            return self.preview_message
+        return self.current_message(visible)
+
+    def can_reply_all(self, message: dict[str, Any]) -> bool:
+        values = []
+        for key in ("to", "cc"):
+            if isinstance(message.get(key), list):
+                values.extend(str(item) for item in message[key])
+        recipients = addresses_from_strings(values)
+        return len(recipients) > 1
 
     def open_selected(self, visible: list[dict[str, Any]]) -> None:
         message = self.current_message(visible)
@@ -2182,10 +2708,13 @@ class TuiApp:
         if cached is None:
             self.set_status("mail not on disk; sync first", error=True)
             return
+        body, status, error = process_pgp_body(self.services.config, str(cached.get("body") or ""))
         self.preview_key = str(message["key"])
         self.preview_message = dict(message)
-        self.preview_body = str(cached.get("body") or "")
+        self.preview_body = body
         self.body_scroll = 0
+        if status:
+            self.set_status(status, error=error)
 
     def sync(self) -> None:
         def task() -> None:
@@ -2222,12 +2751,12 @@ class TuiApp:
             stdscr.timeout(100)
             self.drain_events(apply_status=False)
 
-    def compose(self, stdscr: Any, source: dict[str, Any] | None) -> None:
+    def compose(self, stdscr: Any, source: dict[str, Any] | None, reply_all: bool = False) -> None:
         if not self.accounts:
             self.set_status("no accounts; run `murat account add`", error=True)
             return
         account = self.account_for(str(source.get("account_id"))) if source else self.accounts[0]
-        draft = reply_draft(account, source, self.preview_body) if source else ComposeDraft(account.id, "", "", "", "", "")
+        draft = reply_draft(account, source, self.preview_body, reply_all=reply_all) if source else ComposeDraft(account.id, "", "", "", "", "")
         while True:
             curses.def_prog_mode()
             curses.endwin()
@@ -2251,11 +2780,55 @@ class TuiApp:
 
     def send_async(self, account: Account, draft: ComposeDraft) -> None:
         def task() -> None:
-            self.post_status(f"sending to {draft.to}")
-            self.services.jmap.send(account, draft)
+            outgoing = draft
+            outgoing, pgp_status = transform_draft_pgp(self.services.config, account, outgoing)
+            if pgp_attach_public_key(self.services.config):
+                outgoing = attach_public_key(self.services.config, account, outgoing)
+            self.post_status(pgp_status or f"sending to {outgoing.to}")
+            self.services.jmap.send(account, outgoing)
             self.post_status("sent")
 
         self.start_task("send", task)
+
+    def trash_message_async(self, message: dict[str, Any]) -> None:
+        account = self.account_for(str(message.get("account_id") or ""))
+        message_key = str(message.get("key") or "")
+
+        def task() -> None:
+            self.post_status("moving to trash")
+            self.services.jmap.trash_message(account, message)
+            tags = {str(item) for item in message.get("tags", []) if isinstance(item, str)}
+            tags.add("trash")
+            with self.store_lock:
+                self.services.mail.update_message(message_key, {"trashed": True, "tags": sorted(tags)})
+            self.post_refresh()
+            self.post_status("moved to trash")
+
+        if self.preview_key == message_key:
+            self.close_preview()
+        self.start_task("trash", task)
+
+    def toggle_message_spam_async(self, message: dict[str, Any]) -> None:
+        account = self.account_for(str(message.get("account_id") or ""))
+        message_key = str(message.get("key") or "")
+        target = not bool(message.get("spam"))
+
+        def task() -> None:
+            self.post_status("marking spam" if target else "marking not spam")
+            self.services.jmap.set_message_spam(account, message, target)
+            tags = {str(item) for item in message.get("tags", []) if isinstance(item, str)}
+            if target:
+                tags.add("spam")
+            else:
+                tags.discard("spam")
+            with self.store_lock:
+                self.services.mail.update_message(message_key, {"spam": target, "tags": sorted(tags)})
+            self.post_refresh()
+            self.post_status("marked spam" if target else "marked not spam")
+
+        if target and not self.include_spam and self.preview_key == message_key:
+            self.close_preview()
+        self.start_task("spam", task)
 
     def confirm_compose(self, stdscr: Any, draft: ComposeDraft) -> str:
         lines = format_draft_preview(draft).splitlines()
@@ -2304,22 +2877,32 @@ class TuiApp:
             safe_addstr(stdscr, 0, 0, "terminal too small", width)
             return
         self.draw_header(stdscr, width)
-        status_attr = curses.A_REVERSE | (curses.A_BOLD if self.error else 0)
+        status_attr = (self.color("error") | curses.A_BOLD) if self.error else self.color("status")
         safe_addstr(stdscr, height - 2, 0, self.status, width, status_attr)
-        safe_addstr(stdscr, height - 1, 0, self.shortcuts, width, curses.A_REVERSE)
+        safe_addstr(stdscr, height - 1, 0, self.current_shortcuts(), width, self.color("header") | curses.A_BOLD)
         body_height = height - 3
         visible = self.visible_messages()
         if self.preview_key:
             split = str(config_value(self.services.config, "ui", "split", "vertical"))
             if split == "vertical":
                 top = max(1, body_height // 2)
+                bottom = max(0, body_height - top - 1)
+                self.list_area = (1, 0, top, width)
+                self.body_area = (2 + top, 0, bottom, width)
                 self.draw_list(stdscr, 1, 0, top, width, visible)
-                self.draw_body(stdscr, 1 + top, 0, body_height - top, width, visible)
+                self.draw_hdivider(stdscr, 1 + top, 0, width)
+                self.draw_body(stdscr, 2 + top, 0, bottom, width, visible)
             else:
                 left = min(max(32, width // 3), max(32, width - 40))
+                right = max(0, width - left - 1)
+                self.list_area = (1, 0, body_height, left)
+                self.body_area = (1, left + 1, body_height, right)
                 self.draw_list(stdscr, 1, 0, body_height, left, visible)
-                self.draw_body(stdscr, 1, left + 1, body_height, width - left - 1, visible)
+                self.draw_vdivider(stdscr, 1, left, body_height)
+                self.draw_body(stdscr, 1, left + 1, body_height, right, visible)
         else:
+            self.list_area = (1, 0, body_height, width)
+            self.body_area = (1, 0, 0, 0)
             self.draw_list(stdscr, 1, 0, body_height, width, visible)
         stdscr.refresh()
 
@@ -2328,20 +2911,28 @@ class TuiApp:
         search = f" | /{self.search_query}" if self.search_query else ""
         spam = " | spam shown" if self.include_spam else ""
         text = f" murat | {filter_label} | {len(self.visible_messages())} messages{search}{spam} "
-        safe_addstr(stdscr, 0, 0, text, width, curses.A_REVERSE)
+        safe_addstr(stdscr, 0, 0, text, width, self.color("header") | curses.A_BOLD)
+
+    def draw_hdivider(self, stdscr: Any, y: int, x: int, width: int) -> None:
+        safe_addstr(stdscr, y, x, "-" * max(0, width - 1), width, self.color("divider") | curses.A_DIM)
+
+    def draw_vdivider(self, stdscr: Any, y: int, x: int, height: int) -> None:
+        for row in range(height):
+            safe_addstr(stdscr, y + row, x, "|", 2, self.color("divider") | curses.A_DIM)
 
     def draw_list(self, stdscr: Any, y: int, x: int, height: int, width: int, messages: list[dict[str, Any]]) -> None:
         if not messages:
             safe_addstr(stdscr, y, x, "no mail; press s to sync", width)
             return
         self.selected = max(0, min(len(messages) - 1, self.selected))
+        self.list_scroll = max(0, min(max(0, len(messages) - height), self.list_scroll))
         if self.selected < self.list_scroll:
             self.list_scroll = self.selected
         if self.selected >= self.list_scroll + height:
             self.list_scroll = self.selected - height + 1
         for row, message in enumerate(messages[self.list_scroll : self.list_scroll + height]):
             index = self.list_scroll + row
-            attr = curses.A_REVERSE if index == self.selected else 0
+            attr = self.color("selected") | curses.A_REVERSE | curses.A_BOLD if index == self.selected else 0
             if not message.get("read"):
                 attr |= curses.A_BOLD
             marker = "*" if not message.get("read") else " "
@@ -2353,24 +2944,31 @@ class TuiApp:
             spam = "!" if message.get("spam") else " "
             line = f"{marker}{attach}{spam} {date:10} {sender:22} {tags:18} {subject}"
             safe_addstr(stdscr, y + row, x, line, width, attr)
+            if index != self.selected and tags:
+                tag_x = x + len(f"{marker}{attach}{spam} {date:10} {sender:22} ")
+                safe_addraw(stdscr, y + row, tag_x, f"{tags:18}", max(0, width - (tag_x - x)), self.color("tag"))
+            if index != self.selected and message.get("spam"):
+                safe_addraw(stdscr, y + row, x + 2, "!", max(0, width - 2), self.color("spam") | curses.A_BOLD)
 
     def draw_body(self, stdscr: Any, y: int, x: int, height: int, width: int, messages: list[dict[str, Any]]) -> None:
         message = self.preview_message
         if not message:
             return
-        headers = [
-            f"Subject: {message.get('subject') or '(no subject)'}",
-            f"From: {message.get('from') or ''}",
-            f"To: {', '.join(message.get('to') or [])}",
-            f"Date: {message.get('received_at') or message.get('sent_at') or ''}",
-            f"Tags: {', '.join(message.get('tags') or [])}",
-            "",
-        ]
-        lines = headers + wrap_lines(self.preview_body or "(no body)", max(10, width - 1))
+        lines = self.preview_lines(width)
         max_scroll = max(0, len(lines) - height)
         self.body_scroll = min(self.body_scroll, max_scroll)
+        label_width = 9
         for row, line in enumerate(lines[self.body_scroll : self.body_scroll + height]):
-            safe_add_rich_line(stdscr, y + row, x, line, width)
+            target_y = y + row
+            if line is None:
+                safe_addstr(stdscr, target_y, x, "", width)
+            elif isinstance(line, tuple):
+                label, value = line
+                safe_addstr(stdscr, target_y, x, "", width)
+                safe_addraw(stdscr, target_y, x, f"{label}:", label_width, curses.A_BOLD | self.color("header"))
+                safe_addraw(stdscr, target_y, x + label_width, str(value), max(0, width - label_width), self.color("status") if label == "Tags" else 0)
+            else:
+                safe_add_rich_line(stdscr, target_y, x, str(line), width)
 
 
 DEFAULT_KEYMAP = {
@@ -2378,11 +2976,10 @@ DEFAULT_KEYMAP = {
     "force_quit": "Q",
     "sync": "s",
     "compose": "c",
-    "reply": "r",
     "search": "/",
     "clear_search": "esc",
     "toggle_spam": "z",
-    "open": "enter",
+    "actions": "space",
     "next": "j",
     "prev": "k",
     "page_down": "pagedown",
@@ -2390,7 +2987,6 @@ DEFAULT_KEYMAP = {
     "top": "g",
     "bottom": "G",
     "cycle_account": "a",
-    "help": "?",
 }
 
 
@@ -2416,11 +3012,54 @@ def key_token(ch: int) -> str:
     return str(ch)
 
 
+def has_mouse(state: int, name: str) -> bool:
+    return bool(getattr(curses, name, 0) & state)
+
+
+def has_mouse_any(state: int, names: list[str], fallback: int = 0) -> bool:
+    mask = fallback
+    for name in names:
+        mask |= getattr(curses, name, 0)
+    return bool(mask & state)
+
+
+def mouse_wheel_delta(state: int) -> int:
+    if has_mouse_any(state, ["BUTTON4_PRESSED", "BUTTON4_CLICKED"], 0x10000):
+        return -1
+    if has_mouse_any(state, ["BUTTON5_PRESSED", "BUTTON5_CLICKED"], 0x200000):
+        return 1
+    return 0
+
+
+def point_in_area(x: int, y: int, area: tuple[int, int, int, int]) -> bool:
+    area_y, area_x, area_h, area_w = area
+    return area_h > 0 and area_w > 0 and area_x <= x < area_x + area_w and area_y <= y < area_y + area_h
+
+
+def preview_header_rows(message: dict[str, Any]) -> list[tuple[str, str]]:
+    return [
+        ("Subject", str(message.get("subject") or "(no subject)")),
+        ("From", str(message.get("from") or "")),
+        ("To", ", ".join(str(item) for item in message.get("to") or [])),
+        ("Date", str(message.get("received_at") or message.get("sent_at") or "")),
+        ("Tags", ", ".join(str(item) for item in message.get("tags") or [])),
+    ]
+
+
 def safe_addstr(window: Any, y: int, x: int, text: str, width: int, attr: int = 0) -> None:
     if width <= 0:
         return
     try:
         window.addstr(y, x, text[: max(0, width - 1)].ljust(max(0, width - 1)), attr)
+    except curses.error:
+        pass
+
+
+def safe_addraw(window: Any, y: int, x: int, text: str, width: int, attr: int = 0) -> None:
+    if width <= 0:
+        return
+    try:
+        window.addstr(y, x, text[: max(0, width - 1)], attr)
     except curses.error:
         pass
 
@@ -2470,7 +3109,7 @@ def short_date(value: str) -> str:
     return value[:10] if len(value) >= 10 else value
 
 
-def reply_draft(account: Account, message: dict[str, Any] | None, body: str) -> ComposeDraft:
+def reply_draft(account: Account, message: dict[str, Any] | None, body: str, reply_all: bool = False) -> ComposeDraft:
     if not message:
         return ComposeDraft(account.id, "", "", "", "", "")
     subject = str(message.get("subject") or "")
@@ -2479,16 +3118,33 @@ def reply_draft(account: Account, message: dict[str, Any] | None, body: str) -> 
     quoted = "\n".join(f"> {line}" if line else ">" for line in body.splitlines())
     msg_ids = message.get("message_ids") if isinstance(message.get("message_ids"), list) else []
     refs = message.get("references") if isinstance(message.get("references"), list) else []
+    to = str(message.get("from") or "")
+    cc = ""
+    if reply_all:
+        to, cc = reply_all_fields(account, message)
     return ComposeDraft(
         account_id=account.id,
-        to=str(message.get("from") or ""),
-        cc="",
+        to=to,
+        cc=cc,
         bcc="",
         subject=subject,
         body=f"\n\n{quoted}\n",
         reply_to_message_id=msg_ids[0] if msg_ids else None,
         references=[str(item) for item in refs],
     )
+
+
+def reply_all_fields(account: Account, message: dict[str, Any]) -> tuple[str, str]:
+    own = {account.email.lower()}
+    reply_to = message.get("reply_to") if isinstance(message.get("reply_to"), list) else []
+    sender = addresses_from_strings(reply_to) or addresses_from_strings([str(message.get("from") or "")])
+    original_to = addresses_from_strings(message.get("to", []))
+    original_cc = addresses_from_strings(message.get("cc", []))
+    to_addrs = unique_addresses([*sender, *original_to], blocked=own)
+    cc_addrs = unique_addresses(original_cc, blocked={*own, *(addr.lower() for _name, addr in to_addrs)})
+    if not to_addrs:
+        to_addrs = unique_addresses(sender)
+    return render_addresses(to_addrs), render_addresses(cc_addrs)
 
 
 def cmd_tui(_args: argparse.Namespace) -> None:

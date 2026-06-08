@@ -3,7 +3,6 @@
 [ui]
 split = "vertical" # vertical = top/bottom, horizontal = side-by-side
 page_size = 50
-show_help = true
 editor = "" # empty = $EDITOR, then vi
 
 [theme]
@@ -18,11 +17,10 @@ quit = "q"
 force_quit = "Q"
 sync = "s"
 compose = "c"
-reply = "r"
 search = "/"
 clear_search = "esc"
 toggle_spam = "z"
-open = "enter"
+actions = "space"
 next = "j"
 prev = "k"
 down = "down"
@@ -32,7 +30,14 @@ page_up = "pageup"
 top = "g"
 bottom = "G"
 cycle_account = "a"
-help = "?"
 
 [crypto]
 gpg_recipient = "0A12120F017001CDABDFDC468874D17B49BF1763"
+
+[pgp]
+enabled = true
+sign = false
+encrypt = false
+encrypt_to_self = true
+attach_public_key = false
+public_key = ""
