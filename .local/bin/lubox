@@ -1738,9 +1738,21 @@ class ContainerManager:
             common.append("/bin/sh")
         return common[0]
 
-    def container_path_value(self) -> str:
+    def host_engine_wrapper_dirs(self) -> List[str]:
+        dirs: List[str] = []
+        for name in ("podman", "docker"):
+            found, _ignored = Engine.actual_path(name)
+            if found:
+                dirs.append(str(self.ident.home / ".local" / "bin" / f"lubox-{name}"))
+        return dirs
+
+    def container_path_value(self, host_exec: bool) -> str:
         standard = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        return f"{self.ident.home}/.local/bin:{self.ident.home}/bin:{standard}"
+        parts = []
+        if host_exec:
+            parts += self.host_engine_wrapper_dirs()
+        parts += [str(self.ident.home / ".local" / "bin"), str(self.ident.home / "bin"), standard]
+        return ":".join(parts)
 
     def hostexec_mount_dir(self, name: str) -> pathlib.Path:
         return self.paths.mount_dir(name, self.engine.name)
@@ -2293,7 +2305,7 @@ class ContainerManager:
             "--env",
             f"LUBOX_HOSTEXEC_CONFIG={CONTAINER_CONFIG_PATH}",
             "--env",
-            f"PATH={self.container_path_value()}",
+            f"PATH={self.container_path_value(host_exec)}",
         ]
         if auth == "password":
             exec_args += ["--env", f"PASSWORD={password}"]
@@ -2718,7 +2730,7 @@ class ContainerManager:
             ("LUBOX_HOST_LUBOX", host_lubox_path()),
             ("LUBOX_HOST_EXEC", "1" if host_exec else "0"),
             ("LUBOX_HOSTEXEC_CONFIG", CONTAINER_CONFIG_PATH),
-            ("PATH", self.container_path_value()),
+            ("PATH", self.container_path_value(host_exec)),
         ]
 
     def lubox_exec_prefix(

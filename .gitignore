@@ -28,8 +28,10 @@
 !/.local/bin/flutter
 !/.local/bin/dart
 !/.local/bin/sendme
-!/.local/bin/podman
-!/.local/bin/docker
+!/.local/bin/lubox-podman/
+!/.local/bin/lubox-podman/podman
+!/.local/bin/lubox-docker/
+!/.local/bin/lubox-docker/docker
 !/.local/bin/rickroll
 !/.local/bin/x83_to_pdf
 !/.local/bin/battery-mode
