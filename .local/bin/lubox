@@ -521,14 +521,7 @@ def current_ssh_auth_sock() -> Optional[pathlib.Path]:
     value = os.environ.get("SSH_AUTH_SOCK")
     if not value:
         return None
-    path = pathlib.Path(value)
-    try:
-        st = path.stat()
-    except OSError:
-        return None
-    if stat.S_ISSOCK(st.st_mode):
-        return path
-    return None
+    return socket_path_if_connectable(pathlib.Path(value))
 
 
 def socket_path_if_socket(path: pathlib.Path) -> Optional[pathlib.Path]:
@@ -539,6 +532,21 @@ def socket_path_if_socket(path: pathlib.Path) -> Optional[pathlib.Path]:
     if stat.S_ISSOCK(st.st_mode):
         return path
     return None
+
+
+def socket_path_if_connectable(path: pathlib.Path) -> Optional[pathlib.Path]:
+    sock_path = socket_path_if_socket(path)
+    if sock_path is None:
+        return None
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(0.5)
+        sock.connect(str(sock_path))
+        return sock_path
+    except OSError:
+        return None
+    finally:
+        sock.close()
 
 
 def current_gpg_info() -> Tuple[Optional[pathlib.Path], Dict[str, pathlib.Path]]:
@@ -566,7 +574,7 @@ def current_gpg_info() -> Tuple[Optional[pathlib.Path], Dict[str, pathlib.Path]]
     for key, basename in GPG_SOCKET_BASENAMES.items():
         value = rows.get(key)
         path = pathlib.Path(value).expanduser() if value else home / basename
-        sock = socket_path_if_socket(path)
+        sock = socket_path_if_connectable(path)
         if sock is not None:
             sockets[key] = sock
     return home, sockets
@@ -2039,17 +2047,46 @@ class ContainerManager:
     def ensure_enter_ready(self, name: str, cname: str, info: Dict[str, Any]) -> None:
         if not self.running_from_info(info):
             self.ensure_enter_runtime(name, info)
+        else:
+            self.sync_container_lubox(cname, name)
+            self.ensure_enter_socket_proxies(name, info)
         if self.enter_preflight_needed(name, info):
             preflight = self.enter_preflight(name, cname, info)
             if preflight.returncode != 0:
-                if engine_unavailable_error(self.engine.name, preflight.stderr, preflight.stdout):
+                detail = self.command_failure_detail(preflight)
+                if self.preflight_missing_socket_proxy(detail):
+                    self.ensure_enter_socket_proxies(name, info)
+                elif engine_unavailable_error(self.engine.name, preflight.stderr, preflight.stdout):
                     eprint("lubox: Podman machine is not running; starting it")
                     self.engine.ensure_ready(start_machine=True)
-                self.ensure_enter_runtime(name, info)
+                    self.ensure_enter_runtime(name, info)
+                else:
+                    self.ensure_enter_runtime(name, info)
                 preflight = self.enter_preflight(name, cname, info)
                 if preflight.returncode != 0:
                     detail = self.command_failure_detail(preflight)
                     die(f"lubox: enter preflight failed for {name}: {detail}")
+
+    def ensure_enter_socket_proxies(self, name: str, info: Dict[str, Any]) -> None:
+        if is_linux() or not self.hostexec_enabled(name, info):
+            return
+        ssh_agent = self.ssh_agent_enabled(name, info)
+        gpg_agent = self.gpg_agent_enabled(name, info)
+        server_current = False
+        pid_file = self.paths.pid_file(name)
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            pid = 0
+        if pid and looks_like_pid_running(pid):
+            server_current = self.hostexec_server_stamp_current(name) and not self.hostexec_server_needs_restart_for_agents(name, ssh_agent, gpg_agent)
+        self.ensure_hostexec_server(name, True, ssh_agent, gpg_agent)
+        cfg = self.load_hostexec_config_if_present(name) or {}
+        if cfg.get("enabled"):
+            self.ensure_socket_forward_proxies(name, self.socket_forward_groups_from_config(cfg), missing_only=server_current)
+
+    def preflight_missing_socket_proxy(self, detail: str) -> bool:
+        return "proxy not running" in detail or "proxy socket missing" in detail
 
     def command_failure_detail(self, cp: subprocess.CompletedProcess) -> str:
         return _decode_output(cp.stderr).strip() or _decode_output(cp.stdout).strip() or f"exit {cp.returncode}"
@@ -2091,6 +2128,12 @@ class ContainerManager:
         host_exec = self.hostexec_enabled(name, info)
         ssh_agent = self.ssh_agent_enabled(name, info)
         gpg_agent = self.gpg_agent_label_enabled(info)
+        if not is_linux():
+            cfg = self.load_hostexec_config_if_present(name) or {}
+            ssh_cfg = cfg.get("ssh_agent")
+            gpg_cfg = cfg.get("gpg_agent")
+            ssh_agent = isinstance(ssh_cfg, dict) and bool(ssh_cfg.get("enabled"))
+            gpg_agent = isinstance(gpg_cfg, dict) and bool(gpg_cfg.get("enabled"))
         argv = self.lubox_exec_prefix(cname, name, host_exec)
         argv += [
             "python3",
@@ -3130,7 +3173,7 @@ class ContainerManager:
             cfg_sockets = gpg_cfg.get("sockets") if isinstance(gpg_cfg, dict) else None
             if not (isinstance(gpg_cfg, dict) and gpg_cfg.get("enabled") and isinstance(cfg_sockets, dict)):
                 return True
-            if not set(gpg_sockets).issubset(set(cfg_sockets)):
+            if set(gpg_sockets) != set(cfg_sockets):
                 return True
             for key, path in gpg_sockets.items():
                 item = cfg_sockets.get(key)
@@ -3172,7 +3215,7 @@ class ContainerManager:
         if isinstance(ssh_cfg, dict):
             host_path = str(ssh_cfg.get("host_path") or "")
             if host_path:
-                ssh_sock = socket_path_if_socket(pathlib.Path(host_path))
+                ssh_sock = socket_path_if_connectable(pathlib.Path(host_path))
         gpg_home: Optional[pathlib.Path] = None
         gpg_sockets: Dict[str, pathlib.Path] = {}
         gpg_cfg = cfg.get("gpg_agent")
@@ -3188,7 +3231,7 @@ class ContainerManager:
                     host_path = str(item.get("host_path") or "")
                     if not host_path:
                         continue
-                    sock = socket_path_if_socket(pathlib.Path(host_path))
+                    sock = socket_path_if_connectable(pathlib.Path(host_path))
                     if sock is not None:
                         gpg_sockets[str(key)] = sock
         return ssh_sock, gpg_home, gpg_sockets
@@ -3263,33 +3306,46 @@ class ContainerManager:
         group: SocketForwardGroup,
     ) -> bool:
         deadline = time.time() + 5
+        saw_socket = False
         while time.time() < deadline:
             if self.container_socket_proxy_running(cname, group):
+                saw_socket = True
                 if self.socket_forward_proxy_healthy(cname, group):
                     return True
             time.sleep(0.1)
+        if saw_socket:
+            self.append_server_log(name, f"WARNING: {group.label} socket proxy healthcheck failed\n")
+            self.stop_socket_forward_proxy(cname, group)
+            return False
         self.append_server_log(name, f"WARNING: {group.label} socket proxy did not appear in container\n")
         return False
 
-    def ensure_socket_forward_proxies(self, name: str, groups: Iterable[SocketForwardGroup]) -> None:
+    def ensure_socket_forward_proxies(self, name: str, groups: Iterable[SocketForwardGroup], *, missing_only: bool = False) -> bool:
         if is_linux():
-            return
+            return True
         cname = container_name(name)
+        ok = True
         for group in groups:
-            self.ensure_socket_forward_proxy(name, cname, group)
+            if not self.ensure_socket_forward_proxy(name, cname, group, missing_only=missing_only):
+                ok = False
+        return ok
 
-    def ensure_socket_forward_proxy(self, name: str, cname: str, group: SocketForwardGroup) -> None:
+    def ensure_socket_forward_proxy(self, name: str, cname: str, group: SocketForwardGroup, *, missing_only: bool = False) -> bool:
         marker = self.socket_proxy_marker(name, group.name)
+        if missing_only and self.container_socket_proxy_running(cname, group):
+            return True
         try:
             if marker.read_text(encoding="utf-8").strip() == group.marker_text:
                 if self.container_socket_proxy_running(cname, group):
-                    return
+                    return True
         except OSError:
             pass
         self.stop_socket_forward_proxy(cname, group)
         self.start_socket_forward_proxy(name, cname, group)
         if self.wait_socket_forward_proxy(name, cname, group):
             atomic_write_text(marker, group.marker_text + "\n", 0o600)
+            return True
+        return False
 
     def restart_socket_proxies(self, name: str, kind: str) -> None:
         validate_box_name(name)
@@ -3314,10 +3370,10 @@ class ContainerManager:
         for group in groups:
             self.stop_socket_forward_proxy(cname, group)
             safe_unlink(self.socket_proxy_marker(name, group.name))
-            self.ensure_socket_forward_proxy(name, cname, group)
-            restarted.append(group.kind)
+            if self.ensure_socket_forward_proxy(name, cname, group):
+                restarted.append(group.kind)
         if not restarted:
-            die(f"lubox: no socket proxies are available for {name}")
+            die(f"lubox: no socket proxies started for {name}; see {self.paths.log_file(name)}")
         print(f"restarted {','.join(restarted)} socket proxy for {cname}")
 
     def choose_port(self, bind_addr: str) -> int:
@@ -4312,8 +4368,17 @@ class HostExecServer:
     def container_running(self) -> bool:
         return self.engine.is_running(self.container)
 
+    def pid_file_current(self) -> bool:
+        try:
+            return self.pid_file.read_text(encoding="utf-8").strip() == str(os.getpid())
+        except OSError:
+            return False
+
     def monitor_container(self) -> None:
         while not self.stop.is_set():
+            if not self.pid_file_current():
+                self.stop.set()
+                return
             if not self.container_running():
                 self.stop.set()
                 return
