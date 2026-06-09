@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+_helper="${AUTO_UPDATE_APP_HELPER:-$HOME/.local/bin/auto-update-app.bash}"
+if [ ! -r "$_helper" ]; then
+    printf 'fff install failed: missing helper: %s\n' "$_helper" >&2
+    exit 1
+fi
+
+. "$_helper"
+
+_fff_download() {
+    local url="$1"
+    local target="$2"
+    local tmp
+
+    tmp="$(mktemp "${target}.download.XXXXXX")" || return 1
+
+    if command -v curl >/dev/null 2>&1; then
+        if ! curl --fail --silent --show-error --location --output "$tmp" "$url"; then
+            rm -f "$tmp"
+            return 1
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if ! wget -q -O "$tmp" "$url"; then
+            rm -f "$tmp"
+            return 1
+        fi
+    else
+        printf 'fff install failed: curl or wget not found\n' >&2
+        rm -f "$tmp"
+        return 1
+    fi
+
+    chmod 0755 "$tmp"
+    mv "$tmp" "$target"
+}
+
+_fff_ensure() {
+    local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/fff-bin"
+    local bin="$cache_dir/fff"
+    local check_file="$cache_dir/.last-check"
+    local url="https://raw.githubusercontent.com/dylanaraps/fff/master/fff"
+    local has_binary=0
+
+    mkdir -p "$cache_dir"
+
+    if [ -x "$bin" ]; then
+        has_binary=1
+        if [ -e "$check_file" ] && ! auto_update_is_stale "$check_file" 28; then
+            return 0
+        fi
+        touch "$check_file"
+    fi
+
+    if _fff_download "$url" "$bin"; then
+        touch "$check_file"
+        return 0
+    fi
+
+    if [ "$has_binary" -eq 1 ] && [ -x "$bin" ]; then
+        printf 'fff update failed: using cached binary\n' >&2
+        return 0
+    fi
+
+    printf 'fff install failed: could not download %s\n' "$url" >&2
+    return 1
+}
+
+_fff_ensure
+exec "${XDG_CACHE_HOME:-$HOME/.cache}/fff-bin/fff" "$@"

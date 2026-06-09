@@ -27,6 +27,9 @@
 !/.local/bin/auto-update-app.bash
 !/.local/bin/flutter
 !/.local/bin/dart
+!/.local/bin/deno
+!/.local/bin/bun
+!/.local/bin/fff
 !/.local/bin/sendme
 !/.local/bin/lubox-podman/
 !/.local/bin/lubox-podman/podman

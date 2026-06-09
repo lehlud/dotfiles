@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+_helper="${AUTO_UPDATE_APP_HELPER:-$HOME/.local/bin/auto-update-app.bash}"
+if [ ! -r "$_helper" ]; then
+    printf 'deno install failed: missing helper: %s\n' "$_helper" >&2
+    exit 1
+fi
+
+. "$_helper"
+
+_deno_resolve() {
+    local os
+    local arch
+    local target
+    local tag
+
+    case "$(auto_update_platform_os)" in
+        darwin)
+            os=apple-darwin
+            ;;
+        linux)
+            os=unknown-linux-gnu
+            ;;
+        *)
+            printf 'deno install failed: unsupported OS: %s\n' "$(uname -s)" >&2
+            return 1
+            ;;
+    esac
+
+    case "$(auto_update_platform_arch)" in
+        x86_64)
+            arch=x86_64
+            ;;
+        aarch64)
+            arch=aarch64
+            ;;
+        *)
+            printf 'deno install failed: unsupported architecture: %s\n' "$(uname -m)" >&2
+            return 1
+            ;;
+    esac
+
+    tag="$(auto_update_latest_release_tag denoland/deno)" || return 1
+    target="$arch-$os"
+    AUTO_UPDATE_URL="https://github.com/denoland/deno/releases/download/$tag/deno-$target.zip"
+    AUTO_UPDATE_SOURCE_REL=deno
+    AUTO_UPDATE_SOURCE_BIN_REL=deno
+}
+
+_cache_dir="$(auto_update_platform_cache_dir "${XDG_CACHE_HOME:-$HOME/.cache}/deno-bin")"
+auto_update_ensure_zip_app deno "$_cache_dir" deno deno 7 _deno_resolve https://github.com/denoland/deno
+exec "$_cache_dir/deno" "$@"
