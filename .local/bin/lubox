@@ -860,20 +860,58 @@ class Engine:
     name: str
     path: str
 
+    @staticmethod
+    def path_candidates(name: str) -> Iterable[Tuple[pathlib.Path, pathlib.Path]]:
+        seen = set()
+        for entry in (os.environ.get("PATH") or os.defpath).split(os.pathsep):
+            candidate = pathlib.Path(entry or ".") / name
+            if not os.access(candidate, os.X_OK) or candidate.is_dir():
+                continue
+            try:
+                found_dir = candidate.parent.expanduser().resolve()
+                found = found_dir / candidate.name
+                resolved = found.resolve()
+            except OSError:
+                continue
+            key = str(found)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield found, resolved
+
+    @classmethod
+    def actual_path(cls, name: str) -> Tuple[Optional[str], List[str]]:
+        home = pathlib.Path.home()
+        ignored: List[str] = []
+        for found, resolved in cls.path_candidates(name):
+            if path_under(found.parent, home) or path_under(resolved, home):
+                ignored.append(str(found))
+                continue
+            return str(found), ignored
+        return None, ignored
+
     @classmethod
     def select(cls, override: Optional[str] = None) -> "Engine":
         requested = override or os.environ.get("LUBOX_ENGINE")
         if requested:
             if requested not in ("podman", "docker"):
                 die("lubox: --engine/LUBOX_ENGINE must be podman or docker")
-            found = shutil.which(requested)
+            found, ignored = cls.actual_path(requested)
             if not found:
+                if ignored:
+                    die(f"lubox: requested engine has no PATH executable outside HOME: {requested} (ignored {', '.join(ignored)})")
                 die(f"lubox: requested engine not found in PATH: {requested}")
             return cls(requested, found)
+        ignored_by_name: Dict[str, List[str]] = {}
         for name in ("podman", "docker"):
-            found = shutil.which(name)
+            found, ignored = cls.actual_path(name)
             if found:
                 return cls(name, found)
+            if ignored:
+                ignored_by_name[name] = ignored
+        if ignored_by_name:
+            detail = "; ".join(f"{name}: {', '.join(paths)}" for name, paths in ignored_by_name.items())
+            die(f"lubox: neither podman nor docker has PATH executable outside HOME (ignored {detail})")
         die("lubox: neither podman nor docker found in PATH")
 
     def argv(self, args: Sequence[str]) -> List[str]:

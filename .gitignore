@@ -29,6 +29,7 @@
 !/.local/bin/dart
 !/.local/bin/sendme
 !/.local/bin/podman
+!/.local/bin/docker
 !/.local/bin/rickroll
 !/.local/bin/x83_to_pdf
 !/.local/bin/battery-mode
