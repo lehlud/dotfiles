@@ -1209,8 +1209,8 @@ RUN chmod 0755 /usr/local/bin/lubox \
       rm -rf /var/lib/apt/lists/*; \
     elif command -v dnf >/dev/null 2>&1; then \
       sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf /etc/yum.conf 2>/dev/null || true; \
-      dnf install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
-      for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf man-pages-posix; do dnf install -y "$p" || true; done; \
+      dnf install -y "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm"; \
+      dnf install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux jq tree tmux htop strace make bash-completion ripgrep fd-find fzf man-pages-posix $shell_pkg; \
       dnf clean all; \
     elif command -v microdnf >/dev/null 2>&1; then \
       sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf /etc/yum.conf 2>/dev/null || true; \
