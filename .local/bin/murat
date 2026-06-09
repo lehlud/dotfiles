@@ -7,31 +7,38 @@ import binascii
 import curses
 import datetime
 import email.header
+import email.message
+import email.policy
 import email.utils
 import getpass
 import hashlib
 import hmac
 import html
+import imaplib
 import json
 import os
 import queue
 import re
 import secrets
 import shutil
+import smtplib
+import ssl
 import struct
 import subprocess
 import sys
+import termios
 import tempfile
 import threading
 import textwrap
 import time
+import tty
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 try:
     import tomllib
@@ -47,7 +54,7 @@ MAC_PREFIX = b"MURAT1"
 _READLINE: Any = None
 _PROMPT_EDITING_READY = False
 
-DEFAULT_CONFIG = """# murat: standalone JMAP-only TUI mail user agent
+DEFAULT_CONFIG = """# murat: standalone JMAP/IMAPS TUI mail user agent
 
 [ui]
 split = "vertical" # vertical = top/bottom, horizontal = side-by-side
@@ -139,6 +146,16 @@ class Account:
     auth_kind: str
     secret: str
     primary_mail_account_id: str | None = None
+    protocol: str = "jmap"
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_mailbox: str = "INBOX"
+    smtp_host: str = ""
+    smtp_port: int = 465
+    smtp_username: str = ""
+    smtp_secret: str = ""
+    receiver: Any = field(default=None, repr=False, compare=False)
+    sender: Any = field(default=None, repr=False, compare=False)
     created_at: str = ""
     updated_at: str = ""
 
@@ -158,12 +175,28 @@ class Account:
             "auth_kind": self.auth_kind,
             "secret": self.secret,
             "primary_mail_account_id": self.primary_mail_account_id,
+            "protocol": self.protocol,
+            "imap_host": self.imap_host,
+            "imap_port": self.imap_port,
+            "imap_mailbox": self.imap_mailbox,
+            "smtp_host": self.smtp_host,
+            "smtp_port": self.smtp_port,
+            "smtp_username": self.smtp_username,
+            "smtp_secret": self.smtp_secret,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
 
     @classmethod
     def from_json(cls, value: dict[str, Any]) -> "Account":
+        try:
+            imap_port = int(value.get("imap_port") or 993)
+        except (TypeError, ValueError):
+            imap_port = 993
+        try:
+            smtp_port = int(value.get("smtp_port") or 465)
+        except (TypeError, ValueError):
+            smtp_port = 465
         return cls(
             id=str(value.get("id", "")),
             name=str(value.get("name", "")),
@@ -173,9 +206,82 @@ class Account:
             auth_kind=str(value.get("auth_kind", "bearer")),
             secret=str(value.get("secret", "")),
             primary_mail_account_id=value.get("primary_mail_account_id") or None,
+            protocol=str(value.get("protocol") or "jmap").lower(),
+            imap_host=str(value.get("imap_host", "")),
+            imap_port=imap_port,
+            imap_mailbox=str(value.get("imap_mailbox") or "INBOX"),
+            smtp_host=str(value.get("smtp_host", "")),
+            smtp_port=smtp_port,
+            smtp_username=str(value.get("smtp_username", "")),
+            smtp_secret=str(value.get("smtp_secret", "")),
             created_at=str(value.get("created_at", "")),
             updated_at=str(value.get("updated_at", "")),
         )
+
+    def bind(self, receiver: Any = None, sender: Any = None) -> "Account":
+        self.receiver = receiver
+        self.sender = sender
+        return self
+
+    def require_receiver(self) -> Any:
+        if self.receiver is None:
+            raise MuratError(f"{self.email}: receive backend not configured")
+        return self.receiver
+
+    def require_sender(self) -> Any:
+        if self.sender is None:
+            raise MuratError(f"{self.email}: send backend not configured")
+        return self.sender
+
+    def sync(self, context: "SyncContext") -> "SyncResult":
+        return self.require_receiver().sync(context)
+
+    def send(self, draft: "ComposeDraft") -> None:
+        self.require_sender().send(draft)
+
+    def fetch_body(self, message: dict[str, Any]) -> dict[str, Any]:
+        return self.require_receiver().fetch_body(message)
+
+    def message_attachments(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        return self.require_receiver().message_attachments(message)
+
+    def attachment_data(self, message: dict[str, Any], attachment: dict[str, Any]) -> bytes:
+        return self.require_receiver().attachment_data(message, attachment)
+
+    def set_message_spam(self, message: dict[str, Any], spam: bool) -> None:
+        self.require_receiver().set_message_spam(message, spam)
+
+    def trash_message(self, message: dict[str, Any]) -> None:
+        self.require_receiver().trash_message(message)
+
+    def can_mutate_mail(self) -> bool:
+        return bool(getattr(self.require_receiver(), "mutable", False))
+
+
+def account_protocol(account: Account) -> str:
+    protocol = (account.protocol or "jmap").strip().lower()
+    return "imap" if protocol == "imaps" else protocol
+
+
+def account_endpoint(account: Account) -> str:
+    if account_protocol(account) == "imap":
+        mailbox = urllib.parse.quote(account.imap_mailbox or "INBOX", safe="")
+        endpoint = f"imaps://{account.imap_host}:{account.imap_port}/{mailbox}"
+        if account.smtp_host:
+            endpoint = f"{endpoint};smtps://{account.smtp_host}:{account.smtp_port}"
+        return endpoint
+    return account.session_url
+
+
+def account_can_send(account: Account) -> bool:
+    return account.sender is not None
+
+
+def default_send_account(accounts: list[Account]) -> Account:
+    for account in accounts:
+        if account_can_send(account):
+            return account
+    return accounts[0]
 
 
 @dataclass
@@ -249,6 +355,44 @@ class SyncResult:
     mailboxes: list[dict[str, Any]]
     messages: list[dict[str, Any]]
     search_docs: dict[str, str]
+    remove_keys: set[str] = field(default_factory=set)
+    sync_state: dict[str, Any] = field(default_factory=dict)
+    full: bool = True
+
+
+@dataclass
+class SyncContext:
+    page_size: int
+    progress: Any = None
+    message_sink: Any = None
+    raw_message_sink: Any = None
+    sync_state: dict[str, Any] = field(default_factory=dict)
+    existing_messages: list[dict[str, Any]] = field(default_factory=list)
+
+
+class MailReceiverBackend(Protocol):
+    def sync(self, context: SyncContext) -> SyncResult:
+        ...
+
+    def fetch_body(self, message: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    def message_attachments(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        ...
+
+    def attachment_data(self, message: dict[str, Any], attachment: dict[str, Any]) -> bytes:
+        ...
+
+    def set_message_spam(self, message: dict[str, Any], spam: bool) -> None:
+        ...
+
+    def trash_message(self, message: dict[str, Any]) -> None:
+        ...
+
+
+class MailSenderBackend(Protocol):
+    def send(self, account: Account, draft: ComposeDraft) -> None:
+        ...
 
 
 def now_utc() -> str:
@@ -651,6 +795,12 @@ class MailStore:
     def messages(self, include_spam: bool = False) -> list[dict[str, Any]]:
         raise NotImplementedError
 
+    def account_messages(self, account_id: str, with_eml: bool = True) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    def sync_state(self, account_id: str) -> dict[str, Any]:
+        raise NotImplementedError
+
     def save_sync(self, result: SyncResult) -> None:
         raise NotImplementedError
 
@@ -658,6 +808,12 @@ class MailStore:
         raise NotImplementedError
 
     def write_message_eml(self, message: dict[str, Any], body: str) -> str:
+        raise NotImplementedError
+
+    def write_raw_message_eml(self, message: dict[str, Any], eml: bytes) -> str:
+        raise NotImplementedError
+
+    def eml_bytes_from_message(self, message: dict[str, Any]) -> bytes | None:
         raise NotImplementedError
 
     def body(self, message_key: str) -> dict[str, Any] | None:
@@ -705,6 +861,9 @@ class EncryptedJsonMailStore(MailStore):
         data.setdefault("messages", {})
         data.setdefault("bodies", {})
         data.setdefault("drafts", [])
+        data.setdefault("sync_state", {})
+        if not isinstance(data.get("sync_state"), dict):
+            data["sync_state"] = {}
         return data
 
     def migrate_search_index(self, data: dict[str, Any]) -> None:
@@ -743,24 +902,47 @@ class EncryptedJsonMailStore(MailStore):
         messages.sort(key=lambda item: item.get("received_at") or item.get("sent_at") or "", reverse=True)
         return messages
 
+    def account_messages(self, account_id: str, with_eml: bool = True) -> list[dict[str, Any]]:
+        values = self.data().get("messages", {}).values()
+        messages = []
+        for item in values:
+            if not isinstance(item, dict) or item.get("account_id") != account_id:
+                continue
+            if with_eml and not self.message_has_eml(item):
+                continue
+            messages.append(dict(item))
+        return messages
+
+    def sync_state(self, account_id: str) -> dict[str, Any]:
+        states = self.data().get("sync_state")
+        state = states.get(account_id) if isinstance(states, dict) else None
+        return dict(state) if isinstance(state, dict) else {}
+
     def save_sync(self, result: SyncResult) -> None:
         data = self.data()
         data["mailboxes"][result.account_id] = result.mailboxes
         new_keys = {message["key"] for message in result.messages}
         old_keys = {key for key, value in data["messages"].items() if value.get("account_id") == result.account_id}
-        stale_keys = old_keys - new_keys
-        for key in stale_keys:
+        remove_keys = (old_keys - new_keys) if result.full else {key for key in result.remove_keys if key in old_keys}
+        upsert_keys = set(result.search_docs.keys())
+        for key in remove_keys:
             old_message = data["messages"].get(key)
             if isinstance(old_message, dict):
                 self.remove_eml(old_message)
             del data["messages"][key]
             data["bodies"].pop(key, None)
         for message in result.messages:
+            existing = data["messages"].get(message["key"])
+            if isinstance(existing, dict) and existing.get("eml_rel") and not message.get("eml_rel"):
+                message["eml_rel"] = existing["eml_rel"]
             if not self.message_has_eml(message):
                 raise MuratError(f"message missing encrypted EML: {message.get('key')}")
             data["messages"][message["key"]] = message
-        data["bodies"] = {}
-        self.save_search_index(update_search_index(self.search_index(), old_keys, result.search_docs))
+        for key in upsert_keys:
+            data["bodies"].pop(key, None)
+        if result.sync_state:
+            data["sync_state"][result.account_id] = result.sync_state
+        self.save_search_index(update_search_index(self.search_index(), remove_keys | upsert_keys, result.search_docs))
         data["updated_at"] = now_utc()
         self.save_data(data)
 
@@ -793,7 +975,9 @@ class EncryptedJsonMailStore(MailStore):
     def body_from_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(message, dict) or not self.message_has_eml(message):
             return None
-        plaintext = self.box().open(self.eml_path(str(message["eml_rel"])).read_bytes())
+        plaintext = self.eml_bytes_from_message(message)
+        if plaintext is None:
+            return None
         return {"body": eml_body_text(plaintext), "fetched_at": str(message.get("updated_at") or ""), "eml": plaintext.decode(errors="replace")}
 
     def save_body(self, message_key: str, body: dict[str, Any]) -> None:
@@ -804,10 +988,18 @@ class EncryptedJsonMailStore(MailStore):
 
     def write_message_eml(self, message: dict[str, Any], body: str) -> str:
         eml = message_to_eml(message, body)
+        return self.write_raw_message_eml(message, eml)
+
+    def write_raw_message_eml(self, message: dict[str, Any], eml: bytes) -> str:
         rel = eml_rel(message)
         message["eml_rel"] = rel
         atomic_write(self.eml_path(rel), self.box().seal(eml), mode=0o600)
         return eml.decode(errors="replace")
+
+    def eml_bytes_from_message(self, message: dict[str, Any]) -> bytes | None:
+        if not isinstance(message, dict) or not self.message_has_eml(message):
+            return None
+        return self.box().open(self.eml_path(str(message["eml_rel"])).read_bytes())
 
     def box(self) -> CryptoBox:
         if self._box is None:
@@ -954,9 +1146,161 @@ def sanitize_header(value: str) -> str:
 
 
 def eml_body_text(value: bytes) -> str:
+    try:
+        text = eml_message_body(parse_eml(value))
+        if text:
+            return text
+    except Exception:
+        pass
     text = value.decode(errors="replace")
     parts = re.split(r"\r?\n\r?\n", text, maxsplit=1)
     return parts[1] if len(parts) == 2 else text
+
+
+def parse_eml(value: bytes) -> Any:
+    return email.message_from_bytes(value, policy=email.policy.default)
+
+
+def eml_message_body(message: Any) -> str:
+    body_part = None
+    if hasattr(message, "get_body"):
+        try:
+            body_part = message.get_body(preferencelist=("plain", "html"))
+        except Exception:
+            body_part = None
+    if body_part is not None:
+        text = eml_part_text(body_part)
+        if body_part.get_content_type().lower() == "text/html":
+            return html_to_rich_text(text)
+        return text.strip()
+
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+    for _part_id, part in eml_leaf_parts(message):
+        disposition = str(part.get_content_disposition() or "").lower()
+        if disposition == "attachment" or part.get_filename():
+            continue
+        content_type = str(part.get_content_type() or "").lower()
+        text = eml_part_text(part)
+        if not text:
+            continue
+        if content_type == "text/plain":
+            plain_parts.append(text)
+        elif content_type == "text/html":
+            html_parts.append(html_to_rich_text(text))
+    return "\n\n".join(plain_parts or html_parts).strip()
+
+
+def eml_leaf_parts(message: Any) -> list[tuple[str, Any]]:
+    try:
+        parts = message.walk() if message.is_multipart() else [message]
+    except Exception:
+        return []
+    output = []
+    index = 0
+    for part in parts:
+        try:
+            if part.is_multipart():
+                continue
+        except Exception:
+            pass
+        output.append((str(index), part))
+        index += 1
+    return output
+
+
+def eml_part_text(part: Any) -> str:
+    try:
+        content = part.get_content()
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, bytes):
+            charset = part.get_content_charset() or "utf-8"
+            return content.decode(charset, errors="replace").strip()
+    except Exception:
+        pass
+    payload = eml_part_bytes(part)
+    if not payload:
+        return ""
+    charset = "utf-8"
+    try:
+        charset = part.get_content_charset() or charset
+    except Exception:
+        pass
+    return payload.decode(charset, errors="replace").strip()
+
+
+def eml_part_bytes(part: Any) -> bytes:
+    try:
+        payload = part.get_payload(decode=True)
+        if isinstance(payload, bytes):
+            return payload
+    except Exception:
+        pass
+    try:
+        content = part.get_content()
+        if isinstance(content, bytes):
+            return content
+        if isinstance(content, str):
+            charset = part.get_content_charset() or "utf-8"
+            return content.encode(charset, errors="replace")
+    except Exception:
+        pass
+    try:
+        raw = part.get_payload()
+        if isinstance(raw, str):
+            return raw.encode(errors="replace")
+    except Exception:
+        pass
+    return b""
+
+
+def eml_attachments(value: bytes) -> list[dict[str, Any]]:
+    try:
+        message = parse_eml(value)
+    except Exception:
+        return []
+    attachments: list[dict[str, Any]] = []
+    for part_id, part in eml_leaf_parts(message):
+        disposition = str(part.get_content_disposition() or "").lower()
+        filename = eml_attachment_filename(part)
+        content_type = str(part.get_content_type() or "application/octet-stream")
+        if disposition != "attachment" and not filename:
+            if disposition == "inline" or content_type.startswith("text/"):
+                continue
+        data = eml_part_bytes(part)
+        name = filename or f"attachment-{len(attachments) + 1}"
+        attachments.append(
+            {
+                "part": part_id,
+                "name": name,
+                "type": content_type,
+                "size": len(data),
+            }
+        )
+    return attachments
+
+
+def eml_attachment_filename(part: Any) -> str:
+    try:
+        filename = part.get_filename()
+    except Exception:
+        filename = ""
+    return decode_mime_header(str(filename or "")).strip()
+
+
+def eml_attachment_data(value: bytes, attachment: dict[str, Any]) -> bytes:
+    part_id = str(attachment.get("part") or "")
+    if not part_id:
+        raise MuratError("attachment part id missing")
+    try:
+        message = parse_eml(value)
+    except Exception as error:
+        raise MuratError("stored EML is invalid") from error
+    for candidate_id, part in eml_leaf_parts(message):
+        if candidate_id == part_id:
+            return eml_part_bytes(part)
+    raise MuratError("attachment not found in stored EML")
 
 
 def eml_header_text(value: str) -> str:
@@ -974,6 +1318,8 @@ class JmapClient:
         self.timeout = timeout
 
     def fetch_session(self, account: Account) -> JmapSession:
+        if account_protocol(account) != "jmap":
+            raise MuratError(f"{account.email}: IMAP account has no JMAP session")
         return self.fetch_session_url(account.session_url, account.auth_header())
 
     def fetch_session_url(self, session_url: str, auth_header: str | None = None) -> JmapSession:
@@ -1109,7 +1455,16 @@ class JmapClient:
             raise MuratError("JMAP server returned non-object JSON")
         return decoded
 
-    def sync_account(self, account: Account, page_size: int, progress: Any = None, message_sink: Any = None) -> SyncResult:
+    def sync_account(
+        self,
+        account: Account,
+        page_size: int,
+        progress: Any = None,
+        message_sink: Any = None,
+        raw_message_sink: Any = None,
+        sync_state: dict[str, Any] | None = None,
+        existing_messages: list[dict[str, Any]] | None = None,
+    ) -> SyncResult:
         session = self.fetch_session(account)
         mail_account_id = account.primary_mail_account_id or session.primary_mail_account_id
         if not mail_account_id or CAP_MAIL not in session.capabilities:
@@ -1133,11 +1488,33 @@ class JmapClient:
         paths = mailbox_paths(clean_mailboxes)
         spam_ids = spam_mailbox_ids(clean_mailboxes)
         trash_ids = trash_mailbox_ids(clean_mailboxes)
+        sync_state = sync_state or {}
+        page_size = max(1, page_size)
+        existing_by_key = {str(message.get("key")): dict(message) for message in (existing_messages or []) if isinstance(message.get("key"), str)}
+        existing_state = str(sync_state.get("email_state") or "")
+        existing_mail_account_id = str(sync_state.get("mail_account_id") or "")
+        if existing_state and existing_mail_account_id == mail_account_id:
+            try:
+                return self.sync_account_changes(
+                    account,
+                    session,
+                    mail_account_id,
+                    clean_mailboxes,
+                    paths,
+                    spam_ids,
+                    trash_ids,
+                    existing_state,
+                    page_size,
+                    progress,
+                    message_sink,
+                )
+            except MuratError as error:
+                report_progress(progress, f"{account.email}: JMAP changes unavailable ({error}); full scan")
         messages = []
         search_docs: dict[str, str] = {}
         position = 0
         seen_ids: set[str] = set()
-        page_size = max(1, page_size)
+        email_state = ""
 
         while True:
             report_progress(progress, f"{account.email}: querying messages at {position}")
@@ -1164,61 +1541,190 @@ class JmapClient:
                 seen_ids.add(message_id)
             total = query_args.get("total") if isinstance(query_args.get("total"), int) else None
             suffix = f"/{total}" if total is not None else ""
-            report_progress(progress, f"{account.email}: downloading {position + 1}-{position + len(new_ids)}{suffix}")
-            email_args = self.call(
+            fetch_ids = [message_id for message_id in new_ids if jmap_message_key(account, mail_account_id, message_id) not in existing_by_key]
+            for message_id in new_ids:
+                existing = existing_by_key.get(jmap_message_key(account, mail_account_id, message_id))
+                if existing is not None:
+                    messages.append(existing)
+            if fetch_ids:
+                report_progress(progress, f"{account.email}: downloading {position + 1}-{position + len(fetch_ids)}{suffix}")
+            fetched, state = self.fetch_email_batch(
                 account,
                 session,
-                [CAP_MAIL],
-                "Email/get",
-                {
-                    "accountId": mail_account_id,
-                    "ids": new_ids,
-                    "properties": [
-                        "id",
-                        "mailboxIds",
-                        "receivedAt",
-                        "sentAt",
-                        "subject",
-                        "header:subject",
-                        "header:subject:asRaw",
-                        "keywords",
-                        "from",
-                        "to",
-                        "cc",
-                        "replyTo",
-                        "messageId",
-                        "references",
-                        "hasAttachment",
-                        "attachments",
-                        "bodyValues",
-                        "textBody",
-                        "htmlBody",
-                    ],
-                    "bodyProperties": ["partId", "type", "charset", "name", "size", "disposition", "blobId", "cid"],
-                    "fetchTextBodyValues": True,
-                    "fetchHTMLBodyValues": True,
-                    "maxBodyValueBytes": 300000,
-                },
+                mail_account_id,
+                fetch_ids,
+                paths,
+                spam_ids,
+                trash_ids,
+                message_sink,
+                search_docs,
                 f"murat-email-get-{position}",
             )
-            for item in email_args.get("list", []):
-                if not isinstance(item, dict):
-                    continue
-                message = normalize_message(account, mail_account_id, item, paths, spam_ids, trash_ids)
-                body = body_text(item)
-                if message_sink is not None:
-                    search_docs[message["key"]] = message_sink(message, body)
-                else:
-                    message["eml_rel"] = eml_rel(message)
-                    search_docs[message["key"]] = message_to_eml(message, body).decode(errors="replace")
-                messages.append(message)
-                report_progress(progress, f"{account.email}: encrypted {len(messages)} messages")
+            messages.extend(fetched)
+            if state:
+                email_state = state
+            if fetched:
+                report_progress(progress, f"{account.email}: encrypted {len(fetched)} new messages")
             position += len(ids)
             if len(ids) < page_size or (total is not None and position >= total):
                 break
 
+        if not email_state:
+            email_state = self.fetch_email_state(account, session, mail_account_id)
         report_progress(progress, f"{account.email}: indexed {len(messages)} messages")
-        return SyncResult(account_id=account.id, mailboxes=clean_mailboxes, messages=messages, search_docs=search_docs)
+        return SyncResult(
+            account_id=account.id,
+            mailboxes=clean_mailboxes,
+            messages=messages,
+            search_docs=search_docs,
+            sync_state={"protocol": "jmap", "mail_account_id": mail_account_id, "email_state": email_state},
+            full=True,
+        )
+
+    def sync_account_changes(
+        self,
+        account: Account,
+        session: JmapSession,
+        mail_account_id: str,
+        mailboxes: list[dict[str, Any]],
+        paths: dict[str, str],
+        spam_ids: set[str],
+        trash_ids: set[str],
+        since_state: str,
+        page_size: int,
+        progress: Any = None,
+        message_sink: Any = None,
+    ) -> SyncResult:
+        changed_ids: list[str] = []
+        destroyed_ids: list[str] = []
+        state = since_state
+        while True:
+            report_progress(progress, f"{account.email}: checking JMAP changes")
+            args = self.call(
+                account,
+                session,
+                [CAP_MAIL],
+                "Email/changes",
+                {"accountId": mail_account_id, "sinceState": state, "maxChanges": page_size},
+                f"murat-email-changes-{len(changed_ids)}",
+            )
+            for key in ("created", "updated"):
+                values = args.get(key)
+                if isinstance(values, list):
+                    changed_ids.extend(str(item) for item in values if isinstance(item, str))
+            values = args.get("destroyed")
+            if isinstance(values, list):
+                destroyed_ids.extend(str(item) for item in values if isinstance(item, str))
+            new_state = str(args.get("newState") or state)
+            state = new_state
+            if not args.get("hasMoreChanges"):
+                break
+        changed_ids = list(dict.fromkeys(changed_ids))
+        search_docs: dict[str, str] = {}
+        messages = []
+        for position in range(0, len(changed_ids), page_size):
+            fetched, fetched_state = self.fetch_email_batch(
+                account,
+                session,
+                mail_account_id,
+                changed_ids[position : position + page_size],
+                paths,
+                spam_ids,
+                trash_ids,
+                message_sink,
+                search_docs,
+                f"murat-email-changed-get-{position}",
+            )
+            messages.extend(fetched)
+            if fetched_state:
+                state = fetched_state
+        remove_keys = {jmap_message_key(account, mail_account_id, message_id) for message_id in destroyed_ids}
+        report_progress(progress, f"{account.email}: {len(messages)} changed, {len(remove_keys)} removed")
+        return SyncResult(
+            account_id=account.id,
+            mailboxes=mailboxes,
+            messages=messages,
+            search_docs=search_docs,
+            remove_keys=remove_keys,
+            sync_state={"protocol": "jmap", "mail_account_id": mail_account_id, "email_state": state},
+            full=False,
+        )
+
+    def fetch_email_batch(
+        self,
+        account: Account,
+        session: JmapSession,
+        mail_account_id: str,
+        ids: list[str],
+        paths: dict[str, str],
+        spam_ids: set[str],
+        trash_ids: set[str],
+        message_sink: Any,
+        search_docs: dict[str, str],
+        call_id: str,
+    ) -> tuple[list[dict[str, Any]], str]:
+        if not ids:
+            return [], ""
+        email_args = self.call(
+            account,
+            session,
+            [CAP_MAIL],
+            "Email/get",
+            {
+                "accountId": mail_account_id,
+                "ids": ids,
+                "properties": [
+                    "id",
+                    "mailboxIds",
+                    "receivedAt",
+                    "sentAt",
+                    "subject",
+                    "header:subject",
+                    "header:subject:asRaw",
+                    "keywords",
+                    "from",
+                    "to",
+                    "cc",
+                    "replyTo",
+                    "messageId",
+                    "references",
+                    "hasAttachment",
+                    "attachments",
+                    "bodyValues",
+                    "textBody",
+                    "htmlBody",
+                ],
+                "bodyProperties": ["partId", "type", "charset", "name", "size", "disposition", "blobId", "cid"],
+                "fetchTextBodyValues": True,
+                "fetchHTMLBodyValues": True,
+                "maxBodyValueBytes": 300000,
+            },
+            call_id,
+        )
+        messages = []
+        for item in email_args.get("list", []):
+            if not isinstance(item, dict):
+                continue
+            message = normalize_message(account, mail_account_id, item, paths, spam_ids, trash_ids)
+            body = body_text(item)
+            if message_sink is not None:
+                search_docs[message["key"]] = message_sink(message, body)
+            else:
+                message["eml_rel"] = eml_rel(message)
+                search_docs[message["key"]] = message_to_eml(message, body).decode(errors="replace")
+            messages.append(message)
+        return messages, str(email_args.get("state") or "")
+
+    def fetch_email_state(self, account: Account, session: JmapSession, mail_account_id: str) -> str:
+        args = self.call(
+            account,
+            session,
+            [CAP_MAIL],
+            "Email/get",
+            {"accountId": mail_account_id, "ids": [], "properties": ["id"]},
+            "murat-email-state-get",
+        )
+        return str(args.get("state") or "")
 
     def fetch_body(self, account: Account, message: dict[str, Any]) -> dict[str, Any]:
         session = self.fetch_session(account)
@@ -1374,6 +1880,633 @@ class JmapClient:
             [["Email/set", {"accountId": mail_account_id, "update": {message_id: patch}}, "murat-email-update"]],
         )
         throw_if_update_rejected(response_args(response, "murat-email-update"), message_id, error_message)
+
+
+class ImapClient:
+    def __init__(self, timeout: float = 25.0):
+        self.timeout = timeout
+
+    def verify_account(self, account: Account) -> int:
+        imap = self.connect(account)
+        try:
+            self.login(imap, account)
+            return self.select_mailbox(imap, account.imap_mailbox or "INBOX")
+        finally:
+            self.logout(imap)
+
+    def sync_account(
+        self,
+        account: Account,
+        page_size: int,
+        progress: Any = None,
+        message_sink: Any = None,
+        raw_message_sink: Any = None,
+        sync_state: dict[str, Any] | None = None,
+        existing_messages: list[dict[str, Any]] | None = None,
+    ) -> SyncResult:
+        if account_protocol(account) != "imap":
+            raise MuratError(f"{account.email}: account is not IMAP")
+        mailbox = account.imap_mailbox or "INBOX"
+        imap = self.connect(account)
+        messages: list[dict[str, Any]] = []
+        search_docs: dict[str, str] = {}
+        sync_state = sync_state or {}
+        existing_by_key = {str(message.get("key")): dict(message) for message in (existing_messages or []) if isinstance(message.get("key"), str)}
+        full = True
+        max_uid = 0
+        uidvalidity = ""
+        uidnext = 0
+        total = 0
+        try:
+            self.login(imap, account)
+            info = self.select_mailbox_info(imap, mailbox)
+            total = info["total"]
+            uidvalidity = str(info.get("uidvalidity") or "")
+            uidnext = int(info.get("uidnext") or 0)
+            same_mailbox = str(sync_state.get("mailbox") or "") == mailbox
+            same_uidvalidity = bool(uidvalidity) and str(sync_state.get("uidvalidity") or "") == uidvalidity
+            reuse_existing = same_mailbox and same_uidvalidity
+            report_progress(progress, f"{account.email}: fetching IMAP UIDs")
+            status, data = imap.uid("SEARCH", None, "ALL")
+            if status != "OK":
+                raise MuratError(f"{account.email}: IMAP UID SEARCH failed: {imap_response_text(data)}")
+            uids = list(reversed(parse_imap_uid_search(data)))
+            full = True
+            if reuse_existing:
+                for uid in uids:
+                    existing = existing_by_key.get(imap_message_key(account, mailbox, uid))
+                    if existing is not None:
+                        messages.append(existing)
+                uids = [uid for uid in uids if imap_message_key(account, mailbox, uid) not in existing_by_key]
+            page_size = max(1, page_size)
+            for position in range(0, len(uids), page_size):
+                batch = uids[position : position + page_size]
+                if not batch:
+                    continue
+                suffix = f"/{len(uids) or total}" if (len(uids) or total) else ""
+                report_progress(progress, f"{account.email}: downloading {position + 1}-{position + len(batch)}{suffix}")
+                status, fetch_data = imap.uid("FETCH", ",".join(batch), "(UID FLAGS INTERNALDATE BODY.PEEK[])")
+                if status != "OK":
+                    raise MuratError(f"{account.email}: IMAP UID FETCH failed: {imap_response_text(fetch_data)}")
+                for uid, flags, received_at, raw_eml in parse_imap_fetch(fetch_data):
+                    message = normalize_imap_message(account, mailbox, uid, flags, received_at, raw_eml)
+                    body = eml_body_text(raw_eml)
+                    if raw_message_sink is not None:
+                        raw_message_sink(message, raw_eml)
+                    else:
+                        message["eml_rel"] = eml_rel(message)
+                    search_docs[message["key"]] = message_to_eml(message, body).decode(errors="replace")
+                    messages.append(message)
+                    max_uid = max(max_uid, int_or_zero(uid))
+                    report_progress(progress, f"{account.email}: encrypted {len(messages)} messages")
+        except (OSError, imaplib.IMAP4.error) as error:
+            raise MuratError(f"{account.email}: IMAP failed: {error}") from error
+        finally:
+            self.logout(imap)
+        if not max_uid:
+            max_uid = max([int_or_zero(uid) for uid in parse_imap_existing_uids(messages)] + [int_or_zero(sync_state.get("max_uid"))])
+        if uidnext:
+            max_uid = max(max_uid, uidnext - 1 if total else 0)
+        mailboxes = [imap_mailbox_record(mailbox, total)]
+        report_progress(progress, f"{account.email}: indexed {len(messages)} messages")
+        return SyncResult(
+            account_id=account.id,
+            mailboxes=mailboxes,
+            messages=messages,
+            search_docs=search_docs,
+            sync_state={"protocol": "imap", "mailbox": mailbox, "uidvalidity": uidvalidity, "uidnext": uidnext, "max_uid": max_uid, "total": total},
+            full=full,
+        )
+
+    def connect(self, account: Account) -> imaplib.IMAP4_SSL:
+        if not account.imap_host:
+            raise MuratError(f"{account.email}: IMAPS host missing")
+        context = ssl.create_default_context()
+        try:
+            try:
+                return imaplib.IMAP4_SSL(account.imap_host, account.imap_port, ssl_context=context, timeout=self.timeout)
+            except TypeError:
+                return imaplib.IMAP4_SSL(account.imap_host, account.imap_port, ssl_context=context)
+        except (OSError, imaplib.IMAP4.error) as error:
+            raise MuratError(f"{account.email}: IMAPS connect failed for {account.imap_host}:{account.imap_port}: {error}") from error
+
+    def login(self, imap: imaplib.IMAP4_SSL, account: Account) -> None:
+        username = account.username or account.email
+        if not username:
+            raise MuratError(f"{account.email}: IMAP username missing")
+        if not account.secret:
+            raise MuratError(f"{account.email}: IMAP password missing")
+        try:
+            status, data = imap.login(username, account.secret)
+        except (OSError, imaplib.IMAP4.error) as error:
+            raise MuratError(f"{account.email}: IMAP login failed: {error}") from error
+        if status != "OK":
+            raise MuratError(f"{account.email}: IMAP login failed: {imap_response_text(data)}")
+
+    def select_mailbox(self, imap: imaplib.IMAP4_SSL, mailbox: str) -> int:
+        return self.select_mailbox_info(imap, mailbox)["total"]
+
+    def select_mailbox_info(self, imap: imaplib.IMAP4_SSL, mailbox: str) -> dict[str, int | str]:
+        try:
+            status, data = imap.select(imap_mailbox_arg(mailbox), readonly=True)
+        except (OSError, imaplib.IMAP4.error) as error:
+            raise MuratError(f"IMAP SELECT {mailbox} failed: {error}") from error
+        if status != "OK":
+            raise MuratError(f"IMAP SELECT {mailbox} failed: {imap_response_text(data)}")
+        total = 0
+        if data and isinstance(data[0], bytes):
+            try:
+                total = int(data[0].decode())
+            except ValueError:
+                total = 0
+        return {"total": total, "uidvalidity": imap_response_value(imap, "UIDVALIDITY"), "uidnext": int_or_zero(imap_response_value(imap, "UIDNEXT"))}
+
+    def logout(self, imap: imaplib.IMAP4_SSL) -> None:
+        try:
+            imap.logout()
+        except Exception:
+            pass
+
+
+def parse_imap_uid_search(data: list[Any]) -> list[str]:
+    if not data:
+        return []
+    raw = data[0]
+    if isinstance(raw, bytes):
+        text = raw.decode(errors="replace")
+    else:
+        text = str(raw or "")
+    return [item for item in text.split() if item.isdigit()]
+
+
+def parse_imap_existing_uids(messages: list[dict[str, Any]]) -> list[str]:
+    return [str(message.get("imap_uid") or message.get("id") or "") for message in messages if str(message.get("imap_uid") or message.get("id") or "").isdigit()]
+
+
+def imap_message_key(account: Account, mailbox: str, uid: str) -> str:
+    return f"{account.id}:imap:{urllib.parse.quote(mailbox, safe='')}:{urllib.parse.quote(str(uid), safe='')}"
+
+
+def imap_response_value(imap: imaplib.IMAP4_SSL, name: str) -> str:
+    try:
+        _status, data = imap.response(name)
+    except Exception:
+        return ""
+    if not data:
+        return ""
+    raw = data[0]
+    if isinstance(raw, bytes):
+        return raw.decode(errors="replace").strip()
+    return str(raw or "").strip()
+
+
+def int_or_zero(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def parse_imap_fetch(data: list[Any]) -> list[tuple[str, set[str], str, bytes]]:
+    messages: list[tuple[str, set[str], str, bytes]] = []
+    for item in data:
+        if not isinstance(item, tuple) or len(item) < 2 or not isinstance(item[1], (bytes, bytearray)):
+            continue
+        meta = item[0] if isinstance(item[0], bytes) else str(item[0]).encode()
+        raw_eml = bytes(item[1])
+        uid_match = re.search(rb"\bUID\s+(\d+)", meta, re.IGNORECASE)
+        if not uid_match:
+            continue
+        flags = parse_imap_flags(meta)
+        received_at = parse_imap_internaldate(meta)
+        messages.append((uid_match.group(1).decode(), flags, received_at, raw_eml))
+    return messages
+
+
+def parse_imap_flags(meta: bytes) -> set[str]:
+    match = re.search(rb"\bFLAGS\s+\(([^)]*)\)", meta, re.IGNORECASE)
+    if not match:
+        return set()
+    return {item.decode(errors="replace").lower() for item in match.group(1).split()}
+
+
+def parse_imap_internaldate(meta: bytes) -> str:
+    try:
+        value = imaplib.Internaldate2tuple(meta)
+    except Exception:
+        value = None
+    if value is None:
+        return ""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.mktime(value)))
+
+
+def normalize_imap_message(
+    account: Account,
+    mailbox: str,
+    uid: str,
+    flags: set[str],
+    received_at: str,
+    raw_eml: bytes,
+) -> dict[str, Any]:
+    parsed = parse_eml(raw_eml)
+    tags = [mailbox] if mailbox else []
+    spam = imap_flags_spam(flags) or imap_mailbox_is_spam(mailbox)
+    trashed = imap_flags_trash(flags) or imap_mailbox_is_trash(mailbox)
+    if spam and "spam" not in tags:
+        tags.append("spam")
+    if trashed and "trash" not in tags:
+        tags.append("trash")
+    attachments = eml_attachments(raw_eml)
+    key = imap_message_key(account, mailbox, uid)
+    sent_at = parse_email_date(header_value(parsed, "date"))
+    return {
+        "key": key,
+        "id": uid,
+        "account_id": account.id,
+        "account_email": account.email,
+        "protocol": "imap",
+        "imap_uid": uid,
+        "imap_mailbox": mailbox,
+        "mailbox_ids": [mailbox] if mailbox else [],
+        "tags": tags,
+        "spam": spam,
+        "trashed": trashed,
+        "subject": decode_mime_header(header_value(parsed, "subject")),
+        "from": ", ".join(address_strings(header_values(parsed, "from"))),
+        "to": address_strings(header_values(parsed, "to")),
+        "cc": address_strings(header_values(parsed, "cc")),
+        "reply_to": address_strings(header_values(parsed, "reply-to")),
+        "received_at": received_at or sent_at,
+        "sent_at": sent_at,
+        "read": imap_flag_present(flags, "\\seen"),
+        "flagged": imap_flag_present(flags, "\\flagged"),
+        "message_ids": message_id_values(header_values(parsed, "message-id")),
+        "references": message_id_values(header_values(parsed, "references")),
+        "has_attachment": bool(attachments),
+        "attachments": attachments,
+    }
+
+
+def header_value(message: Any, name: str) -> str:
+    values = header_values(message, name)
+    return values[0] if values else ""
+
+
+def header_values(message: Any, name: str) -> list[str]:
+    try:
+        values = message.get_all(name, [])
+    except Exception:
+        return []
+    return [str(value) for value in values if str(value)]
+
+
+def parse_email_date(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+    except Exception:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.UTC)
+    return parsed.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def message_id_values(values: list[str]) -> list[str]:
+    output: list[str] = []
+    for value in values:
+        output.extend(match.group(0) for match in re.finditer(r"<[^>]+>", value))
+    return output or [value.strip() for value in values if value.strip()]
+
+
+def imap_flag_present(flags: set[str], flag: str) -> bool:
+    return flag.lower() in flags
+
+
+def imap_flags_spam(flags: set[str]) -> bool:
+    return bool(flags & {"\\junk", "$junk", "junk", "spam"})
+
+
+def imap_flags_trash(flags: set[str]) -> bool:
+    return "\\deleted" in flags
+
+
+def imap_mailbox_is_spam(mailbox: str) -> bool:
+    parts = {part.strip().lower() for part in re.split(r"[/\\.]", mailbox) if part.strip()}
+    return bool(parts & {"spam", "junk", "junk mail", "bulk mail"})
+
+
+def imap_mailbox_is_trash(mailbox: str) -> bool:
+    parts = {part.strip().lower() for part in re.split(r"[/\\.]", mailbox) if part.strip()}
+    return bool(parts & {"trash", "deleted", "deleted items"})
+
+
+def imap_mailbox_record(mailbox: str, total: int) -> dict[str, Any]:
+    role = "inbox" if mailbox.lower() == "inbox" else None
+    if imap_mailbox_is_spam(mailbox):
+        role = "junk"
+    if imap_mailbox_is_trash(mailbox):
+        role = "trash"
+    return {"id": mailbox, "name": mailbox, "role": role, "totalEmails": total}
+
+
+def imap_mailbox_arg(mailbox: str) -> str:
+    if not mailbox:
+        return "INBOX"
+    if re.search(r'[\s"\\]', mailbox):
+        return '"' + mailbox.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return mailbox
+
+
+def imap_response_text(data: Any) -> str:
+    if isinstance(data, list):
+        chunks = []
+        for item in data:
+            if isinstance(item, bytes):
+                chunks.append(item.decode(errors="replace"))
+            else:
+                chunks.append(str(item))
+        return "; ".join(chunk for chunk in chunks if chunk) or "unknown error"
+    return str(data or "unknown error")
+
+
+class SmtpClient:
+    def __init__(self, timeout: float = 25.0):
+        self.timeout = timeout
+
+    def verify_account(self, account: Account) -> None:
+        smtp = self.connect(account)
+        try:
+            self.login(smtp, account)
+        finally:
+            self.quit(smtp)
+
+    def send(self, account: Account, draft: ComposeDraft) -> None:
+        message = compose_smtp_message(account, draft)
+        sender = smtp_sender(account)
+        recipients = smtp_recipients(draft)
+        if not recipients:
+            raise MuratError("add at least one recipient")
+        smtp = self.connect(account)
+        try:
+            self.login(smtp, account)
+            refused = smtp.sendmail(sender, recipients, message.as_bytes(policy=email.policy.SMTP))
+            if refused:
+                raise MuratError(f"SMTPS rejected recipients: {', '.join(refused.keys())}")
+        except (OSError, smtplib.SMTPException) as error:
+            raise MuratError(f"{account.email}: SMTPS send failed: {error}") from error
+        finally:
+            self.quit(smtp)
+
+    def connect(self, account: Account) -> smtplib.SMTP_SSL:
+        if not account.smtp_host:
+            raise MuratError(f"{account.email}: SMTPS host missing")
+        context = ssl.create_default_context()
+        try:
+            return smtplib.SMTP_SSL(account.smtp_host, account.smtp_port, timeout=self.timeout, context=context)
+        except (OSError, smtplib.SMTPException) as error:
+            raise MuratError(f"{account.email}: SMTPS connect failed for {account.smtp_host}:{account.smtp_port}: {error}") from error
+
+    def login(self, smtp: smtplib.SMTP_SSL, account: Account) -> None:
+        username = smtp_username(account)
+        secret = smtp_secret(account)
+        if not username:
+            raise MuratError(f"{account.email}: SMTPS username missing")
+        if not secret:
+            raise MuratError(f"{account.email}: SMTPS password missing")
+        try:
+            smtp.login(username, secret)
+        except (OSError, smtplib.SMTPException) as error:
+            raise MuratError(f"{account.email}: SMTPS login failed: {error}") from error
+
+    def quit(self, smtp: smtplib.SMTP_SSL) -> None:
+        try:
+            smtp.quit()
+        except Exception:
+            pass
+
+
+def compose_smtp_message(account: Account, draft: ComposeDraft) -> email.message.EmailMessage:
+    recipients = smtp_recipients(draft)
+    if not recipients:
+        raise MuratError("add at least one recipient")
+    message = email.message.EmailMessage()
+    message["From"] = smtp_from_header(account)
+    if draft.to.strip():
+        message["To"] = draft.to.strip()
+    if draft.cc.strip():
+        message["Cc"] = draft.cc.strip()
+    if draft.subject.strip():
+        message["Subject"] = draft.subject.strip()
+    message["Date"] = email.utils.formatdate(localtime=True)
+    message["Message-ID"] = smtp_message_id(account)
+    if draft.reply_to_message_id:
+        message["In-Reply-To"] = draft.reply_to_message_id
+        refs = list(dict.fromkeys((draft.references or []) + [draft.reply_to_message_id]))
+        if refs:
+            message["References"] = " ".join(refs)
+    message.set_content(draft.body or "")
+    for attachment in draft.attachments or []:
+        maintype, subtype = smtp_attachment_type(attachment.content_type)
+        message.add_attachment(attachment.data, maintype=maintype, subtype=subtype, filename=attachment.name)
+    return message
+
+
+def smtp_recipients(draft: ComposeDraft) -> list[str]:
+    values = [value for value in (draft.to, draft.cc, draft.bcc) if value.strip()]
+    return list(dict.fromkeys(addr for _name, addr in email.utils.getaddresses(values) if addr))
+
+
+def smtp_sender(account: Account) -> str:
+    if not account.email:
+        raise MuratError("sender email missing")
+    return account.email
+
+
+def smtp_from_header(account: Account) -> str:
+    return email.utils.formataddr((account.name, account.email)) if account.name else account.email
+
+
+def smtp_username(account: Account) -> str:
+    return account.smtp_username or account.username or account.email
+
+
+def smtp_secret(account: Account) -> str:
+    return account.smtp_secret or account.secret
+
+
+def smtp_message_id(account: Account) -> str:
+    try:
+        return email.utils.make_msgid(domain=domain_from_email(account.email))
+    except MuratError:
+        return email.utils.make_msgid()
+
+
+def smtp_attachment_type(content_type: str) -> tuple[str, str]:
+    value = (content_type or "application/octet-stream").split(";", 1)[0].strip().lower()
+    if "/" not in value:
+        return "application", "octet-stream"
+    maintype, subtype = value.split("/", 1)
+    return (maintype or "application", subtype or "octet-stream")
+
+
+class JmapAccountBackend(MailReceiverBackend, MailSenderBackend):
+    mutable = True
+
+    def __init__(self, account: Account, client: JmapClient, mail: MailStore):
+        self.account = account
+        self.client = client
+        self.mail = mail
+
+    def verify(self) -> JmapSession:
+        session = self.client.fetch_session(self.account)
+        if CAP_MAIL not in session.capabilities or not session.primary_mail_account_id:
+            raise MuratError("server does not advertise JMAP Mail")
+        return session
+
+    def sync(self, context: SyncContext) -> SyncResult:
+        return self.client.sync_account(
+            self.account,
+            context.page_size,
+            progress=context.progress,
+            message_sink=context.message_sink,
+            raw_message_sink=context.raw_message_sink,
+            sync_state=context.sync_state,
+            existing_messages=context.existing_messages,
+        )
+
+    def send(self, draft: ComposeDraft) -> None:
+        self.client.send(self.account, draft)
+
+    def fetch_body(self, message: dict[str, Any]) -> dict[str, Any]:
+        return self.client.fetch_body(self.account, message)
+
+    def message_attachments(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        attachments = normalize_attachments(message.get("attachments"))
+        if attachments:
+            return attachments
+        fetched = self.fetch_body(message)
+        attachments = normalize_attachments(fetched.get("attachments"))
+        if attachments:
+            self.mail.update_message(str(message.get("key") or ""), {"attachments": attachments, "has_attachment": True})
+        return attachments
+
+    def attachment_data(self, message: dict[str, Any], attachment: dict[str, Any]) -> bytes:
+        return self.client.download_blob(self.account, message, attachment)
+
+    def set_message_spam(self, message: dict[str, Any], spam: bool) -> None:
+        self.client.set_message_spam(self.account, message, spam)
+
+    def trash_message(self, message: dict[str, Any]) -> None:
+        self.client.trash_message(self.account, message)
+
+
+class ImapAccountReceiver(MailReceiverBackend):
+    mutable = False
+
+    def __init__(self, account: Account, client: ImapClient, mail: MailStore):
+        self.account = account
+        self.client = client
+        self.mail = mail
+
+    def verify(self) -> int:
+        return self.client.verify_account(self.account)
+
+    def sync(self, context: SyncContext) -> SyncResult:
+        return self.client.sync_account(
+            self.account,
+            context.page_size,
+            progress=context.progress,
+            message_sink=context.message_sink,
+            raw_message_sink=context.raw_message_sink,
+            sync_state=context.sync_state,
+            existing_messages=context.existing_messages,
+        )
+
+    def fetch_body(self, message: dict[str, Any]) -> dict[str, Any]:
+        cached = self.mail.body_from_message(message)
+        if cached is None:
+            raise MuratError("mail not on disk; sync first")
+        return cached
+
+    def message_attachments(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        attachments = normalize_attachments(message.get("attachments"))
+        if attachments:
+            return attachments
+        raw_eml = self.mail.eml_bytes_from_message(message)
+        if raw_eml is None:
+            return []
+        attachments = eml_attachments(raw_eml)
+        if attachments:
+            self.mail.update_message(str(message.get("key") or ""), {"attachments": attachments, "has_attachment": True})
+        return attachments
+
+    def attachment_data(self, message: dict[str, Any], attachment: dict[str, Any]) -> bytes:
+        raw_eml = self.mail.eml_bytes_from_message(message)
+        if raw_eml is None:
+            raise MuratError("mail not on disk; sync first")
+        return eml_attachment_data(raw_eml, attachment)
+
+    def set_message_spam(self, message: dict[str, Any], spam: bool) -> None:
+        raise MuratError("IMAP accounts are read-only in murat")
+
+    def trash_message(self, message: dict[str, Any]) -> None:
+        raise MuratError("IMAP accounts are read-only in murat")
+
+
+class SmtpAccountSender(MailSenderBackend):
+    def __init__(self, account: Account, client: SmtpClient):
+        self.account = account
+        self.client = client
+
+    def verify(self) -> None:
+        self.client.verify_account(self.account)
+
+    def send(self, draft: ComposeDraft) -> None:
+        self.client.send(self.account, draft)
+
+
+class AccountBackendFactory:
+    def __init__(self, mail: MailStore, jmap: JmapClient, imap: ImapClient, smtp: SmtpClient):
+        self.mail = mail
+        self.jmap = jmap
+        self.imap = imap
+        self.smtp = smtp
+
+    def bind(self, account: Account) -> Account:
+        protocol = account_protocol(account)
+        if protocol == "jmap":
+            backend = JmapAccountBackend(account, self.jmap, self.mail)
+            return account.bind(receiver=backend, sender=backend)
+        if protocol == "imap":
+            receiver = ImapAccountReceiver(account, self.imap, self.mail)
+            sender = SmtpAccountSender(account, self.smtp) if account.smtp_host else None
+            return account.bind(receiver=receiver, sender=sender)
+        raise MuratError(f"{account.email}: unsupported account protocol: {account.protocol}")
+
+
+class AccountRegistry:
+    def __init__(self, store: AccountsStore, backend_factory: AccountBackendFactory):
+        self.store = store
+        self.backend_factory = backend_factory
+
+    def bind(self, account: Account) -> Account:
+        return self.backend_factory.bind(account)
+
+    def all(self) -> list[Account]:
+        return [self.bind(account) for account in self.store.all()]
+
+    def save_all(self, accounts: list[Account]) -> None:
+        self.store.save_all(accounts)
+
+    def upsert(self, account: Account) -> None:
+        self.store.upsert(account)
+
+    def remove(self, account_id: str) -> bool:
+        return self.store.remove(account_id)
+
+    def discover_jmap_session_url(self, email_addr: str) -> str:
+        return self.backend_factory.jmap.discover_session_url(email_addr)
 
 
 def response_args(response: dict[str, Any], call_id: str) -> dict[str, Any]:
@@ -1553,7 +2686,7 @@ def normalize_message(
     trash_mailboxes: set[str],
 ) -> dict[str, Any]:
     message_id = str(message.get("id") or "")
-    key = f"{account.id}:{urllib.parse.quote(jmap_account_id, safe='')}:{urllib.parse.quote(message_id, safe='')}"
+    key = jmap_message_key(account, jmap_account_id, message_id)
     keywords = message.get("keywords") if isinstance(message.get("keywords"), dict) else {}
     mailbox_ids = list((message.get("mailboxIds") or {}).keys()) if isinstance(message.get("mailboxIds"), dict) else []
     tags = sorted({paths.get(mailbox_id, mailbox_id) for mailbox_id in mailbox_ids if paths.get(mailbox_id, mailbox_id)})
@@ -1568,6 +2701,7 @@ def normalize_message(
         "id": message_id,
         "account_id": account.id,
         "account_email": account.email,
+        "protocol": "jmap",
         "jmap_account_id": jmap_account_id,
         "mailbox_ids": mailbox_ids,
         "tags": tags,
@@ -1589,21 +2723,29 @@ def normalize_message(
     }
 
 
+def jmap_message_key(account: Account, jmap_account_id: str, message_id: str) -> str:
+    return f"{account.id}:{urllib.parse.quote(jmap_account_id, safe='')}:{urllib.parse.quote(str(message_id), safe='')}"
+
+
 def normalize_attachments(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     out = []
     for item in value:
-        if not isinstance(item, dict) or not isinstance(item.get("blobId"), str):
+        if not isinstance(item, dict):
             continue
-        out.append(
-            {
-                "blobId": str(item.get("blobId") or ""),
-                "name": str(item.get("name") or item.get("blobId") or "attachment"),
-                "type": str(item.get("type") or "application/octet-stream"),
-                "size": item.get("size") if isinstance(item.get("size"), int) else None,
-            }
-        )
+        entry = {
+            "name": str(item.get("name") or item.get("blobId") or "attachment"),
+            "type": str(item.get("type") or "application/octet-stream"),
+            "size": item.get("size") if isinstance(item.get("size"), int) else None,
+        }
+        if isinstance(item.get("blobId"), str):
+            entry["blobId"] = str(item.get("blobId") or "")
+        elif isinstance(item.get("part"), str):
+            entry["part"] = str(item.get("part") or "")
+        else:
+            continue
+        out.append(entry)
     return out
 
 
@@ -2029,9 +3171,8 @@ class Services:
     paths: Paths
     config: dict[str, Any]
     key_provider: SymmetricKeyProvider
-    accounts: AccountsStore
+    accounts: AccountRegistry
     mail: MailStore
-    jmap: JmapClient
 
 
 def build_services() -> Services:
@@ -2050,14 +3191,38 @@ def build_services() -> Services:
         key_provider,
         {"version": 1, "search_index": {}},
     )
+    jmap = JmapClient()
+    imap = ImapClient()
+    smtp = SmtpClient()
+    mail = EncryptedJsonMailStore(mail_file, search_file, key_provider, paths.data_dir / "eml")
+    account_store = AccountsStore(accounts_file)
+    account_factory = AccountBackendFactory(mail, jmap, imap, smtp)
     return Services(
         paths=paths,
         config=config,
         key_provider=key_provider,
-        accounts=AccountsStore(accounts_file),
-        mail=EncryptedJsonMailStore(mail_file, search_file, key_provider, paths.data_dir / "eml"),
-        jmap=JmapClient(),
+        accounts=AccountRegistry(account_store, account_factory),
+        mail=mail,
     )
+
+
+def sync_account_with_services(
+    services: Services,
+    account: Account,
+    page_size: int,
+    progress: Any = None,
+    message_sink: Any = None,
+    raw_message_sink: Any = None,
+) -> SyncResult:
+    context = SyncContext(
+        page_size=page_size,
+        progress=progress,
+        message_sink=message_sink,
+        raw_message_sink=raw_message_sink,
+        sync_state=services.mail.sync_state(account.id),
+        existing_messages=services.mail.account_messages(account.id, with_eml=True),
+    )
+    return account.sync(context)
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -2083,8 +3248,71 @@ def cmd_account_add(_args: argparse.Namespace) -> None:
     email_addr = prompt("Email")
     default_name = email_addr.split("@", 1)[0]
     name = prompt("Display name", default_name)
+    protocol = prompt_choice("Protocol", ["jmap", "imap"], "jmap").lower()
+    if protocol in ("imap", "imaps"):
+        host = prompt("IMAPS host", default_imap_host(email_addr))
+        port_text = prompt("IMAPS port", "993")
+        try:
+            port = int(port_text)
+        except ValueError as error:
+            raise MuratError("IMAPS port must be a number") from error
+        if port < 1 or port > 65535:
+            raise MuratError("IMAPS port must be 1-65535")
+        mailbox = prompt("IMAP mailbox", "INBOX")
+        username = prompt("Username", email_addr)
+        secret = getpass.getpass("Password: ")
+        smtp_host = prompt("SMTPS host", default_smtp_host(email_addr))
+        smtp_port_text = prompt("SMTPS port", "465")
+        try:
+            smtp_port = int(smtp_port_text)
+        except ValueError as error:
+            raise MuratError("SMTPS port must be a number") from error
+        if smtp_port < 1 or smtp_port > 65535:
+            raise MuratError("SMTPS port must be 1-65535")
+        smtp_username = prompt("SMTPS username", username)
+        smtp_secret = getpass.getpass("SMTPS password (blank = IMAP password): ") or secret
+        if not host:
+            raise MuratError("IMAPS host required")
+        if not mailbox:
+            raise MuratError("IMAP mailbox required")
+        if not secret:
+            raise MuratError("password required")
+        if not smtp_host:
+            raise MuratError("SMTPS host required")
+        if not smtp_secret:
+            raise MuratError("SMTPS password required")
+        created_at = now_utc()
+        account = Account(
+            id=stable_imap_account_id(email_addr, username, host, port, mailbox),
+            name=name,
+            email=email_addr,
+            username=username,
+            session_url="",
+            auth_kind="password",
+            secret=secret,
+            protocol="imap",
+            imap_host=host,
+            imap_port=port,
+            imap_mailbox=mailbox,
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_username=smtp_username,
+            smtp_secret=smtp_secret,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        account = services.accounts.bind(account)
+        print("connecting IMAPS...", file=sys.stderr)
+        count = account.require_receiver().verify()
+        print("connecting SMTPS...", file=sys.stderr)
+        account.require_sender().verify()
+        services.accounts.upsert(account)
+        print(f"added {account.email} ({account.id}, {count} messages in {mailbox})")
+        return
+    if protocol != "jmap":
+        raise MuratError("protocol must be jmap or imap")
     session_url = prompt("JMAP session URL override (blank = auto)")
-    auth_kind = prompt("Auth kind [bearer/basic]", "bearer").lower()
+    auth_kind = prompt_choice("Auth kind", ["bearer", "basic"], "bearer").lower()
     if auth_kind not in ("bearer", "basic"):
         raise MuratError("auth kind must be bearer or basic")
     username = email_addr if auth_kind == "basic" else ""
@@ -2102,6 +3330,7 @@ def cmd_account_add(_args: argparse.Namespace) -> None:
         session_url=session_url,
         auth_kind=auth_kind,
         secret=secret,
+        protocol="jmap",
         created_at=created_at,
         updated_at=created_at,
     )
@@ -2109,11 +3338,12 @@ def cmd_account_add(_args: argparse.Namespace) -> None:
         account.session_url = session_url
     else:
         print("discovering JMAP session...", file=sys.stderr)
-        account.session_url = services.jmap.discover_session_url(email_addr)
+        account.session_url = services.accounts.discover_jmap_session_url(email_addr)
         print(f"found {account.session_url}", file=sys.stderr)
 
+    account = services.accounts.bind(account)
     try:
-        session = services.jmap.fetch_session(account)
+        session = account.require_receiver().verify()
     except MuratError as error:
         message = str(error)
         if "HTTP 401" in message:
@@ -2122,8 +3352,6 @@ def cmd_account_add(_args: argparse.Namespace) -> None:
                 "If using mailbox password, rerun and choose auth kind basic; bearer expects a token."
             ) from error
         raise
-    if CAP_MAIL not in session.capabilities or not session.primary_mail_account_id:
-        raise MuratError("server does not advertise JMAP Mail")
     account.id = stable_account_id(email_addr, account.session_url)
     account.primary_mail_account_id = session.primary_mail_account_id
     services.accounts.upsert(account)
@@ -2136,7 +3364,7 @@ def cmd_account_list(_args: argparse.Namespace) -> None:
         print("no accounts")
         return
     for account in accounts:
-        print(f"{account.id}\t{account.email}\t{account.session_url}\t{account.auth_kind}")
+        print(f"{account.id}\t{account.email}\t{account_protocol(account)}\t{account_endpoint(account)}\t{account.auth_kind}")
 
 
 def cmd_account_remove(args: argparse.Namespace) -> None:
@@ -2155,11 +3383,13 @@ def cmd_sync(args: argparse.Namespace) -> None:
         raise MuratError("no accounts; run `murat account add`")
     page_size = int(config_value(services.config, "ui", "page_size", 50))
     for account in accounts:
-        result = services.jmap.sync_account(
+        result = sync_account_with_services(
+            services,
             account,
             page_size,
             progress=lambda message: print(message, file=sys.stderr),
             message_sink=services.mail.write_message_eml,
+            raw_message_sink=services.mail.write_raw_message_eml,
         )
         services.mail.save_sync(result)
         print(f"{account.email}: {len(result.messages)} messages, {len(result.mailboxes)} tags")
@@ -2170,17 +3400,18 @@ def cmd_compose(_args: argparse.Namespace) -> None:
     accounts = services.accounts.all()
     if not accounts:
         raise MuratError("no accounts; run `murat account add`")
-    draft = edit_compose(services, accounts[0], ComposeDraft(accounts[0].id, "", "", "", "", ""))
+    account = default_send_account(accounts)
+    draft = edit_compose(services, account, ComposeDraft(account.id, "", "", "", "", ""))
     print(format_draft_preview(draft))
-    choice = prompt("Send? [y/N/draft]", "n").lower()
+    choice = prompt_choice("Send?", ["y", "n", "draft"], "n").lower()
     if choice in ("y", "yes"):
-        options = prompt_pgp_options_cli(services.config, accounts[0], draft)
-        outgoing, pgp_status = transform_draft_pgp(services.config, accounts[0], draft, options)
+        options = prompt_pgp_options_cli(services.config, account, draft)
+        outgoing, pgp_status = transform_draft_pgp(services.config, account, draft, options)
         if pgp_attach_public_key(services.config, options):
-            outgoing = attach_public_key(services.config, accounts[0], outgoing, options)
+            outgoing = attach_public_key(services.config, account, outgoing, options)
         if pgp_status:
             print(pgp_status, file=sys.stderr)
-        services.jmap.send(accounts[0], outgoing)
+        account.send(outgoing)
         print("sent")
     elif choice in ("d", "draft"):
         services.mail.save_draft(draft)
@@ -2208,7 +3439,7 @@ def prompt_pgp_options_cli(config: dict[str, Any], account: Account, draft: Comp
 
 
 def prompt_bool(label: str, default: bool) -> bool:
-    value = prompt(f"{label} (y/n)", "y" if default else "n").lower()
+    value = prompt_choice(label, ["y", "n"], "y" if default else "n").lower()
     return value in ("y", "yes", "true", "1", "on")
 
 
@@ -2236,15 +3467,108 @@ def prompt(label: str, default: str = "") -> str:
     return value or default
 
 
+def prompt_choice(label: str, choices: list[str], default: str = "") -> str:
+    choices = [choice for choice in choices if choice]
+    if not choices:
+        return default
+    if default not in choices:
+        default = choices[0]
+    if not sys.stdin.isatty():
+        return default
+    fd = sys.stdin.fileno()
+    old_attrs = termios.tcgetattr(fd)
+    index = choices.index(default)
+    typed = ""
+
+    def render() -> None:
+        current = typed or choices[index]
+        options = "/".join(choices)
+        sys.stdout.write(f"\r\033[K{label} [{options}] tab=cycle enter=ok: {current}")
+        sys.stdout.flush()
+
+    try:
+        tty.setraw(fd)
+        render()
+        while True:
+            ch = sys.stdin.read(1)
+            if ch == "":
+                raise EOFError
+            if ch == "\x03":
+                raise KeyboardInterrupt
+            if ch in ("\r", "\n"):
+                if typed:
+                    match = choice_match(typed, choices)
+                    if match is None:
+                        sys.stdout.write("\a")
+                        sys.stdout.flush()
+                        continue
+                    sys.stdout.write("\r\n")
+                    return match
+                sys.stdout.write("\r\n")
+                return choices[index]
+            if ch == "\t":
+                typed = ""
+                index = (index + 1) % len(choices)
+                render()
+                continue
+            if ch in ("\x7f", "\b"):
+                typed = typed[:-1]
+                render()
+                continue
+            if ch == "\x1b":
+                continue
+            if ch.isprintable():
+                typed += ch
+                render()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+
+
+def choice_match(value: str, choices: list[str]) -> str | None:
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    lowered = {choice.lower(): choice for choice in choices}
+    aliases = {"yes": "y", "true": "y", "1": "y", "no": "n", "false": "n", "0": "n"}
+    alias = aliases.get(normalized)
+    if alias and alias in lowered:
+        return lowered[alias]
+    if normalized in lowered:
+        return lowered[normalized]
+    matches = [choice for choice in choices if choice.lower().startswith(normalized)]
+    return matches[0] if len(matches) == 1 else None
+
+
 def session_url_for_email(email_addr: str) -> str:
     domain = domain_from_email(email_addr)
     return f"https://{domain}/.well-known/jmap"
+
+
+def default_imap_host(email_addr: str) -> str:
+    try:
+        return f"imap.{domain_from_email(email_addr)}"
+    except MuratError:
+        return ""
+
+
+def default_smtp_host(email_addr: str) -> str:
+    try:
+        return f"smtp.{domain_from_email(email_addr)}"
+    except MuratError:
+        return ""
 
 
 def stable_account_id(email_addr: str, session_url: str) -> str:
     digest = hashlib.sha256(f"{email_addr}\0{session_url}".encode()).hexdigest()[:12]
     name = re.sub(r"[^a-z0-9]+", "-", email_addr.lower()).strip("-")[:30]
     return f"{name}-{digest}"
+
+
+def stable_imap_account_id(email_addr: str, username: str, host: str, port: int, mailbox: str) -> str:
+    endpoint = f"imaps://{username}@{host}:{port}/{mailbox}"
+    digest = hashlib.sha256(f"{email_addr}\0{endpoint}".encode()).hexdigest()[:12]
+    name = re.sub(r"[^a-z0-9]+", "-", email_addr.lower()).strip("-")[:30]
+    return f"{name}-imap-{digest}"
 
 
 def editor_command(config: dict[str, Any]) -> list[str]:
@@ -2254,11 +3578,15 @@ def editor_command(config: dict[str, Any]) -> list[str]:
 
 
 def edit_compose(services: Services, account: Account, draft: ComposeDraft) -> ComposeDraft:
+    return edit_compose_with_config(services.config, account, draft)
+
+
+def edit_compose_with_config(config: dict[str, Any], account: Account, draft: ComposeDraft) -> ComposeDraft:
     fd, path = tempfile.mkstemp(prefix="murat-compose.", suffix=".txt")
     os.close(fd)
     try:
         Path(path).write_text(compose_template(account, draft))
-        subprocess.run(editor_command(services.config) + [path], check=False)
+        subprocess.run(editor_command(config) + [path], check=False)
         return parse_compose(account.id, Path(path).read_text())
     finally:
         try:
@@ -2539,10 +3867,138 @@ COLOR_NAMES = {
 }
 
 
+class TuiMessageRepository:
+    def __init__(self, mail: MailStore):
+        self.mail = mail
+        self.lock = threading.RLock()
+
+    def messages(self, include_spam: bool = False) -> list[dict[str, Any]]:
+        with self.lock:
+            return self.mail.messages(include_spam=include_spam)
+
+    def search(self, query: str, include_spam: bool = False) -> list[dict[str, Any]]:
+        with self.lock:
+            return self.mail.search(query, include_spam=include_spam)
+
+    def body_from_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        with self.lock:
+            return self.mail.body_from_message(message)
+
+    def save_draft(self, draft: ComposeDraft) -> None:
+        with self.lock:
+            self.mail.save_draft(draft)
+
+    def save_sync(self, result: SyncResult) -> None:
+        with self.lock:
+            self.mail.save_sync(result)
+
+    def update_message(self, message_key: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        with self.lock:
+            return self.mail.update_message(message_key, updates)
+
+    def write_message_eml(self, message: dict[str, Any], body: str) -> str:
+        with self.lock:
+            return self.mail.write_message_eml(message, body)
+
+    def write_raw_message_eml(self, message: dict[str, Any], eml: bytes) -> str:
+        with self.lock:
+            return self.mail.write_raw_message_eml(message, eml)
+
+    def sync_context(self, account: Account, page_size: int, progress: Any = None) -> SyncContext:
+        return SyncContext(
+            page_size=page_size,
+            progress=progress,
+            message_sink=self.write_message_eml,
+            raw_message_sink=self.write_raw_message_eml,
+            sync_state=self.sync_state(account.id),
+            existing_messages=self.account_messages(account.id),
+        )
+
+    def sync_state(self, account_id: str) -> dict[str, Any]:
+        with self.lock:
+            return self.mail.sync_state(account_id)
+
+    def account_messages(self, account_id: str) -> list[dict[str, Any]]:
+        with self.lock:
+            return self.mail.account_messages(account_id, with_eml=True)
+
+
+class TuiSyncService:
+    def __init__(self, messages: TuiMessageRepository):
+        self.messages = messages
+
+    def sync_account(self, account: Account, page_size: int, progress: Any = None) -> SyncResult:
+        return account.sync(self.messages.sync_context(account, page_size, progress=progress))
+
+    def save_result(self, result: SyncResult) -> None:
+        self.messages.save_sync(result)
+
+
+class TuiComposer:
+    def __init__(self, config: dict[str, Any]):
+        self.config = config
+
+    def edit(self, account: Account, draft: ComposeDraft) -> ComposeDraft:
+        return edit_compose_with_config(self.config, account, draft)
+
+
+class TuiPgpService:
+    def __init__(self, config: dict[str, Any]):
+        self.config = config
+
+    def default_options(self, account: Account) -> PgpSendOptions:
+        return default_pgp_options(self.config, account)
+
+    def process_body(self, body: str) -> tuple[str, str | None, bool]:
+        return process_pgp_body(self.config, body)
+
+    def transform(self, account: Account, draft: ComposeDraft, options: PgpSendOptions) -> tuple[ComposeDraft, str | None]:
+        return transform_draft_pgp(self.config, account, draft, options)
+
+    def should_attach_public_key(self, options: PgpSendOptions) -> bool:
+        return pgp_attach_public_key(self.config, options)
+
+    def attach_public_key(self, account: Account, draft: ComposeDraft, options: PgpSendOptions) -> ComposeDraft:
+        return attach_public_key(self.config, account, draft, options)
+
+    def missing_recipients(self, account: Account, draft: ComposeDraft, options: PgpSendOptions) -> list[str]:
+        return missing_pgp_recipients(account, draft, options)
+
+    def resolve_recipients(self, recipients: list[str]) -> list[str]:
+        return resolve_pgp_recipients(recipients)
+
+
+@dataclass
+class TuiDependencies:
+    config: dict[str, Any]
+    accounts: list[Account]
+    messages: TuiMessageRepository
+    sync: TuiSyncService
+    composer: TuiComposer
+    pgp: TuiPgpService
+
+    @classmethod
+    def from_services(cls, services: Services) -> "TuiDependencies":
+        messages = TuiMessageRepository(services.mail)
+        return cls(
+            config=services.config,
+            accounts=services.accounts.all(),
+            messages=messages,
+            sync=TuiSyncService(messages),
+            composer=TuiComposer(services.config),
+            pgp=TuiPgpService(services.config),
+        )
+
+
 class TuiApp:
-    def __init__(self, services: Services):
-        self.services = services
-        self.accounts = services.accounts.all()
+    def __init__(self, deps: TuiDependencies):
+        self.deps = deps
+        self.config = deps.config
+        self.messages_repo = deps.messages
+        self.sync_service = deps.sync
+        self.composer = deps.composer
+        self.pgp = deps.pgp
+        self.accounts = deps.accounts
         self.account_filter = 0
         self.filter_kind = ""
         self.filter_query = ""
@@ -2565,25 +4021,23 @@ class TuiApp:
         self.running = True
         self.events: queue.Queue[tuple[str, str, bool]] = queue.Queue()
         self.active_tasks: set[str] = set()
-        self.store_lock = threading.Lock()
         self.colors_enabled = False
         self.list_area = (1, 0, 0, 0)
         self.body_area = (1, 0, 0, 0)
-        self.keys = services.config.get("keys", {})
+        self.keys = self.config.get("keys", {})
         if not isinstance(self.keys, dict):
             self.keys = {}
         self.refresh_messages()
 
     def refresh_messages(self) -> None:
-        with self.store_lock:
-            self.messages = self.filtered_messages()
+        self.messages = self.filtered_messages()
         self.selected = max(0, min(len(self.messages) - 1, self.selected)) if self.messages else 0
         self.list_scroll = min(self.list_scroll, self.selected)
 
     def filtered_messages(self) -> list[dict[str, Any]]:
         if self.filter_kind == "search" and self.filter_query:
-            return self.services.mail.search(self.filter_query, include_spam=False)
-        messages = self.services.mail.messages(include_spam=self.filter_kind == "spam")
+            return self.messages_repo.search(self.filter_query, include_spam=False)
+        messages = self.messages_repo.messages(include_spam=self.filter_kind == "spam")
         if self.filter_kind == "spam":
             return [message for message in messages if message.get("spam")]
         if self.filter_kind == "read":
@@ -2954,7 +4408,16 @@ class TuiApp:
             items.append("R reply-all")
         if message.get("has_attachment") or message.get("attachments"):
             items.append("a attach")
-        items.extend(["f forward", "h headers", "t trash", "s not-spam" if message.get("spam") else "s spam", "esc back"])
+        items.extend(["f forward", "h headers"])
+        try:
+            mutable = self.account_for(str(message.get("account_id") or "")).can_mutate_mail()
+        except MuratError:
+            mutable = False
+        if mutable:
+            items.extend(["t trash", "s not-spam" if message.get("spam") else "s spam"])
+        else:
+            items.append("readonly")
+        items.append("esc back")
         return "  ".join(items)
 
     def clear_filter_view(self) -> None:
@@ -3110,12 +4573,11 @@ class TuiApp:
         message = self.current_message(visible)
         if not message:
             return
-        with self.store_lock:
-            cached = self.services.mail.body_from_message(message)
+        cached = self.messages_repo.body_from_message(message)
         if cached is None:
             self.set_status("mail not on disk; sync first", error=True)
             return
-        body, status, error = process_pgp_body(self.services.config, str(cached.get("body") or ""))
+        body, status, error = self.pgp.process_body(str(cached.get("body") or ""))
         self.preview_key = str(message["key"])
         self.preview_message = dict(message)
         self.preview_body = body
@@ -3127,8 +4589,7 @@ class TuiApp:
             self.set_status(status, error=error)
 
     def show_message_headers(self, message: dict[str, Any]) -> None:
-        with self.store_lock:
-            cached = self.services.mail.body_from_message(message)
+        cached = self.messages_repo.body_from_message(message)
         if cached is None:
             self.set_status("mail not on disk; sync first", error=True)
             return
@@ -3182,18 +4643,10 @@ class TuiApp:
                 return
 
     def message_attachments(self, account: Account, message: dict[str, Any]) -> list[dict[str, Any]]:
-        attachments = normalize_attachments(message.get("attachments"))
-        if attachments:
-            return attachments
-        fetched = self.services.jmap.fetch_body(account, message)
-        attachments = normalize_attachments(fetched.get("attachments"))
-        if attachments:
-            with self.store_lock:
-                self.services.mail.update_message(str(message.get("key") or ""), {"attachments": attachments, "has_attachment": True})
-        return attachments
+        return account.message_attachments(message)
 
     def attachment_data(self, account: Account, message: dict[str, Any], attachment: dict[str, Any]) -> bytes:
-        return self.services.jmap.download_blob(account, message, attachment)
+        return account.attachment_data(message, attachment)
 
     def view_attachment(self, account: Account, message: dict[str, Any], attachment: dict[str, Any]) -> None:
         data = self.attachment_data(account, message, attachment)
@@ -3242,17 +4695,12 @@ class TuiApp:
 
     def sync(self) -> None:
         def task() -> None:
-            page_size = int(config_value(self.services.config, "ui", "page_size", 50))
+            page_size = int(config_value(self.config, "ui", "page_size", 50))
             total = 0
             for account in self.accounts:
-                def sink(message: dict[str, Any], body: str) -> str:
-                    with self.store_lock:
-                        return self.services.mail.write_message_eml(message, body)
-
-                result = self.services.jmap.sync_account(account, page_size, progress=self.post_status, message_sink=sink)
+                result = self.sync_service.sync_account(account, page_size, progress=self.post_status)
                 self.post_status(f"{account.email}: encrypting local store")
-                with self.store_lock:
-                    self.services.mail.save_sync(result)
+                self.sync_service.save_result(result)
                 total += len(result.messages)
                 self.post_refresh()
             self.post_status(f"synced {total} messages")
@@ -3279,7 +4727,7 @@ class TuiApp:
         if not self.accounts:
             self.set_status("no accounts; run `murat account add`", error=True)
             return
-        account = self.account_for(str(source.get("account_id"))) if source else self.accounts[0]
+        account = self.account_for(str(source.get("account_id"))) if source else default_send_account(self.accounts)
         if source:
             body = self.message_body_for_compose(source)
             if body is None:
@@ -3287,12 +4735,12 @@ class TuiApp:
             draft = forward_draft(account, source, body) if forward else reply_draft(account, source, body, reply_all=reply_all)
         else:
             draft = ComposeDraft(account.id, "", "", "", "", "")
-        pgp_options = default_pgp_options(self.services.config, account)
+        pgp_options = self.pgp.default_options(account)
         while True:
             curses.def_prog_mode()
             curses.endwin()
             try:
-                draft = edit_compose(self.services, account, draft)
+                draft = self.composer.edit(account, draft)
             finally:
                 curses.reset_prog_mode()
                 stdscr.keypad(True)
@@ -3311,7 +4759,7 @@ class TuiApp:
                 self.send_async(account, draft, options)
                 return
             if choice == "draft":
-                self.services.mail.save_draft(draft)
+                self.messages_repo.save_draft(draft)
                 self.set_status("saved local encrypted draft")
                 return
             self.set_status("compose cancelled")
@@ -3320,12 +4768,11 @@ class TuiApp:
     def message_body_for_compose(self, message: dict[str, Any]) -> str | None:
         if self.preview_key == message.get("key") and self.preview_body:
             return self.preview_body
-        with self.store_lock:
-            cached = self.services.mail.body_from_message(message)
+        cached = self.messages_repo.body_from_message(message)
         if cached is None:
             self.set_status("mail not on disk; sync first", error=True)
             return None
-        body, status, error = process_pgp_body(self.services.config, str(cached.get("body") or ""))
+        body, status, error = self.pgp.process_body(str(cached.get("body") or ""))
         if status:
             self.set_status(status, error=error)
         return body
@@ -3333,17 +4780,17 @@ class TuiApp:
     def send_async(self, account: Account, draft: ComposeDraft, options: PgpSendOptions) -> None:
         def task() -> None:
             outgoing = draft
-            outgoing, pgp_status = transform_draft_pgp(self.services.config, account, outgoing, options)
-            if pgp_attach_public_key(self.services.config, options):
-                outgoing = attach_public_key(self.services.config, account, outgoing, options)
+            outgoing, pgp_status = self.pgp.transform(account, outgoing, options)
+            if self.pgp.should_attach_public_key(options):
+                outgoing = self.pgp.attach_public_key(account, outgoing, options)
             self.post_status(pgp_status or f"sending to {outgoing.to}")
-            self.services.jmap.send(account, outgoing)
+            account.send(outgoing)
             self.post_status("sent")
 
         self.start_task("send", task)
 
     def confirm_pgp_options(self, stdscr: Any, account: Account, draft: ComposeDraft, options: PgpSendOptions | None = None) -> PgpSendOptions | None:
-        options = options or default_pgp_options(self.services.config, account)
+        options = options or self.pgp.default_options(account)
         if not options.enabled:
             return options
         message = ""
@@ -3386,9 +4833,9 @@ class TuiApp:
                 self.set_status("send cancelled")
                 return None
             elif token == "enter":
-                missing = missing_pgp_recipients(account, draft, options)
+                missing = self.pgp.missing_recipients(account, draft, options)
                 if missing and self.confirm_yes_no(stdscr, f"fetch missing PGP keys via WKD/keyserver? {', '.join(missing)}"):
-                    unresolved = resolve_pgp_recipients(missing)
+                    unresolved = self.pgp.resolve_recipients(missing)
                     if unresolved:
                         message = f"still missing: {', '.join(unresolved)}"
                         continue
@@ -3408,11 +4855,10 @@ class TuiApp:
 
         def task() -> None:
             self.post_status("moving to trash")
-            self.services.jmap.trash_message(account, message)
+            account.trash_message(message)
             tags = {str(item) for item in message.get("tags", []) if isinstance(item, str)}
             tags.add("trash")
-            with self.store_lock:
-                self.services.mail.update_message(message_key, {"trashed": True, "tags": sorted(tags)})
+            self.messages_repo.update_message(message_key, {"trashed": True, "tags": sorted(tags)})
             self.post_refresh()
             self.post_status("moved to trash")
 
@@ -3427,14 +4873,13 @@ class TuiApp:
 
         def task() -> None:
             self.post_status("marking spam" if target else "marking not spam")
-            self.services.jmap.set_message_spam(account, message, target)
+            account.set_message_spam(message, target)
             tags = {str(item) for item in message.get("tags", []) if isinstance(item, str)}
             if target:
                 tags.add("spam")
             else:
                 tags.discard("spam")
-            with self.store_lock:
-                self.services.mail.update_message(message_key, {"spam": target, "tags": sorted(tags)})
+            self.messages_repo.update_message(message_key, {"spam": target, "tags": sorted(tags)})
             self.post_refresh()
             self.post_status("marked spam" if target else "marked not spam")
 
@@ -3498,7 +4943,7 @@ class TuiApp:
         body_height = height - 3
         visible = self.visible_messages()
         if self.preview_key:
-            split = str(config_value(self.services.config, "ui", "split", "vertical"))
+            split = str(config_value(self.config, "ui", "split", "vertical"))
             if split == "vertical":
                 top = max(1, body_height // 3)
                 bottom = max(0, body_height - top - 1)
@@ -4038,11 +5483,11 @@ def cmd_tui(_args: argparse.Namespace) -> None:
         services.mail.warm_crypto()
     except MuratError as error:
         raise MuratError(f"not initialized: {error}") from error
-    curses.wrapper(TuiApp(services).run)
+    curses.wrapper(TuiApp(TuiDependencies.from_services(services)).run)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="murat: standalone JMAP-only TUI mail user agent")
+    parser = argparse.ArgumentParser(description="murat: standalone JMAP/IMAPS TUI mail user agent")
     sub = parser.add_subparsers(dest="command")
 
     init = sub.add_parser("init", help="initialize encrypted storage")
@@ -4051,11 +5496,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     account = sub.add_parser("account", help="manage encrypted accounts")
     account_sub = account.add_subparsers(dest="account_command", required=True)
-    account_add = account_sub.add_parser("add", help="add JMAP account")
+    account_add = account_sub.add_parser("add", help="add JMAP or IMAPS account")
     account_add.set_defaults(func=cmd_account_add)
-    account_list = account_sub.add_parser("list", help="list JMAP accounts")
+    account_list = account_sub.add_parser("list", help="list accounts")
     account_list.set_defaults(func=cmd_account_list)
-    account_remove = account_sub.add_parser("remove", help="remove JMAP account")
+    account_remove = account_sub.add_parser("remove", help="remove account")
     account_remove.add_argument("account_id")
     account_remove.set_defaults(func=cmd_account_remove)
 
