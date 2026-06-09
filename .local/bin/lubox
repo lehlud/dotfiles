@@ -1681,9 +1681,10 @@ class ContainerManager:
             xp = pathlib.Path(xauth)
             if xp.exists() and not path_under(xp, self.ident.home):
                 args += ["--mount", f"type=bind,src={xp},dst={xp},readonly"]
-        if os.environ.get("WAYLAND_DISPLAY") and os.environ.get("XDG_RUNTIME_DIR"):
-            xr = pathlib.Path(os.environ["XDG_RUNTIME_DIR"])
-            if xr.exists():
+        runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+        if runtime_dir:
+            xr = pathlib.Path(runtime_dir)
+            if xr.is_dir():
                 args += ["--mount", f"type=bind,src={xr},dst={xr}"]
         if pathlib.Path("/dev/dri").exists():
             args += ["--device", "/dev/dri"]

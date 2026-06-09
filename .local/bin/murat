@@ -199,6 +199,17 @@ class ComposeDraft:
 
 
 @dataclass
+class PgpSendOptions:
+    enabled: bool
+    sign: bool
+    encrypt: bool
+    encrypt_to_self: bool
+    attach_public_key: bool
+    sign_key: str
+    public_key: str
+
+
+@dataclass
 class SendIdentity:
     id: str
     email: str
@@ -1061,6 +1072,20 @@ class JmapClient:
         payload.setdefault("size", len(attachment.data))
         return payload
 
+    def download_blob(self, account: Account, message: dict[str, Any], attachment: dict[str, Any]) -> bytes:
+        session, account_id = self.message_session(account, message)
+        if not session.download_url:
+            raise MuratError("server did not advertise JMAP downloadUrl")
+        url = expand_download_url(session.download_url, account_id, attachment)
+        request = urllib.request.Request(url, headers={"Authorization": account.auth_header()})
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            raise MuratError(http_error_message(error, url)) from error
+        except urllib.error.URLError as error:
+            raise MuratError(f"JMAP download failed for {url}: {error.reason}") from error
+
     def http_json(self, method: str, url: str, auth_header: str | None, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         data = None if payload is None else json.dumps(payload).encode()
         headers = {"Accept": "application/json"}
@@ -1378,6 +1403,19 @@ def expand_upload_url(template: str, account_id: str) -> str:
     return template.replace("{accountId}", urllib.parse.quote(account_id, safe=""))
 
 
+def expand_download_url(template: str, account_id: str, attachment: dict[str, Any]) -> str:
+    replacements = {
+        "accountId": account_id,
+        "blobId": str(attachment.get("blobId") or ""),
+        "name": str(attachment.get("name") or "attachment"),
+        "type": str(attachment.get("type") or "application/octet-stream"),
+    }
+    url = template
+    for key, value in replacements.items():
+        url = url.replace("{" + key + "}", urllib.parse.quote(value, safe=""))
+    return url
+
+
 def domain_from_email(email_addr: str) -> str:
     if "@" not in email_addr or email_addr.endswith("@"):
         raise MuratError("email address must contain a domain")
@@ -1547,7 +1585,26 @@ def normalize_message(
         "message_ids": [str(item) for item in message.get("messageId", [])] if isinstance(message.get("messageId"), list) else [],
         "references": [str(item) for item in message.get("references", [])] if isinstance(message.get("references"), list) else [],
         "has_attachment": message.get("hasAttachment") is True,
+        "attachments": normalize_attachments(message.get("attachments")),
     }
+
+
+def normalize_attachments(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value:
+        if not isinstance(item, dict) or not isinstance(item.get("blobId"), str):
+            continue
+        out.append(
+            {
+                "blobId": str(item.get("blobId") or ""),
+                "name": str(item.get("name") or item.get("blobId") or "attachment"),
+                "type": str(item.get("type") or "application/octet-stream"),
+                "size": item.get("size") if isinstance(item.get("size"), int) else None,
+            }
+        )
+    return out
 
 
 def mailbox_paths(mailboxes: list[dict[str, Any]]) -> dict[str, str]:
@@ -2117,9 +2174,10 @@ def cmd_compose(_args: argparse.Namespace) -> None:
     print(format_draft_preview(draft))
     choice = prompt("Send? [y/N/draft]", "n").lower()
     if choice in ("y", "yes"):
-        outgoing, pgp_status = transform_draft_pgp(services.config, accounts[0], draft)
-        if pgp_attach_public_key(services.config):
-            outgoing = attach_public_key(services.config, accounts[0], outgoing)
+        options = prompt_pgp_options_cli(services.config, accounts[0], draft)
+        outgoing, pgp_status = transform_draft_pgp(services.config, accounts[0], draft, options)
+        if pgp_attach_public_key(services.config, options):
+            outgoing = attach_public_key(services.config, accounts[0], outgoing, options)
         if pgp_status:
             print(pgp_status, file=sys.stderr)
         services.jmap.send(accounts[0], outgoing)
@@ -2127,6 +2185,31 @@ def cmd_compose(_args: argparse.Namespace) -> None:
     elif choice in ("d", "draft"):
         services.mail.save_draft(draft)
         print("saved draft")
+
+
+def prompt_pgp_options_cli(config: dict[str, Any], account: Account, draft: ComposeDraft) -> PgpSendOptions:
+    options = default_pgp_options(config, account)
+    if not options.enabled:
+        return options
+    options.sign = prompt_bool("PGP sign", options.sign)
+    options.encrypt = prompt_bool("PGP encrypt", options.encrypt)
+    options.encrypt_to_self = prompt_bool("PGP encrypt to self", options.encrypt_to_self)
+    options.attach_public_key = prompt_bool("Attach public key", options.attach_public_key)
+    options.sign_key = prompt("Signing key", options.sign_key)
+    options.public_key = prompt("Public key to attach/sign default", options.public_key)
+    missing = missing_pgp_recipients(account, draft, options)
+    if missing and prompt_bool(f"Missing public keys: {', '.join(missing)}. Fetch via WKD/keyserver", False):
+        unresolved = resolve_pgp_recipients(missing)
+        if unresolved:
+            raise MuratError(f"PGP keys not found: {', '.join(unresolved)}")
+    elif missing:
+        raise MuratError(f"PGP keys not found: {', '.join(missing)}")
+    return options
+
+
+def prompt_bool(label: str, default: bool) -> bool:
+    value = prompt(f"{label} (y/n)", "y" if default else "n").lower()
+    return value in ("y", "yes", "true", "1", "on")
 
 
 def cmd_paths(_args: argparse.Namespace) -> None:
@@ -2252,24 +2335,59 @@ def process_pgp_body(config: dict[str, Any], body: str) -> tuple[str, str | None
     return body, None, False
 
 
-def transform_draft_pgp(config: dict[str, Any], account: Account, draft: ComposeDraft) -> tuple[ComposeDraft, str | None]:
-    if not pgp_enabled(config):
+def default_pgp_options(config: dict[str, Any], account: Account) -> PgpSendOptions:
+    public_key = str(config_value(config, "pgp", "public_key", "") or account.email)
+    sign_key = best_signing_key(config, account, public_key)
+    return PgpSendOptions(
+        enabled=pgp_enabled(config),
+        sign=bool(config_value(config, "pgp", "sign", False)),
+        encrypt=bool(config_value(config, "pgp", "encrypt", False)),
+        encrypt_to_self=bool(config_value(config, "pgp", "encrypt_to_self", True)),
+        attach_public_key=bool(config_value(config, "pgp", "attach_public_key", False)),
+        sign_key=sign_key,
+        public_key=public_key,
+    )
+
+
+def best_signing_key(config: dict[str, Any], account: Account, public_key: str) -> str:
+    candidates = [public_key, account.email, str(config_value(config, "crypto", "gpg_recipient", ""))]
+    for candidate in candidates:
+        if candidate and gpg_secret_key_exists(candidate):
+            return candidate
+    return public_key or account.email
+
+
+def gpg_secret_key_exists(key_id: str) -> bool:
+    try:
+        result = pgp_run(["--list-secret-keys", key_id], b"")
+    except MuratError:
+        return False
+    return result.returncode == 0
+
+
+def transform_draft_pgp(config: dict[str, Any], account: Account, draft: ComposeDraft, options: PgpSendOptions | None = None) -> tuple[ComposeDraft, str | None]:
+    options = options or default_pgp_options(config, account)
+    if not options.enabled:
         return draft, None
-    sign = bool(config_value(config, "pgp", "sign", False))
-    encrypt = bool(config_value(config, "pgp", "encrypt", False))
+    sign = options.sign
+    encrypt = options.encrypt
     if not sign and not encrypt:
         return draft, None
 
-    recipients = pgp_recipients(account, draft, include_self=bool(config_value(config, "pgp", "encrypt_to_self", True)))
+    recipients = pgp_recipients(account, draft, include_self=options.encrypt_to_self)
     args = ["--armor"]
     if encrypt:
         args.append("--encrypt")
         if sign:
             args.append("--sign")
+            if options.sign_key:
+                args.extend(["--local-user", options.sign_key])
         for recipient in recipients:
             args.extend(["--recipient", recipient])
     elif sign:
         args.append("--clearsign")
+        if options.sign_key:
+            args.extend(["--local-user", options.sign_key])
 
     result = pgp_run(args, draft.body.encode())
     if result.returncode != 0:
@@ -2304,12 +2422,14 @@ def pgp_run(args: list[str], data: bytes) -> subprocess.CompletedProcess[bytes]:
     )
 
 
-def pgp_attach_public_key(config: dict[str, Any]) -> bool:
+def pgp_attach_public_key(config: dict[str, Any], options: PgpSendOptions | None = None) -> bool:
+    if options is not None:
+        return options.enabled and options.attach_public_key
     return pgp_enabled(config) and bool(config_value(config, "pgp", "attach_public_key", False))
 
 
-def attach_public_key(config: dict[str, Any], account: Account, draft: ComposeDraft) -> ComposeDraft:
-    key_id = str(config_value(config, "pgp", "public_key", "") or account.email)
+def attach_public_key(config: dict[str, Any], account: Account, draft: ComposeDraft, options: PgpSendOptions | None = None) -> ComposeDraft:
+    key_id = options.public_key if options is not None else str(config_value(config, "pgp", "public_key", "") or account.email)
     result = pgp_run(["--armor", "--export", key_id], b"")
     if result.returncode != 0 or not result.stdout:
         raise MuratError(f"pgp public key export failed for {key_id}: {stderr_text(result)}")
@@ -2336,12 +2456,48 @@ def safe_filename(value: str) -> str:
     return cleaned or "public-key"
 
 
+def is_text_attachment(name: str, content_type: str) -> bool:
+    if content_type.startswith("text/"):
+        return True
+    return Path(name).suffix.lower() in {".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".html", ".htm", ".log", ".ics", ".vcf", ".asc"}
+
+
+def system_open(path: Path) -> None:
+    commands = [["open", str(path)], ["xdg-open", str(path)]]
+    for command in commands:
+        if not shutil.which(command[0]):
+            continue
+        subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    raise MuratError("no system opener found")
+
+
 def pgp_recipients(account: Account, draft: ComposeDraft, include_self: bool) -> list[str]:
-    values = [draft.to, draft.cc, draft.bcc]
+    values = [value for value in (draft.to, draft.cc, draft.bcc) if value.strip()]
     recipients = [addr for _name, addr in email.utils.getaddresses(values) if addr]
     if include_self and account.email:
         recipients.append(account.email)
     return list(dict.fromkeys(recipients))
+
+
+def missing_pgp_recipients(account: Account, draft: ComposeDraft, options: PgpSendOptions) -> list[str]:
+    if not options.enabled or not options.encrypt:
+        return []
+    missing = []
+    for recipient in pgp_recipients(account, draft, include_self=options.encrypt_to_self):
+        result = pgp_run(["--list-keys", recipient], b"")
+        if result.returncode != 0:
+            missing.append(recipient)
+    return missing
+
+
+def resolve_pgp_recipients(recipients: list[str]) -> list[str]:
+    unresolved = []
+    for recipient in recipients:
+        result = pgp_run(["--auto-key-locate", "clear,wkd,keyserver", "--locate-keys", recipient], b"")
+        if result.returncode != 0:
+            unresolved.append(recipient)
+    return unresolved
 
 
 def extract_clearsigned_text(body: str) -> str:
@@ -2650,6 +2806,10 @@ class TuiApp:
             self.action_scope = None
             self.show_message_headers(message)
             return
+        if token == "a":
+            self.action_scope = None
+            self.attachment_menu(stdscr, message)
+            return
         if token == "t":
             self.action_scope = None
             self.trash_message_async(message)
@@ -2792,6 +2952,8 @@ class TuiApp:
         items = ["mail:", "r reply"]
         if self.can_reply_all(message):
             items.append("R reply-all")
+        if message.get("has_attachment") or message.get("attachments"):
+            items.append("a attach")
         items.extend(["f forward", "h headers", "t trash", "s not-spam" if message.get("spam") else "s spam", "esc back"])
         return "  ".join(items)
 
@@ -2884,7 +3046,6 @@ class TuiApp:
         self.selection_start = point
         self.selection_end = point
         self.selection_active = True
-        self.set_status("selecting; release or click end to copy")
 
     def update_selection(self, x: int, y: int) -> None:
         self.selection_end = self.body_point(x, y)
@@ -2980,6 +3141,105 @@ class TuiApp:
         self.body_scroll = 0
         self.set_status("headers")
 
+    def attachment_menu(self, stdscr: Any, message: dict[str, Any]) -> None:
+        account = self.account_for(str(message.get("account_id") or ""))
+        attachments = self.message_attachments(account, message)
+        if not attachments:
+            self.set_status("no attachments", error=True)
+            return
+        selected = 0
+        while True:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            safe_addstr(stdscr, 0, 0, " murat | attachments ", width, self.color("header") | curses.A_BOLD)
+            safe_addstr(stdscr, height - 1, 0, "enter open  v view text  i import pubkey  s save  q back", width, self.color("header") | curses.A_BOLD)
+            for row, attachment in enumerate(attachments[: max(0, height - 2)]):
+                attr = self.selected_attr() if row == selected else 0
+                name = display_text(str(attachment.get("name") or "attachment"))
+                kind = display_text(str(attachment.get("type") or "application/octet-stream"))
+                size = attachment.get("size")
+                suffix = f" {size}B" if isinstance(size, int) else ""
+                safe_addstr(stdscr, row + 1, 0, f"{name}  {kind}{suffix}", width, attr)
+            stdscr.refresh()
+            token = key_token(stdscr.getch())
+            if token in ("q", "esc"):
+                return
+            if token in ("j", "down"):
+                selected = min(len(attachments) - 1, selected + 1)
+            elif token in ("k", "up"):
+                selected = max(0, selected - 1)
+            elif token in ("enter", "o"):
+                self.open_attachment(account, message, attachments[selected])
+                return
+            elif token == "v":
+                self.view_attachment(account, message, attachments[selected])
+                return
+            elif token == "i":
+                self.import_attachment_key(account, message, attachments[selected])
+                return
+            elif token == "s":
+                self.save_attachment(stdscr, account, message, attachments[selected])
+                return
+
+    def message_attachments(self, account: Account, message: dict[str, Any]) -> list[dict[str, Any]]:
+        attachments = normalize_attachments(message.get("attachments"))
+        if attachments:
+            return attachments
+        fetched = self.services.jmap.fetch_body(account, message)
+        attachments = normalize_attachments(fetched.get("attachments"))
+        if attachments:
+            with self.store_lock:
+                self.services.mail.update_message(str(message.get("key") or ""), {"attachments": attachments, "has_attachment": True})
+        return attachments
+
+    def attachment_data(self, account: Account, message: dict[str, Any], attachment: dict[str, Any]) -> bytes:
+        return self.services.jmap.download_blob(account, message, attachment)
+
+    def view_attachment(self, account: Account, message: dict[str, Any], attachment: dict[str, Any]) -> None:
+        data = self.attachment_data(account, message, attachment)
+        name = display_text(str(attachment.get("name") or "attachment"))
+        kind = str(attachment.get("type") or "").lower()
+        if not is_text_attachment(name, kind):
+            self.set_status("not a text attachment", error=True)
+            return
+        self.preview_key = str(message.get("key") or "")
+        self.preview_message = dict(message)
+        self.preview_body = data.decode(errors="replace")
+        self.preview_header_mode = False
+        self.body_scroll = 0
+        self.clear_selection()
+        self.set_status(f"viewing attachment: {name}")
+
+    def open_attachment(self, account: Account, message: dict[str, Any], attachment: dict[str, Any]) -> None:
+        path = self.write_temp_attachment(account, message, attachment)
+        system_open(path)
+        self.set_status(f"opened {path.name}")
+
+    def import_attachment_key(self, account: Account, message: dict[str, Any], attachment: dict[str, Any]) -> None:
+        data = self.attachment_data(account, message, attachment)
+        result = pgp_run(["--import"], data)
+        if result.returncode != 0:
+            self.set_status(f"gpg import failed: {stderr_text(result)}", error=True)
+            return
+        self.set_status("imported public key")
+
+    def save_attachment(self, stdscr: Any, account: Account, message: dict[str, Any], attachment: dict[str, Any]) -> None:
+        default = str(Path.home() / display_text(str(attachment.get("name") or "attachment")))
+        target = self.prompt_line(stdscr, f"save as [{default}]") or default
+        path = Path(target).expanduser()
+        if path.is_dir():
+            path = path / display_text(str(attachment.get("name") or "attachment"))
+        data = self.attachment_data(account, message, attachment)
+        atomic_write(path, data, mode=0o600)
+        self.set_status(f"saved {path}")
+
+    def write_temp_attachment(self, account: Account, message: dict[str, Any], attachment: dict[str, Any]) -> Path:
+        data = self.attachment_data(account, message, attachment)
+        name = safe_filename(display_text(str(attachment.get("name") or "attachment")))
+        path = Path(tempfile.mkdtemp(prefix="murat-attachment.")) / name
+        path.write_bytes(data)
+        return path
+
     def sync(self) -> None:
         def task() -> None:
             page_size = int(config_value(self.services.config, "ui", "page_size", 50))
@@ -3027,6 +3287,7 @@ class TuiApp:
             draft = forward_draft(account, source, body) if forward else reply_draft(account, source, body, reply_all=reply_all)
         else:
             draft = ComposeDraft(account.id, "", "", "", "", "")
+        pgp_options = default_pgp_options(self.services.config, account)
         while True:
             curses.def_prog_mode()
             curses.endwin()
@@ -3038,8 +3299,16 @@ class TuiApp:
             choice = self.confirm_compose(stdscr, draft)
             if choice == "edit":
                 continue
+            if choice == "pgp":
+                options = self.confirm_pgp_options(stdscr, account, draft, pgp_options)
+                if options is not None:
+                    pgp_options = options
+                continue
             if choice == "send":
-                self.send_async(account, draft)
+                options = self.confirm_pgp_options(stdscr, account, draft, pgp_options)
+                if options is None:
+                    continue
+                self.send_async(account, draft, options)
                 return
             if choice == "draft":
                 self.services.mail.save_draft(draft)
@@ -3061,17 +3330,77 @@ class TuiApp:
             self.set_status(status, error=error)
         return body
 
-    def send_async(self, account: Account, draft: ComposeDraft) -> None:
+    def send_async(self, account: Account, draft: ComposeDraft, options: PgpSendOptions) -> None:
         def task() -> None:
             outgoing = draft
-            outgoing, pgp_status = transform_draft_pgp(self.services.config, account, outgoing)
-            if pgp_attach_public_key(self.services.config):
-                outgoing = attach_public_key(self.services.config, account, outgoing)
+            outgoing, pgp_status = transform_draft_pgp(self.services.config, account, outgoing, options)
+            if pgp_attach_public_key(self.services.config, options):
+                outgoing = attach_public_key(self.services.config, account, outgoing, options)
             self.post_status(pgp_status or f"sending to {outgoing.to}")
             self.services.jmap.send(account, outgoing)
             self.post_status("sent")
 
         self.start_task("send", task)
+
+    def confirm_pgp_options(self, stdscr: Any, account: Account, draft: ComposeDraft, options: PgpSendOptions | None = None) -> PgpSendOptions | None:
+        options = options or default_pgp_options(self.services.config, account)
+        if not options.enabled:
+            return options
+        message = ""
+        while True:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            safe_addstr(stdscr, 0, 0, " murat | PGP before send ", width, self.color("header") | curses.A_BOLD)
+            safe_addstr(stdscr, height - 1, 0, "enter send  s sign  e encrypt  S self  a attach  k sign-key  p pub-key  x cancel", width, self.color("header") | curses.A_BOLD)
+            rows = [
+                f"sign:            {'yes' if options.sign else 'no'}",
+                f"encrypt:         {'yes' if options.encrypt else 'no'}",
+                f"encrypt to self: {'yes' if options.encrypt_to_self else 'no'}",
+                f"attach pubkey:   {'yes' if options.attach_public_key else 'no'}",
+                f"signing key:     {options.sign_key}",
+                f"public key:      {options.public_key}",
+                "",
+                message,
+            ]
+            for row, line in enumerate(rows[: max(0, height - 2)]):
+                safe_addstr(stdscr, row + 1, 0, line, width)
+            stdscr.refresh()
+            token = key_token(stdscr.getch())
+            if token == "s":
+                options.sign = not options.sign
+            elif token == "e":
+                options.encrypt = not options.encrypt
+            elif token == "S":
+                options.encrypt_to_self = not options.encrypt_to_self
+            elif token == "a":
+                options.attach_public_key = not options.attach_public_key
+            elif token == "k":
+                value = self.prompt_line(stdscr, "signing key")
+                if value:
+                    options.sign_key = value
+            elif token == "p":
+                value = self.prompt_line(stdscr, "public key")
+                if value:
+                    options.public_key = value
+            elif token in ("x", "q", "esc"):
+                self.set_status("send cancelled")
+                return None
+            elif token == "enter":
+                missing = missing_pgp_recipients(account, draft, options)
+                if missing and self.confirm_yes_no(stdscr, f"fetch missing PGP keys via WKD/keyserver? {', '.join(missing)}"):
+                    unresolved = resolve_pgp_recipients(missing)
+                    if unresolved:
+                        message = f"still missing: {', '.join(unresolved)}"
+                        continue
+                    missing = []
+                if missing:
+                    message = f"missing keys: {', '.join(missing)}"
+                    continue
+                return options
+
+    def confirm_yes_no(self, stdscr: Any, label: str) -> bool:
+        value = self.prompt_line(stdscr, f"{label} [y/N]")
+        return value.lower() in ("y", "yes")
 
     def trash_message_async(self, message: dict[str, Any]) -> None:
         account = self.account_for(str(message.get("account_id") or ""))
@@ -3119,7 +3448,8 @@ class TuiApp:
         while True:
             stdscr.erase()
             height, width = stdscr.getmaxyx()
-            safe_addstr(stdscr, 0, 0, "compose preview: s send  d draft  e edit  x cancel", width, curses.A_REVERSE)
+            safe_addstr(stdscr, 0, 0, " murat | compose preview ", width, self.color("header") | curses.A_BOLD)
+            safe_addstr(stdscr, height - 1, 0, "s send  p pgp  d draft  e edit  x cancel", width, self.color("header") | curses.A_BOLD)
             body_height = height - 2
             for index, line in enumerate(lines[scroll : scroll + body_height]):
                 safe_addstr(stdscr, index + 1, 0, line, width)
@@ -3127,6 +3457,8 @@ class TuiApp:
             token = key_token(stdscr.getch())
             if token in ("s", "enter"):
                 return "send"
+            if token == "p":
+                return "pgp"
             if token == "d":
                 return "draft"
             if token == "e":
@@ -3635,6 +3967,7 @@ def reply_draft(account: Account, message: dict[str, Any] | None, body: str, rep
     if not subject.lower().startswith("re:"):
         subject = f"Re: {subject}"
     quoted = "\n".join(f"> {line}" if line else ">" for line in body.splitlines())
+    attribution = reply_attribution(message)
     msg_ids = message.get("message_ids") if isinstance(message.get("message_ids"), list) else []
     refs = message.get("references") if isinstance(message.get("references"), list) else []
     to = str(message.get("from") or "")
@@ -3647,10 +3980,16 @@ def reply_draft(account: Account, message: dict[str, Any] | None, body: str, rep
         cc=cc,
         bcc="",
         subject=subject,
-        body=f"\n\n{quoted}\n",
+        body=f"\n\n{attribution}\n{quoted}\n",
         reply_to_message_id=msg_ids[0] if msg_ids else None,
         references=[str(item) for item in refs],
     )
+
+
+def reply_attribution(message: dict[str, Any]) -> str:
+    date = display_text(str(message.get("received_at") or message.get("sent_at") or ""))
+    sender = sender_label(message)
+    return f"On {date}, {sender} wrote:"
 
 
 def reply_all_fields(account: Account, message: dict[str, Any]) -> tuple[str, str]:
