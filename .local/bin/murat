@@ -311,7 +311,6 @@ class PgpSendOptions:
     encrypt: bool
     encrypt_to_self: bool
     attach_public_key: bool
-    sign_key: str
     public_key: str
 
 
@@ -3173,6 +3172,7 @@ class Services:
     key_provider: SymmetricKeyProvider
     accounts: AccountRegistry
     mail: MailStore
+    pgp: PgpService
 
 
 def build_services() -> Services:
@@ -3203,6 +3203,7 @@ def build_services() -> Services:
         key_provider=key_provider,
         accounts=AccountRegistry(account_store, account_factory),
         mail=mail,
+        pgp=PgpService(config, GpgRunner()),
     )
 
 
@@ -3405,10 +3406,10 @@ def cmd_compose(_args: argparse.Namespace) -> None:
     print(format_draft_preview(draft))
     choice = prompt_choice("Send?", ["y", "n", "draft"], "n").lower()
     if choice in ("y", "yes"):
-        options = prompt_pgp_options_cli(services.config, account, draft)
-        outgoing, pgp_status = transform_draft_pgp(services.config, account, draft, options)
-        if pgp_attach_public_key(services.config, options):
-            outgoing = attach_public_key(services.config, account, outgoing, options)
+        options = prompt_pgp_options_cli(services.pgp, account, draft)
+        outgoing, pgp_status = services.pgp.transform(account, draft, options)
+        if services.pgp.should_attach_public_key(options):
+            outgoing = services.pgp.attach_public_key(account, outgoing, options)
         if pgp_status:
             print(pgp_status, file=sys.stderr)
         account.send(outgoing)
@@ -3418,19 +3419,18 @@ def cmd_compose(_args: argparse.Namespace) -> None:
         print("saved draft")
 
 
-def prompt_pgp_options_cli(config: dict[str, Any], account: Account, draft: ComposeDraft) -> PgpSendOptions:
-    options = default_pgp_options(config, account)
+def prompt_pgp_options_cli(pgp: PgpService, account: Account, draft: ComposeDraft) -> PgpSendOptions:
+    options = pgp.default_options(account)
     if not options.enabled:
         return options
     options.sign = prompt_bool("PGP sign", options.sign)
     options.encrypt = prompt_bool("PGP encrypt", options.encrypt)
     options.encrypt_to_self = prompt_bool("PGP encrypt to self", options.encrypt_to_self)
     options.attach_public_key = prompt_bool("Attach public key", options.attach_public_key)
-    options.sign_key = prompt("Signing key", options.sign_key)
-    options.public_key = prompt("Public key to attach/sign default", options.public_key)
-    missing = missing_pgp_recipients(account, draft, options)
+    options.public_key = prompt("Public key to attach", options.public_key)
+    missing = pgp.missing_recipients(account, draft, options)
     if missing and prompt_bool(f"Missing public keys: {', '.join(missing)}. Fetch via WKD/keyserver", False):
-        unresolved = resolve_pgp_recipients(missing)
+        unresolved = pgp.resolve_recipients(missing)
         if unresolved:
             raise MuratError(f"PGP keys not found: {', '.join(unresolved)}")
     elif missing:
@@ -3642,141 +3642,359 @@ def format_draft_preview(draft: ComposeDraft) -> str:
     )
 
 
-def pgp_enabled(config: dict[str, Any]) -> bool:
-    return bool(config_value(config, "pgp", "enabled", True))
+class GpgRunner:
+    def run(self, args: list[str], data: bytes) -> subprocess.CompletedProcess[bytes]:
+        if not shutil.which("gpg"):
+            raise MuratError("gpg not found")
+        return subprocess.run(
+            ["gpg", "--batch", "--yes", *args],
+            input=data,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    def verify_detached(self, data: bytes, signature: bytes) -> subprocess.CompletedProcess[bytes]:
+        with tempfile.TemporaryDirectory(prefix="murat-pgp.") as tmp:
+            root = Path(tmp)
+            data_path = root / "signed-data"
+            sig_path = root / "signature.asc"
+            data_path.write_bytes(data)
+            sig_path.write_bytes(signature)
+            return self.run(["--verify", str(sig_path), str(data_path)], b"")
 
 
-def process_pgp_body(config: dict[str, Any], body: str) -> tuple[str, str | None, bool]:
-    if not pgp_enabled(config):
+class PgpService:
+    def __init__(self, config: dict[str, Any], runner: GpgRunner):
+        self.config = config
+        self.runner = runner
+
+    def enabled(self) -> bool:
+        return bool(config_value(self.config, "pgp", "enabled", True))
+
+    def default_options(self, account: Account) -> PgpSendOptions:
+        public_key = str(config_value(self.config, "pgp", "public_key", "") or account.email)
+        return PgpSendOptions(
+            enabled=self.enabled(),
+            sign=bool(config_value(self.config, "pgp", "sign", False)),
+            encrypt=bool(config_value(self.config, "pgp", "encrypt", False)),
+            encrypt_to_self=bool(config_value(self.config, "pgp", "encrypt_to_self", True)),
+            attach_public_key=bool(config_value(self.config, "pgp", "attach_public_key", False)),
+            public_key=public_key,
+        )
+
+    def process_body(self, body: str, eml: bytes | None = None) -> tuple[str, str | None, bool]:
+        if not self.enabled():
+            return body, None, False
+        if "-----BEGIN PGP MESSAGE-----" in body:
+            text = self.runner.run(["--decrypt"], body.encode())
+            if text.returncode == 0:
+                status, error = self.combine_status(("decrypted", False), self.decrypt_signature_status(text))
+                return text.stdout.decode(errors="replace"), status, error
+            return body, f"pgp: decrypt failed: {stderr_text(text)}", True
+        if "-----BEGIN PGP SIGNED MESSAGE-----" in body:
+            verify = self.runner.run(["--verify"], body.encode())
+            cleartext = self.extract_clearsigned_text(body)
+            status, error = self.combine_status(self.verify_signature_status(verify))
+            return cleartext, status, error
+        if eml is not None:
+            status, error = self.verify_eml_signature(eml)
+            if status:
+                return body, status, error
         return body, None, False
-    if "-----BEGIN PGP MESSAGE-----" in body:
-        text = pgp_run(["--decrypt"], body.encode())
-        if text.returncode == 0:
-            return text.stdout.decode(errors="replace"), "pgp: decrypted", False
-        return body, f"pgp decrypt failed: {stderr_text(text)}", True
-    if "-----BEGIN PGP SIGNED MESSAGE-----" in body:
-        verify = pgp_run(["--verify"], body.encode())
-        cleartext = extract_clearsigned_text(body)
-        if verify.returncode == 0:
-            return cleartext, "pgp: signature valid", False
-        return cleartext, f"pgp verify failed: {stderr_text(verify)}", True
-    return body, None, False
 
+    def needs_processing(self, body: str, eml: bytes | None = None) -> bool:
+        if not self.enabled():
+            return False
+        if "-----BEGIN PGP MESSAGE-----" in body or "-----BEGIN PGP SIGNED MESSAGE-----" in body:
+            return True
+        return self.eml_has_signature(eml) if eml is not None else False
 
-def default_pgp_options(config: dict[str, Any], account: Account) -> PgpSendOptions:
-    public_key = str(config_value(config, "pgp", "public_key", "") or account.email)
-    sign_key = best_signing_key(config, account, public_key)
-    return PgpSendOptions(
-        enabled=pgp_enabled(config),
-        sign=bool(config_value(config, "pgp", "sign", False)),
-        encrypt=bool(config_value(config, "pgp", "encrypt", False)),
-        encrypt_to_self=bool(config_value(config, "pgp", "encrypt_to_self", True)),
-        attach_public_key=bool(config_value(config, "pgp", "attach_public_key", False)),
-        sign_key=sign_key,
-        public_key=public_key,
-    )
+    def transform(self, account: Account, draft: ComposeDraft, options: PgpSendOptions | None = None) -> tuple[ComposeDraft, str | None]:
+        options = options or self.default_options(account)
+        if not options.enabled:
+            return draft, None
+        sign = options.sign
+        encrypt = options.encrypt
+        if not sign and not encrypt:
+            return draft, None
 
+        recipients = self.recipients(account, draft, include_self=options.encrypt_to_self)
+        args = ["--armor"]
+        if encrypt:
+            args.append("--encrypt")
+            if sign:
+                args.append("--sign")
+                if account.email:
+                    args.extend(["--local-user", account.email])
+            for recipient in recipients:
+                args.extend(["--recipient", recipient])
+        elif sign:
+            args.append("--clearsign")
+            if account.email:
+                args.extend(["--local-user", account.email])
 
-def best_signing_key(config: dict[str, Any], account: Account, public_key: str) -> str:
-    candidates = [public_key, account.email, str(config_value(config, "crypto", "gpg_recipient", ""))]
-    for candidate in candidates:
-        if candidate and gpg_secret_key_exists(candidate):
-            return candidate
-    return public_key or account.email
+        result = self.runner.run(args, draft.body.encode())
+        if result.returncode != 0:
+            raise MuratError(f"pgp failed: {stderr_text(result)}")
+        transformed = ComposeDraft(
+            account_id=draft.account_id,
+            to=draft.to,
+            cc=draft.cc,
+            bcc=draft.bcc,
+            subject=draft.subject,
+            body=result.stdout.decode(errors="replace"),
+            reply_to_message_id=draft.reply_to_message_id,
+            references=draft.references,
+            attachments=draft.attachments,
+        )
+        if encrypt and sign:
+            return transformed, "pgp: signed+encrypted"
+        if encrypt:
+            return transformed, "pgp: encrypted"
+        return transformed, "pgp: signed"
 
-
-def gpg_secret_key_exists(key_id: str) -> bool:
-    try:
-        result = pgp_run(["--list-secret-keys", key_id], b"")
-    except MuratError:
-        return False
-    return result.returncode == 0
-
-
-def transform_draft_pgp(config: dict[str, Any], account: Account, draft: ComposeDraft, options: PgpSendOptions | None = None) -> tuple[ComposeDraft, str | None]:
-    options = options or default_pgp_options(config, account)
-    if not options.enabled:
-        return draft, None
-    sign = options.sign
-    encrypt = options.encrypt
-    if not sign and not encrypt:
-        return draft, None
-
-    recipients = pgp_recipients(account, draft, include_self=options.encrypt_to_self)
-    args = ["--armor"]
-    if encrypt:
-        args.append("--encrypt")
-        if sign:
-            args.append("--sign")
-            if options.sign_key:
-                args.extend(["--local-user", options.sign_key])
-        for recipient in recipients:
-            args.extend(["--recipient", recipient])
-    elif sign:
-        args.append("--clearsign")
-        if options.sign_key:
-            args.extend(["--local-user", options.sign_key])
-
-    result = pgp_run(args, draft.body.encode())
-    if result.returncode != 0:
-        raise MuratError(f"pgp failed: {stderr_text(result)}")
-    transformed = ComposeDraft(
-        account_id=draft.account_id,
-        to=draft.to,
-        cc=draft.cc,
-        bcc=draft.bcc,
-        subject=draft.subject,
-        body=result.stdout.decode(errors="replace"),
-        reply_to_message_id=draft.reply_to_message_id,
-        references=draft.references,
-        attachments=draft.attachments,
-    )
-    if encrypt and sign:
-        return transformed, "pgp: signed+encrypted"
-    if encrypt:
-        return transformed, "pgp: encrypted"
-    return transformed, "pgp: signed"
-
-
-def pgp_run(args: list[str], data: bytes) -> subprocess.CompletedProcess[bytes]:
-    if not shutil.which("gpg"):
-        raise MuratError("gpg not found")
-    return subprocess.run(
-        ["gpg", "--batch", "--yes", *args],
-        input=data,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-
-
-def pgp_attach_public_key(config: dict[str, Any], options: PgpSendOptions | None = None) -> bool:
-    if options is not None:
+    def should_attach_public_key(self, options: PgpSendOptions) -> bool:
         return options.enabled and options.attach_public_key
-    return pgp_enabled(config) and bool(config_value(config, "pgp", "attach_public_key", False))
 
+    def attach_public_key(self, account: Account, draft: ComposeDraft, options: PgpSendOptions) -> ComposeDraft:
+        key_id = options.public_key or account.email
+        result = self.runner.run(["--armor", "--export", key_id], b"")
+        if result.returncode != 0 or not result.stdout:
+            raise MuratError(f"pgp public key export failed for {key_id}: {stderr_text(result)}")
+        attachment = DraftAttachment(
+            name=f"{safe_filename(key_id)}.asc",
+            content_type="application/pgp-keys",
+            data=result.stdout,
+        )
+        return ComposeDraft(
+            account_id=draft.account_id,
+            to=draft.to,
+            cc=draft.cc,
+            bcc=draft.bcc,
+            subject=draft.subject,
+            body=draft.body,
+            reply_to_message_id=draft.reply_to_message_id,
+            references=draft.references,
+            attachments=[*(draft.attachments or []), attachment],
+        )
 
-def attach_public_key(config: dict[str, Any], account: Account, draft: ComposeDraft, options: PgpSendOptions | None = None) -> ComposeDraft:
-    key_id = options.public_key if options is not None else str(config_value(config, "pgp", "public_key", "") or account.email)
-    result = pgp_run(["--armor", "--export", key_id], b"")
-    if result.returncode != 0 or not result.stdout:
-        raise MuratError(f"pgp public key export failed for {key_id}: {stderr_text(result)}")
-    attachment = DraftAttachment(
-        name=f"{safe_filename(key_id)}.asc",
-        content_type="application/pgp-keys",
-        data=result.stdout,
-    )
-    return ComposeDraft(
-        account_id=draft.account_id,
-        to=draft.to,
-        cc=draft.cc,
-        bcc=draft.bcc,
-        subject=draft.subject,
-        body=draft.body,
-        reply_to_message_id=draft.reply_to_message_id,
-        references=draft.references,
-        attachments=[*(draft.attachments or []), attachment],
-    )
+    def missing_recipients(self, account: Account, draft: ComposeDraft, options: PgpSendOptions) -> list[str]:
+        if not options.enabled or not options.encrypt:
+            return []
+        missing = []
+        for recipient in self.recipients(account, draft, include_self=options.encrypt_to_self):
+            result = self.runner.run(["--list-keys", recipient], b"")
+            if result.returncode != 0:
+                missing.append(recipient)
+        return missing
+
+    def resolve_recipients(self, recipients: list[str]) -> list[str]:
+        unresolved = []
+        for recipient in recipients:
+            result = self.runner.run(["--auto-key-locate", "clear,wkd,keyserver", "--locate-keys", recipient], b"")
+            if result.returncode != 0:
+                unresolved.append(recipient)
+        return unresolved
+
+    def import_key(self, data: bytes) -> subprocess.CompletedProcess[bytes]:
+        return self.runner.run(["--import"], data)
+
+    def combine_status(self, *parts: tuple[str | None, bool]) -> tuple[str | None, bool]:
+        messages = [message for message, _error in parts if message]
+        return (f"pgp: {'; '.join(messages)}" if messages else None, any(error for _message, error in parts))
+
+    def verify_signature_status(self, result: subprocess.CompletedProcess[bytes]) -> tuple[str | None, bool]:
+        if result.returncode == 0:
+            return "signature valid", False
+        return f"signature cannot be verified: {self.signature_reason(result)}", True
+
+    def decrypt_signature_status(self, result: subprocess.CompletedProcess[bytes]) -> tuple[str | None, bool]:
+        reason = self.signature_reason(result)
+        lowered = stderr_text(result).lower()
+        if "good signature" in lowered:
+            return "signature valid", False
+        if "bad signature" in lowered:
+            return "signature cannot be verified: bad signature", True
+        if "can't check signature" in lowered or "signature made" in lowered or "no public key" in lowered:
+            return f"signature cannot be verified: {reason}", True
+        return None, False
+
+    def signature_reason(self, result: subprocess.CompletedProcess[bytes]) -> str:
+        text = stderr_text(result)
+        lines = [re.sub(r"^gpg:\s*", "", line).strip() for line in text.splitlines()]
+        for line in lines:
+            lowered = line.lower()
+            if "can't check signature" in lowered:
+                return line.split(":", 1)[1].strip() if ":" in line else line
+            if "bad signature" in lowered:
+                return "bad signature"
+            if "no public key" in lowered:
+                return "No public key"
+        cleaned = " ".join(line for line in lines if line)
+        return cleaned[:160] or "unknown reason"
+
+    def eml_has_signature(self, value: bytes | None) -> bool:
+        if not value:
+            return False
+        try:
+            message = parse_eml(value)
+        except Exception:
+            return False
+        try:
+            parts = message.walk() if message.is_multipart() else [message]
+        except Exception:
+            return False
+        for part in parts:
+            try:
+                content_type = str(part.get_content_type() or "").lower()
+            except Exception:
+                content_type = ""
+            if content_type == "multipart/signed" or self.part_is_signature(part):
+                return True
+        return False
+
+    def verify_eml_signature(self, value: bytes) -> tuple[str | None, bool]:
+        try:
+            message = parse_eml(value)
+        except Exception:
+            return None, False
+        signed_result = self.verify_multipart_signed(message)
+        if signed_result[0]:
+            return signed_result
+        return self.verify_attached_signature(message)
+
+    def verify_multipart_signed(self, message: Any) -> tuple[str | None, bool]:
+        failures: list[str] = []
+        for signed in self.iter_multipart_signed(message):
+            try:
+                payload = signed.get_payload()
+            except Exception:
+                continue
+            if not isinstance(payload, list) or len(payload) < 2:
+                continue
+            data = self.signed_part_bytes(payload[0])
+            signature = eml_part_bytes(payload[1])
+            if not data or not signature:
+                continue
+            result = self.runner.verify_detached(data, signature)
+            if result.returncode == 0:
+                return self.combine_status(("signature valid", False))
+            failures.append(self.signature_reason(result))
+        if failures:
+            return self.combine_status((f"signature cannot be verified: {failures[0]}", True))
+        return None, False
+
+    def iter_multipart_signed(self, message: Any) -> list[Any]:
+        try:
+            parts = message.walk() if message.is_multipart() else [message]
+        except Exception:
+            return []
+        signed = []
+        for part in parts:
+            try:
+                content_type = str(part.get_content_type() or "").lower()
+            except Exception:
+                content_type = ""
+            if content_type == "multipart/signed":
+                signed.append(part)
+        return signed
+
+    def signed_part_bytes(self, part: Any) -> bytes:
+        try:
+            policy = email.policy.SMTP.clone(refold_source="none")
+        except Exception:
+            policy = email.policy.SMTP
+        try:
+            return part.as_bytes(policy=policy)
+        except Exception:
+            return eml_part_bytes(part)
+
+    def verify_attached_signature(self, message: Any) -> tuple[str | None, bool]:
+        leaves = eml_leaf_parts(message)
+        signatures = [(part_id, part) for part_id, part in leaves if self.part_is_signature(part)]
+        if not signatures:
+            return None, False
+        failures: list[str] = []
+        for _sig_id, signature_part in signatures:
+            signature = eml_part_bytes(signature_part)
+            if not signature:
+                continue
+            for data_part in self.signature_candidate_parts(signature_part, leaves):
+                data = eml_part_bytes(data_part)
+                if not data:
+                    continue
+                result = self.runner.verify_detached(data, signature)
+                if result.returncode == 0:
+                    return self.combine_status(("signature valid", False))
+                failures.append(self.signature_reason(result))
+        if failures:
+            return self.combine_status((f"signature cannot be verified: {failures[0]}", True))
+        return self.combine_status(("signature cannot be verified: signed content not found", True))
+
+    def signature_candidate_parts(self, signature_part: Any, leaves: list[tuple[str, Any]]) -> list[Any]:
+        signature_name = eml_attachment_filename(signature_part).lower()
+        signature_base = self.signature_base_name(signature_name)
+        candidates = [part for _part_id, part in leaves if part is not signature_part and not self.part_is_signature(part)]
+        matched = []
+        if signature_base:
+            for part in candidates:
+                name = eml_attachment_filename(part).lower()
+                if name and name == signature_base:
+                    matched.append(part)
+        body_text_parts = []
+        for part in candidates:
+            try:
+                disposition = str(part.get_content_disposition() or "").lower()
+                content_type = str(part.get_content_type() or "").lower()
+            except Exception:
+                disposition = ""
+                content_type = ""
+            if disposition != "attachment" and content_type == "text/plain":
+                body_text_parts.append(part)
+        return list(dict.fromkeys([*matched, *body_text_parts, *candidates]))
+
+    def signature_base_name(self, name: str) -> str:
+        for suffix in (".pgp-signature", ".sig", ".asc", ".pgp"):
+            if name.endswith(suffix):
+                return name[: -len(suffix)]
+        return ""
+
+    def part_is_signature(self, part: Any) -> bool:
+        try:
+            content_type = str(part.get_content_type() or "").lower()
+        except Exception:
+            content_type = ""
+        if content_type == "application/pgp-signature":
+            return True
+        name = eml_attachment_filename(part).lower()
+        if not name.endswith((".asc", ".sig", ".pgp")):
+            return False
+        return eml_part_bytes(part).lstrip().startswith(b"-----BEGIN PGP SIGNATURE-----")
+
+    def recipients(self, account: Account, draft: ComposeDraft, include_self: bool) -> list[str]:
+        values = [value for value in (draft.to, draft.cc, draft.bcc) if value.strip()]
+        recipients = [addr for _name, addr in email.utils.getaddresses(values) if addr]
+        if include_self and account.email:
+            recipients.append(account.email)
+        return list(dict.fromkeys(recipients))
+
+    def extract_clearsigned_text(self, body: str) -> str:
+        lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        out: list[str] = []
+        in_text = False
+        for line in lines:
+            if line.startswith("-----BEGIN PGP SIGNED MESSAGE-----"):
+                in_text = False
+                continue
+            if not in_text and line == "":
+                in_text = True
+                continue
+            if line.startswith("-----BEGIN PGP SIGNATURE-----"):
+                break
+            if in_text:
+                out.append(line[2:] if line.startswith("- ") else line)
+        return "\n".join(out).strip()
 
 
 def safe_filename(value: str) -> str:
@@ -3800,52 +4018,6 @@ def system_open(path: Path) -> None:
     raise MuratError("no system opener found")
 
 
-def pgp_recipients(account: Account, draft: ComposeDraft, include_self: bool) -> list[str]:
-    values = [value for value in (draft.to, draft.cc, draft.bcc) if value.strip()]
-    recipients = [addr for _name, addr in email.utils.getaddresses(values) if addr]
-    if include_self and account.email:
-        recipients.append(account.email)
-    return list(dict.fromkeys(recipients))
-
-
-def missing_pgp_recipients(account: Account, draft: ComposeDraft, options: PgpSendOptions) -> list[str]:
-    if not options.enabled or not options.encrypt:
-        return []
-    missing = []
-    for recipient in pgp_recipients(account, draft, include_self=options.encrypt_to_self):
-        result = pgp_run(["--list-keys", recipient], b"")
-        if result.returncode != 0:
-            missing.append(recipient)
-    return missing
-
-
-def resolve_pgp_recipients(recipients: list[str]) -> list[str]:
-    unresolved = []
-    for recipient in recipients:
-        result = pgp_run(["--auto-key-locate", "clear,wkd,keyserver", "--locate-keys", recipient], b"")
-        if result.returncode != 0:
-            unresolved.append(recipient)
-    return unresolved
-
-
-def extract_clearsigned_text(body: str) -> str:
-    lines = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    out: list[str] = []
-    in_text = False
-    for line in lines:
-        if line.startswith("-----BEGIN PGP SIGNED MESSAGE-----"):
-            in_text = False
-            continue
-        if not in_text and line == "":
-            in_text = True
-            continue
-        if line.startswith("-----BEGIN PGP SIGNATURE-----"):
-            break
-        if in_text:
-            out.append(line[2:] if line.startswith("- ") else line)
-    return "\n".join(out).strip()
-
-
 def wrap_lines(text: str, width: int) -> list[str]:
     output: list[str] = []
     for raw in text.splitlines() or [""]:
@@ -3867,18 +4039,65 @@ COLOR_NAMES = {
 }
 
 
+class Message(dict[str, Any]):
+    def __init__(self, data: dict[str, Any], repo: "TuiMessageRepository"):
+        super().__init__(data)
+        self.repo = repo
+
+    @property
+    def key(self) -> str:
+        return str(self.get("key") or "")
+
+    def apply_updates(self, updates: dict[str, Any]) -> "Message":
+        if not self.key:
+            self.update(updates)
+            return self
+        updated = self.repo.update_message(self.key, updates)
+        if isinstance(updated, dict):
+            self.clear()
+            self.update(updated)
+        else:
+            self.update(updates)
+        return self
+
+    def set_read(self, read: bool) -> "Message":
+        return self.apply_updates({"read": read})
+
+    def mark_trashed(self) -> "Message":
+        tags = self.tags()
+        tags.add("trash")
+        return self.apply_updates({"trashed": True, "tags": sorted(tags)})
+
+    def set_spam(self, spam: bool) -> "Message":
+        tags = self.tags()
+        if spam:
+            tags.add("spam")
+        else:
+            tags.discard("spam")
+        return self.apply_updates({"spam": spam, "tags": sorted(tags)})
+
+    def tags(self) -> set[str]:
+        return {str(item) for item in self.get("tags", []) if isinstance(item, str)}
+
+
 class TuiMessageRepository:
     def __init__(self, mail: MailStore):
         self.mail = mail
         self.lock = threading.RLock()
 
-    def messages(self, include_spam: bool = False) -> list[dict[str, Any]]:
-        with self.lock:
-            return self.mail.messages(include_spam=include_spam)
+    def wrap(self, message: dict[str, Any]) -> Message:
+        return message if isinstance(message, Message) and message.repo is self else Message(message, self)
 
-    def search(self, query: str, include_spam: bool = False) -> list[dict[str, Any]]:
+    def wrap_many(self, messages: list[dict[str, Any]]) -> list[Message]:
+        return [self.wrap(message) for message in messages]
+
+    def messages(self, include_spam: bool = False) -> list[Message]:
         with self.lock:
-            return self.mail.search(query, include_spam=include_spam)
+            return self.wrap_many(self.mail.messages(include_spam=include_spam))
+
+    def search(self, query: str, include_spam: bool = False) -> list[Message]:
+        with self.lock:
+            return self.wrap_many(self.mail.search(query, include_spam=include_spam))
 
     def body_from_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
         with self.lock:
@@ -3918,9 +4137,13 @@ class TuiMessageRepository:
         with self.lock:
             return self.mail.sync_state(account_id)
 
-    def account_messages(self, account_id: str) -> list[dict[str, Any]]:
+    def account_messages(self, account_id: str) -> list[Message]:
         with self.lock:
-            return self.mail.account_messages(account_id, with_eml=True)
+            return self.wrap_many(self.mail.account_messages(account_id, with_eml=True))
+
+    def eml_bytes_from_message(self, message: dict[str, Any]) -> bytes | None:
+        with self.lock:
+            return self.mail.eml_bytes_from_message(message)
 
 
 class TuiSyncService:
@@ -3942,32 +4165,6 @@ class TuiComposer:
         return edit_compose_with_config(self.config, account, draft)
 
 
-class TuiPgpService:
-    def __init__(self, config: dict[str, Any]):
-        self.config = config
-
-    def default_options(self, account: Account) -> PgpSendOptions:
-        return default_pgp_options(self.config, account)
-
-    def process_body(self, body: str) -> tuple[str, str | None, bool]:
-        return process_pgp_body(self.config, body)
-
-    def transform(self, account: Account, draft: ComposeDraft, options: PgpSendOptions) -> tuple[ComposeDraft, str | None]:
-        return transform_draft_pgp(self.config, account, draft, options)
-
-    def should_attach_public_key(self, options: PgpSendOptions) -> bool:
-        return pgp_attach_public_key(self.config, options)
-
-    def attach_public_key(self, account: Account, draft: ComposeDraft, options: PgpSendOptions) -> ComposeDraft:
-        return attach_public_key(self.config, account, draft, options)
-
-    def missing_recipients(self, account: Account, draft: ComposeDraft, options: PgpSendOptions) -> list[str]:
-        return missing_pgp_recipients(account, draft, options)
-
-    def resolve_recipients(self, recipients: list[str]) -> list[str]:
-        return resolve_pgp_recipients(recipients)
-
-
 @dataclass
 class TuiDependencies:
     config: dict[str, Any]
@@ -3975,7 +4172,7 @@ class TuiDependencies:
     messages: TuiMessageRepository
     sync: TuiSyncService
     composer: TuiComposer
-    pgp: TuiPgpService
+    pgp: PgpService
 
     @classmethod
     def from_services(cls, services: Services) -> "TuiDependencies":
@@ -3986,7 +4183,7 @@ class TuiDependencies:
             messages=messages,
             sync=TuiSyncService(messages),
             composer=TuiComposer(services.config),
-            pgp=TuiPgpService(services.config),
+            pgp=services.pgp,
         )
 
 
@@ -4002,15 +4199,17 @@ class TuiApp:
         self.account_filter = 0
         self.filter_kind = ""
         self.filter_query = ""
-        self.messages: list[dict[str, Any]] = []
+        self.messages: list[Message] = []
         self.selected = 0
         self.list_scroll = 0
         self.body_scroll = 0
         self.preview_key: str | None = None
-        self.preview_message: dict[str, Any] | None = None
+        self.preview_message: Message | None = None
         self.preview_body = ""
         self.preview_headers = ""
         self.preview_header_mode = False
+        self.preview_pgp_status = ""
+        self.preview_pgp_done = True
         self.selection_start: tuple[int, int] | None = None
         self.selection_end: tuple[int, int] | None = None
         self.selection_active = False
@@ -4019,7 +4218,7 @@ class TuiApp:
         self.error = False
         self.deferred_status: tuple[str, bool] | None = None
         self.running = True
-        self.events: queue.Queue[tuple[str, str, bool]] = queue.Queue()
+        self.events: queue.Queue[tuple[str, Any, bool]] = queue.Queue()
         self.active_tasks: set[str] = set()
         self.colors_enabled = False
         self.list_area = (1, 0, 0, 0)
@@ -4034,7 +4233,7 @@ class TuiApp:
         self.selected = max(0, min(len(self.messages) - 1, self.selected)) if self.messages else 0
         self.list_scroll = min(self.list_scroll, self.selected)
 
-    def filtered_messages(self) -> list[dict[str, Any]]:
+    def filtered_messages(self) -> list[Message]:
         if self.filter_kind == "search" and self.filter_query:
             return self.messages_repo.search(self.filter_query, include_spam=False)
         messages = self.messages_repo.messages(include_spam=self.filter_kind == "spam")
@@ -4123,6 +4322,8 @@ class TuiApp:
             elif kind == "clear_selection":
                 if not self.selection_active:
                     self.clear_selection()
+            elif kind == "pgp_result":
+                self.apply_pgp_result(message, error)
 
     def apply_deferred_status(self) -> None:
         if self.deferred_status is None:
@@ -4149,6 +4350,19 @@ class TuiApp:
 
         threading.Thread(target=run_task, name=f"murat-{name}", daemon=True).start()
 
+    def apply_pgp_result(self, result: Any, error: bool) -> None:
+        if not isinstance(result, dict):
+            return
+        key = str(result.get("key") or "")
+        if not key or self.preview_key != key:
+            return
+        self.preview_body = str(result.get("body") or "")
+        self.preview_pgp_status = str(result.get("status") or "")
+        self.preview_pgp_done = True
+        self.clear_selection()
+        if self.preview_pgp_status:
+            self.set_status(self.preview_pgp_status, error=error)
+
     def action(self, ch: int) -> str | None:
         token = key_token(ch)
         for action, configured in DEFAULT_KEYMAP.items():
@@ -4164,7 +4378,7 @@ class TuiApp:
             return "page_up"
         return None
 
-    def visible_messages(self) -> list[dict[str, Any]]:
+    def visible_messages(self) -> list[Message]:
         if not self.accounts or self.account_filter == 0:
             return self.messages
         account_id = self.accounts[self.account_filter - 1].id
@@ -4234,7 +4448,7 @@ class TuiApp:
             elif self.preview_key:
                 self.close_preview()
 
-    def handle_mail_action(self, stdscr: Any, token: str, visible: list[dict[str, Any]]) -> None:
+    def handle_mail_action(self, stdscr: Any, token: str, visible: list[Message]) -> None:
         message = self.current_action_message(visible)
         if token in ("esc", "q", "space"):
             self.action_scope = None
@@ -4263,6 +4477,12 @@ class TuiApp:
         if token == "a":
             self.action_scope = None
             self.attachment_menu(stdscr, message)
+            return
+        if token == "u":
+            self.action_scope = None
+            message.set_read(False)
+            self.refresh_messages()
+            self.set_status("marked unread")
             return
         if token == "t":
             self.action_scope = None
@@ -4408,7 +4628,7 @@ class TuiApp:
             items.append("R reply-all")
         if message.get("has_attachment") or message.get("attachments"):
             items.append("a attach")
-        items.extend(["f forward", "h headers"])
+        items.extend(["f forward", "h headers", "u unread"])
         try:
             mutable = self.account_for(str(message.get("account_id") or "")).can_mutate_mail()
         except MuratError:
@@ -4449,16 +4669,18 @@ class TuiApp:
         self.preview_body = ""
         self.preview_headers = ""
         self.preview_header_mode = False
+        self.preview_pgp_status = ""
+        self.preview_pgp_done = True
         self.clear_selection()
         self.action_scope = None
 
-    def move_selection(self, delta: int, visible: list[dict[str, Any]]) -> None:
+    def move_selection(self, delta: int, visible: list[Message]) -> None:
         if not visible:
             return
         self.selected = max(0, min(len(visible) - 1, self.selected + delta))
         self.ensure_selected_visible()
 
-    def page(self, direction: int, visible: list[dict[str, Any]]) -> None:
+    def page(self, direction: int, visible: list[Message]) -> None:
         if self.preview_key:
             self.scroll_body(direction * max(1, self.body_area[2] - 1))
             return
@@ -4466,7 +4688,7 @@ class TuiApp:
             self.selected = max(0, min(len(visible) - 1, self.selected + direction * max(1, self.list_area[2] - 1)))
             self.ensure_selected_visible()
 
-    def scroll_list(self, delta: int, visible: list[dict[str, Any]]) -> None:
+    def scroll_list(self, delta: int, visible: list[Message]) -> None:
         if not visible:
             return
         height = max(1, self.list_area[2])
@@ -4550,13 +4772,13 @@ class TuiApp:
             chunks.append(text[left:right])
         return "\n".join(chunks).strip("\n")
 
-    def current_message(self, visible: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def current_message(self, visible: list[Message]) -> Message | None:
         if not visible:
             return None
         self.selected = max(0, min(len(visible) - 1, self.selected))
         return visible[self.selected]
 
-    def current_action_message(self, visible: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def current_action_message(self, visible: list[Message]) -> Message | None:
         if self.preview_key and self.preview_message:
             return self.preview_message
         return self.current_message(visible)
@@ -4569,7 +4791,7 @@ class TuiApp:
         recipients = addresses_from_strings(values)
         return len(recipients) > 1
 
-    def open_selected(self, visible: list[dict[str, Any]]) -> None:
+    def open_selected(self, visible: list[Message]) -> None:
         message = self.current_message(visible)
         if not message:
             return
@@ -4577,27 +4799,50 @@ class TuiApp:
         if cached is None:
             self.set_status("mail not on disk; sync first", error=True)
             return
-        body, status, error = self.pgp.process_body(str(cached.get("body") or ""))
+        raw_body = str(cached.get("body") or "")
+        raw_eml = self.messages_repo.eml_bytes_from_message(message)
+        message.set_read(True)
+        self.refresh_messages()
         self.preview_key = str(message["key"])
-        self.preview_message = dict(message)
-        self.preview_body = body
+        self.preview_message = message
+        self.preview_body = raw_body
         self.preview_headers = eml_header_text(str(cached.get("eml") or ""))
         self.preview_header_mode = False
+        self.preview_pgp_status = ""
+        self.preview_pgp_done = not self.pgp.needs_processing(raw_body, raw_eml)
         self.clear_selection()
         self.body_scroll = 0
-        if status:
-            self.set_status(status, error=error)
+        if not self.preview_pgp_done:
+            self.preview_pgp_status = "processing"
+            self.set_status("pgp: processing")
+            self.start_preview_pgp_task(self.preview_key, raw_body, raw_eml)
 
-    def show_message_headers(self, message: dict[str, Any]) -> None:
+    def start_preview_pgp_task(self, key: str, body: str, eml: bytes | None) -> None:
+        task_name = f"pgp:{key}"
+        if task_name in self.active_tasks:
+            return
+
+        def task() -> None:
+            try:
+                processed, status, error = self.pgp.process_body(body, eml)
+            except MuratError as pgp_error:
+                processed, status, error = body, str(pgp_error), True
+            self.events.put(("pgp_result", {"key": key, "body": processed, "status": status or ""}, error))
+
+        self.start_task(task_name, task)
+
+    def show_message_headers(self, message: Message) -> None:
         cached = self.messages_repo.body_from_message(message)
         if cached is None:
             self.set_status("mail not on disk; sync first", error=True)
             return
         self.preview_key = str(message["key"])
-        self.preview_message = dict(message)
+        self.preview_message = message
         self.preview_body = str(cached.get("body") or "")
         self.preview_headers = eml_header_text(str(cached.get("eml") or ""))
         self.preview_header_mode = True
+        self.preview_pgp_status = ""
+        self.preview_pgp_done = True
         self.clear_selection()
         self.body_scroll = 0
         self.set_status("headers")
@@ -4630,17 +4875,23 @@ class TuiApp:
             elif token in ("k", "up"):
                 selected = max(0, selected - 1)
             elif token in ("enter", "o"):
-                self.open_attachment(account, message, attachments[selected])
+                self.run_attachment_action(lambda: self.open_attachment(account, message, attachments[selected]))
                 return
             elif token == "v":
-                self.view_attachment(account, message, attachments[selected])
+                self.run_attachment_action(lambda: self.view_attachment(account, message, attachments[selected]))
                 return
             elif token == "i":
-                self.import_attachment_key(account, message, attachments[selected])
+                self.run_attachment_action(lambda: self.import_attachment_key(account, message, attachments[selected]))
                 return
             elif token == "s":
-                self.save_attachment(stdscr, account, message, attachments[selected])
+                self.run_attachment_action(lambda: self.save_attachment(stdscr, account, message, attachments[selected]))
                 return
+
+    def run_attachment_action(self, action: Any) -> None:
+        try:
+            action()
+        except MuratError as error:
+            self.set_status(str(error), error=True)
 
     def message_attachments(self, account: Account, message: dict[str, Any]) -> list[dict[str, Any]]:
         return account.message_attachments(message)
@@ -4656,9 +4907,11 @@ class TuiApp:
             self.set_status("not a text attachment", error=True)
             return
         self.preview_key = str(message.get("key") or "")
-        self.preview_message = dict(message)
+        self.preview_message = self.messages_repo.wrap(message)
         self.preview_body = data.decode(errors="replace")
         self.preview_header_mode = False
+        self.preview_pgp_status = ""
+        self.preview_pgp_done = True
         self.body_scroll = 0
         self.clear_selection()
         self.set_status(f"viewing attachment: {name}")
@@ -4669,12 +4922,16 @@ class TuiApp:
         self.set_status(f"opened {path.name}")
 
     def import_attachment_key(self, account: Account, message: dict[str, Any], attachment: dict[str, Any]) -> None:
-        data = self.attachment_data(account, message, attachment)
-        result = pgp_run(["--import"], data)
-        if result.returncode != 0:
-            self.set_status(f"gpg import failed: {stderr_text(result)}", error=True)
-            return
-        self.set_status("imported public key")
+        def task() -> None:
+            data = self.attachment_data(account, message, attachment)
+            result = self.pgp.import_key(data)
+            if result.returncode != 0:
+                self.post_status(f"gpg import failed: {stderr_text(result)}", error=True)
+                return
+            self.post_status("imported public key")
+
+        self.set_status("importing public key")
+        self.start_task("pgp-import", task)
 
     def save_attachment(self, stdscr: Any, account: Account, message: dict[str, Any], attachment: dict[str, Any]) -> None:
         default = str(Path.home() / display_text(str(attachment.get("name") or "attachment")))
@@ -4744,19 +5001,11 @@ class TuiApp:
             finally:
                 curses.reset_prog_mode()
                 stdscr.keypad(True)
-            choice = self.confirm_compose(stdscr, draft)
+            choice, pgp_options = self.confirm_compose(stdscr, account, draft, pgp_options)
             if choice == "edit":
                 continue
-            if choice == "pgp":
-                options = self.confirm_pgp_options(stdscr, account, draft, pgp_options)
-                if options is not None:
-                    pgp_options = options
-                continue
             if choice == "send":
-                options = self.confirm_pgp_options(stdscr, account, draft, pgp_options)
-                if options is None:
-                    continue
-                self.send_async(account, draft, options)
+                self.send_async(account, draft, pgp_options)
                 return
             if choice == "draft":
                 self.messages_repo.save_draft(draft)
@@ -4765,16 +5014,34 @@ class TuiApp:
             self.set_status("compose cancelled")
             return
 
-    def message_body_for_compose(self, message: dict[str, Any]) -> str | None:
-        if self.preview_key == message.get("key") and self.preview_body:
-            return self.preview_body
+    def message_body_for_compose(self, message: Message) -> str | None:
+        message_key = str(message.get("key") or "")
+        if self.preview_key == message_key and self.preview_body:
+            if self.preview_pgp_done:
+                return self.preview_body
+            self.set_status("pgp processing; retry after done", error=True)
+            return None
         cached = self.messages_repo.body_from_message(message)
         if cached is None:
             self.set_status("mail not on disk; sync first", error=True)
             return None
-        body, status, error = self.pgp.process_body(str(cached.get("body") or ""))
-        if status:
-            self.set_status(status, error=error)
+        body = str(cached.get("body") or "")
+        if "-----BEGIN PGP MESSAGE-----" in body:
+            raw_eml = self.messages_repo.eml_bytes_from_message(message)
+            self.preview_key = message_key
+            self.preview_message = message
+            self.preview_body = body
+            self.preview_headers = eml_header_text(str(cached.get("eml") or ""))
+            self.preview_header_mode = False
+            self.preview_pgp_status = "processing"
+            self.preview_pgp_done = False
+            self.clear_selection()
+            self.body_scroll = 0
+            self.start_preview_pgp_task(message_key, body, raw_eml)
+            self.set_status("pgp decrypting; retry after done", error=True)
+            return None
+        if "-----BEGIN PGP SIGNED MESSAGE-----" in body:
+            return self.pgp.extract_clearsigned_text(body)
         return body
 
     def send_async(self, account: Account, draft: ComposeDraft, options: PgpSendOptions) -> None:
@@ -4789,76 +5056,18 @@ class TuiApp:
 
         self.start_task("send", task)
 
-    def confirm_pgp_options(self, stdscr: Any, account: Account, draft: ComposeDraft, options: PgpSendOptions | None = None) -> PgpSendOptions | None:
-        options = options or self.pgp.default_options(account)
-        if not options.enabled:
-            return options
-        message = ""
-        while True:
-            stdscr.erase()
-            height, width = stdscr.getmaxyx()
-            safe_addstr(stdscr, 0, 0, " murat | PGP before send ", width, self.color("header") | curses.A_BOLD)
-            safe_addstr(stdscr, height - 1, 0, "enter send  s sign  e encrypt  S self  a attach  k sign-key  p pub-key  x cancel", width, self.color("header") | curses.A_BOLD)
-            rows = [
-                f"sign:            {'yes' if options.sign else 'no'}",
-                f"encrypt:         {'yes' if options.encrypt else 'no'}",
-                f"encrypt to self: {'yes' if options.encrypt_to_self else 'no'}",
-                f"attach pubkey:   {'yes' if options.attach_public_key else 'no'}",
-                f"signing key:     {options.sign_key}",
-                f"public key:      {options.public_key}",
-                "",
-                message,
-            ]
-            for row, line in enumerate(rows[: max(0, height - 2)]):
-                safe_addstr(stdscr, row + 1, 0, line, width)
-            stdscr.refresh()
-            token = key_token(stdscr.getch())
-            if token == "s":
-                options.sign = not options.sign
-            elif token == "e":
-                options.encrypt = not options.encrypt
-            elif token == "S":
-                options.encrypt_to_self = not options.encrypt_to_self
-            elif token == "a":
-                options.attach_public_key = not options.attach_public_key
-            elif token == "k":
-                value = self.prompt_line(stdscr, "signing key")
-                if value:
-                    options.sign_key = value
-            elif token == "p":
-                value = self.prompt_line(stdscr, "public key")
-                if value:
-                    options.public_key = value
-            elif token in ("x", "q", "esc"):
-                self.set_status("send cancelled")
-                return None
-            elif token == "enter":
-                missing = self.pgp.missing_recipients(account, draft, options)
-                if missing and self.confirm_yes_no(stdscr, f"fetch missing PGP keys via WKD/keyserver? {', '.join(missing)}"):
-                    unresolved = self.pgp.resolve_recipients(missing)
-                    if unresolved:
-                        message = f"still missing: {', '.join(unresolved)}"
-                        continue
-                    missing = []
-                if missing:
-                    message = f"missing keys: {', '.join(missing)}"
-                    continue
-                return options
-
     def confirm_yes_no(self, stdscr: Any, label: str) -> bool:
         value = self.prompt_line(stdscr, f"{label} [y/N]")
         return value.lower() in ("y", "yes")
 
-    def trash_message_async(self, message: dict[str, Any]) -> None:
+    def trash_message_async(self, message: Message) -> None:
         account = self.account_for(str(message.get("account_id") or ""))
         message_key = str(message.get("key") or "")
 
         def task() -> None:
             self.post_status("moving to trash")
             account.trash_message(message)
-            tags = {str(item) for item in message.get("tags", []) if isinstance(item, str)}
-            tags.add("trash")
-            self.messages_repo.update_message(message_key, {"trashed": True, "tags": sorted(tags)})
+            message.mark_trashed()
             self.post_refresh()
             self.post_status("moved to trash")
 
@@ -4866,7 +5075,7 @@ class TuiApp:
             self.close_preview()
         self.start_task("trash", task)
 
-    def toggle_message_spam_async(self, message: dict[str, Any]) -> None:
+    def toggle_message_spam_async(self, message: Message) -> None:
         account = self.account_for(str(message.get("account_id") or ""))
         message_key = str(message.get("key") or "")
         target = not bool(message.get("spam"))
@@ -4874,12 +5083,7 @@ class TuiApp:
         def task() -> None:
             self.post_status("marking spam" if target else "marking not spam")
             account.set_message_spam(message, target)
-            tags = {str(item) for item in message.get("tags", []) if isinstance(item, str)}
-            if target:
-                tags.add("spam")
-            else:
-                tags.discard("spam")
-            self.messages_repo.update_message(message_key, {"spam": target, "tags": sorted(tags)})
+            message.set_spam(target)
             self.post_refresh()
             self.post_status("marked spam" if target else "marked not spam")
 
@@ -4887,29 +5091,59 @@ class TuiApp:
             self.close_preview()
         self.start_task("spam", task)
 
-    def confirm_compose(self, stdscr: Any, draft: ComposeDraft) -> str:
+    def confirm_compose(self, stdscr: Any, account: Account, draft: ComposeDraft, options: PgpSendOptions) -> tuple[str, PgpSendOptions]:
         lines = format_draft_preview(draft).splitlines()
         scroll = 0
+        message = ""
         while True:
             stdscr.erase()
             height, width = stdscr.getmaxyx()
             safe_addstr(stdscr, 0, 0, " murat | compose preview ", width, self.color("header") | curses.A_BOLD)
-            safe_addstr(stdscr, height - 1, 0, "s send  p pgp  d draft  e edit  x cancel", width, self.color("header") | curses.A_BOLD)
-            body_height = height - 2
+            pgp_line = self.compose_pgp_line(options, message, width)
+            safe_addstr(stdscr, height - 2, 0, pgp_line, width, self.color("status"))
+            safe_addstr(
+                stdscr,
+                height - 1,
+                0,
+                "enter/s send  e edit  d draft  g sign  E encrypt  S self  A attach  P pub-key  x cancel",
+                width,
+                self.color("header") | curses.A_BOLD,
+            )
+            body_height = max(0, height - 3)
             for index, line in enumerate(lines[scroll : scroll + body_height]):
                 safe_addstr(stdscr, index + 1, 0, line, width)
             stdscr.refresh()
             token = key_token(stdscr.getch())
             if token in ("s", "enter"):
-                return "send"
-            if token == "p":
-                return "pgp"
+                return "send", options
             if token == "d":
-                return "draft"
+                return "draft", options
             if token == "e":
-                return "edit"
+                return "edit", options
+            if token == "g":
+                options.sign = not options.sign
+                message = ""
+                continue
+            if token == "E":
+                options.encrypt = not options.encrypt
+                message = ""
+                continue
+            if token == "S":
+                options.encrypt_to_self = not options.encrypt_to_self
+                message = ""
+                continue
+            if token == "A":
+                options.attach_public_key = not options.attach_public_key
+                message = ""
+                continue
+            if token == "P":
+                value = self.prompt_line(stdscr, "public key")
+                if value:
+                    options.public_key = value
+                message = ""
+                continue
             if token in ("x", "q", "esc"):
-                return "cancel"
+                return "cancel", options
             if token in ("j", "down"):
                 scroll = min(max(0, len(lines) - body_height), scroll + 1)
             if token in ("k", "up"):
@@ -4918,6 +5152,21 @@ class TuiApp:
                 scroll = min(max(0, len(lines) - body_height), scroll + body_height)
             if token == "pageup":
                 scroll = max(0, scroll - body_height)
+
+    def compose_pgp_line(self, options: PgpSendOptions, message: str, width: int) -> str:
+        if not options.enabled:
+            text = "PGP: disabled"
+        else:
+            text = (
+                f"PGP: g sign={'yes' if options.sign else 'no'}  "
+                f"E encrypt={'yes' if options.encrypt else 'no'}  "
+                f"S self={'yes' if options.encrypt_to_self else 'no'}  "
+                f"A attach={'yes' if options.attach_public_key else 'no'}  "
+                f"P pub={options.public_key or '-'}"
+            )
+        if message:
+            text = f"{text} | {message}"
+        return compact(text, max(10, width - 1))
 
     def account_for(self, account_id: str) -> Account:
         for account in self.accounts:
@@ -4979,7 +5228,7 @@ class TuiApp:
         for row in range(height):
             safe_addstr(stdscr, y + row, x, "|", 2, self.color("divider") | curses.A_DIM)
 
-    def draw_list(self, stdscr: Any, y: int, x: int, height: int, width: int, messages: list[dict[str, Any]]) -> None:
+    def draw_list(self, stdscr: Any, y: int, x: int, height: int, width: int, messages: list[Message]) -> None:
         if not messages:
             safe_addstr(stdscr, y, x, "no mail; press s to sync", width)
             return
@@ -5001,7 +5250,7 @@ class TuiApp:
             if index != self.selected and message.get("spam"):
                 safe_addraw(stdscr, y + row, x + spam_x, "!", max(0, width - spam_x), self.color("spam") | curses.A_BOLD)
 
-    def draw_body(self, stdscr: Any, y: int, x: int, height: int, width: int, messages: list[dict[str, Any]]) -> None:
+    def draw_body(self, stdscr: Any, y: int, x: int, height: int, width: int, messages: list[Message]) -> None:
         message = self.preview_message
         if not message:
             return
