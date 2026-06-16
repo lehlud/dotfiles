@@ -6,6 +6,7 @@ _fastfetch_download() {
     local arch
     local sys
     local archive_dir
+    local release
 
     case "$(uname -m)" in
         x86_64)
@@ -34,15 +35,17 @@ _fastfetch_download() {
     esac
 
     archive_dir="fastfetch-$sys-$arch"
+    release="$(auto_update_latest_release_tag fastfetch-cli/fastfetch)" || return 1
 
-    AUTO_UPDATE_URL="https://github.com/fastfetch-cli/fastfetch/releases/latest/download/$archive_dir.tar.gz"
+    AUTO_UPDATE_URL="https://github.com/fastfetch-cli/fastfetch/releases/download/$release/$archive_dir.tar.gz"
     AUTO_UPDATE_SOURCE_REL="$archive_dir"
     AUTO_UPDATE_SOURCE_BIN_REL="$archive_dir/usr/bin/fastfetch"
+    AUTO_UPDATE_VERSION="$release"
 }
 
 _fastfetch_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/fastfetch")"
 
-if auto_update_ensure_tar_app fastfetch "$_fastfetch_cache_dir" fastfetch fastfetch/usr/bin/fastfetch 7 _fastfetch_download; then
+if auto_update_ensure_tar_app fastfetch "$_fastfetch_cache_dir" fastfetch fastfetch/usr/bin/fastfetch 3 _fastfetch_download; then
     exec "$_fastfetch_cache_dir/fastfetch/usr/bin/fastfetch" "$@"
 fi
 

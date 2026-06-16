@@ -40,11 +40,12 @@ _helix_download() {
     AUTO_UPDATE_URL="https://github.com/helix-editor/helix/releases/download/$release/$archive_dir.tar.xz"
     AUTO_UPDATE_SOURCE_REL="$archive_dir"
     AUTO_UPDATE_SOURCE_BIN_REL="$archive_dir/hx"
+    AUTO_UPDATE_VERSION="$release"
 }
 
 _helix_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/helix")"
 
-if auto_update_ensure_tar_app helix "$_helix_cache_dir" helix helix/hx 7 _helix_download; then
+if auto_update_ensure_tar_app helix "$_helix_cache_dir" helix helix/hx 3 _helix_download; then
     export HELIX_RUNTIME="$_helix_cache_dir/helix/runtime"
     exec "$_helix_cache_dir/helix/hx" "$@"
 fi

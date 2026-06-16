@@ -45,8 +45,9 @@ _bun_resolve() {
     AUTO_UPDATE_URL="https://github.com/oven-sh/bun/releases/download/$tag/$source_dir.zip"
     AUTO_UPDATE_SOURCE_REL="$source_dir"
     AUTO_UPDATE_SOURCE_BIN_REL="$source_dir/bun"
+    AUTO_UPDATE_VERSION="$tag"
 }
 
 _cache_dir="$(auto_update_platform_cache_dir "${XDG_CACHE_HOME:-$HOME/.cache}/bun-bin")"
-auto_update_ensure_zip_app bun "$_cache_dir" bun bun/bun 7 _bun_resolve https://github.com/oven-sh/bun
+auto_update_ensure_zip_app bun "$_cache_dir" bun bun/bun 3 _bun_resolve https://github.com/oven-sh/bun
 exec "$_cache_dir/bun/bun" "$@"

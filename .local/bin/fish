@@ -26,6 +26,7 @@ _fish_download() {
             AUTO_UPDATE_URL="https://github.com/fish-shell/fish-shell/releases/download/$release/fish-$release-linux-$arch.tar.xz"
             AUTO_UPDATE_SOURCE_REL=fish
             AUTO_UPDATE_SOURCE_BIN_REL=fish
+            AUTO_UPDATE_VERSION="$release"
             ;;
         Darwin)
             release="$(auto_update_latest_release_tag fish-shell/fish-shell)" || return 1
@@ -33,6 +34,7 @@ _fish_download() {
             AUTO_UPDATE_URL="https://github.com/fish-shell/fish-shell/releases/download/$release/fish-$release.app.zip"
             AUTO_UPDATE_SOURCE_REL="fish-$release.app"
             AUTO_UPDATE_SOURCE_BIN_REL="fish-$release.app/Contents/Resources/base/usr/local/bin/fish"
+            AUTO_UPDATE_VERSION="$release"
             ;;
         *)
             printf 'fish update failed: unsupported system: %s\n' "$(uname -s)" >&2
@@ -45,12 +47,12 @@ _fish_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/fish")"
 
 case "$(uname -s)" in
     Darwin)
-        if auto_update_ensure_zip_app fish "$_fish_cache_dir" fish.app fish.app/Contents/Resources/base/usr/local/bin/fish 7 _fish_download; then
+        if auto_update_ensure_zip_app fish "$_fish_cache_dir" fish.app fish.app/Contents/Resources/base/usr/local/bin/fish 3 _fish_download; then
             exec "$_fish_cache_dir/fish.app/Contents/Resources/base/usr/local/bin/fish" "$@"
         fi
         ;;
     *)
-        if auto_update_ensure_tar_app fish "$_fish_cache_dir" fish fish 7 _fish_download; then
+        if auto_update_ensure_tar_app fish "$_fish_cache_dir" fish fish 3 _fish_download; then
             exec "$_fish_cache_dir/fish" "$@"
         fi
         ;;

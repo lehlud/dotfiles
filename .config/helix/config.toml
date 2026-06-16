@@ -27,4 +27,4 @@ B = ':sh hx-git-blame %{cursor_line} "%{buffer_name}"'
 m = ':vs %sh{hx-man-file "%{selection}"}'
 
 [keys.insert]
-v = { p = "normal_mode" }
+v = { v = "normal_mode" }

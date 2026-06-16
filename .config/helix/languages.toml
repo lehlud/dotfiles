@@ -26,3 +26,17 @@ language-servers = ["deno-lsp"]
 command = "deno"
 args = ["lsp"]
 config.deno.enable = true
+
+[language-server.murat]
+command = "murat"
+args = ["lsp"]
+
+[[language]]
+name = "murat-compose"
+scope = "source.murat-compose"
+file-types = [{ glob = "murat-compose-*.txt" }, { glob = "**/murat-compose-*.txt" }]
+language-servers = ["murat"]
+
+[[grammar]]
+name = "haskell"
+source = { git = "https://github.com/tree-sitter-grammars/tree-sitter-haskell", rev = "98aedbd2d6947a168ba3ba3755d70b0cb6b78395" }

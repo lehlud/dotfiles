@@ -46,8 +46,9 @@ _deno_resolve() {
     AUTO_UPDATE_URL="https://github.com/denoland/deno/releases/download/$tag/deno-$target.zip"
     AUTO_UPDATE_SOURCE_REL=deno
     AUTO_UPDATE_SOURCE_BIN_REL=deno
+    AUTO_UPDATE_VERSION="$tag"
 }
 
 _cache_dir="$(auto_update_platform_cache_dir "${XDG_CACHE_HOME:-$HOME/.cache}/deno-bin")"
-auto_update_ensure_zip_app deno "$_cache_dir" deno deno 7 _deno_resolve https://github.com/denoland/deno
+auto_update_ensure_zip_app deno "$_cache_dir" deno deno 3 _deno_resolve https://github.com/denoland/deno
 exec "$_cache_dir/deno" "$@"

@@ -40,11 +40,12 @@ _sendme_download() {
     AUTO_UPDATE_URL="https://github.com/n0-computer/sendme/releases/download/$release/$archive_name"
     AUTO_UPDATE_SOURCE_REL=sendme
     AUTO_UPDATE_SOURCE_BIN_REL=sendme
+    AUTO_UPDATE_VERSION="$release"
 }
 
 _sendme_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/sendme")"
 
-if auto_update_ensure_tar_app sendme "$_sendme_cache_dir" sendme sendme 7 _sendme_download; then
+if auto_update_ensure_tar_app sendme "$_sendme_cache_dir" sendme sendme 3 _sendme_download; then
     exec "$_sendme_cache_dir/sendme" "$@"
 fi
 

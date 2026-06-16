@@ -264,6 +264,11 @@ _auto_update_install_app() {
     fi
 
     touch "$cache_dir/$bin_rel"
+    if [ -n "${AUTO_UPDATE_VERSION:-}" ]; then
+        if ! printf '%s\n' "$AUTO_UPDATE_VERSION" >"$cache_dir/.auto-update-version"; then
+            printf '%s %s warning: could not write version metadata\n' "$name" "$action" >&2
+        fi
+    fi
     rm -rf "$backup" "$tmp_dir"
 }
 
@@ -280,14 +285,17 @@ _auto_update_ensure_app() {
     local cache_dir="$2"
     local target_rel="$3"
     local bin_rel="$4"
-    local max_age_days="${5:-7}"
+    local max_age_days="${5:-3}"
     local resolver="$6"
     local probe_url="${7:-https://github.com}"
     local archive_tool="$8"
     local installer="$9"
     local bin_path="$cache_dir/$bin_rel"
+    local version_path="$cache_dir/.auto-update-version"
+    local stale_path="$bin_path"
     local has_binary=0
     local action=install
+    local installed_version
 
     if ! mkdir -p "$cache_dir"; then
         printf '%s install failed: could not create cache dir\n' "$name" >&2
@@ -297,8 +305,11 @@ _auto_update_ensure_app() {
     if [ -x "$bin_path" ]; then
         has_binary=1
         action=update
+        if [ -e "$version_path" ]; then
+            stale_path="$version_path"
+        fi
 
-        if ! auto_update_is_stale "$bin_path" "$max_age_days"; then
+        if ! auto_update_is_stale "$stale_path" "$max_age_days"; then
             return 0
         fi
     fi
@@ -332,7 +343,7 @@ _auto_update_ensure_app() {
         return 1
     fi
 
-    unset AUTO_UPDATE_URL AUTO_UPDATE_SOURCE_REL AUTO_UPDATE_SOURCE_BIN_REL
+    unset AUTO_UPDATE_URL AUTO_UPDATE_SOURCE_REL AUTO_UPDATE_SOURCE_BIN_REL AUTO_UPDATE_VERSION
 
     if ! "$resolver"; then
         printf '%s %s failed: could not resolve download\n' "$name" "$action" >&2
@@ -352,6 +363,16 @@ _auto_update_ensure_app() {
         return 1
     fi
 
+    if [ "$has_binary" -eq 1 ] && [ -n "${AUTO_UPDATE_VERSION:-}" ] && [ -r "$version_path" ]; then
+        IFS= read -r installed_version <"$version_path" || installed_version=
+        if [ "$installed_version" = "$AUTO_UPDATE_VERSION" ]; then
+            if ! touch "$version_path"; then
+                printf '%s update warning: could not refresh version metadata\n' "$name" >&2
+            fi
+            return 0
+        fi
+    fi
+
     if "$installer" "$name" "$action" "$AUTO_UPDATE_URL" "$cache_dir" "$AUTO_UPDATE_SOURCE_REL" "$AUTO_UPDATE_SOURCE_BIN_REL" "$target_rel" "$bin_rel"; then
         return 0
     fi
@@ -364,9 +385,9 @@ _auto_update_ensure_app() {
 }
 
 auto_update_ensure_tar_app() {
-    _auto_update_ensure_app "$1" "$2" "$3" "$4" "${5:-7}" "$6" "${7:-https://github.com}" tar _auto_update_install_tar_app
+    _auto_update_ensure_app "$1" "$2" "$3" "$4" "${5:-3}" "$6" "${7:-https://github.com}" tar _auto_update_install_tar_app
 }
 
 auto_update_ensure_zip_app() {
-    _auto_update_ensure_app "$1" "$2" "$3" "$4" "${5:-7}" "$6" "${7:-https://github.com}" unzip _auto_update_install_zip_app
+    _auto_update_ensure_app "$1" "$2" "$3" "$4" "${5:-3}" "$6" "${7:-https://github.com}" unzip _auto_update_install_zip_app
 }
