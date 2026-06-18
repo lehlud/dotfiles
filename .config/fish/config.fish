@@ -57,7 +57,7 @@ alias z="zellij"
 alias ff="fastfetch"
 alias hx="helix"
 
-alias o="xdg-open"
+alias o="command xdg-open"
 
 alias host="lubox host-exec bash"
 

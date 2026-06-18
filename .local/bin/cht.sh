@@ -330,6 +330,29 @@ get_query_options()
   printf "%s" "$query"
 }
 
+init_pager()
+{
+  [ -n "${defpager:-}" ] && return
+
+  if command -v less >/dev/null; then
+    defpager="less -R"
+  elif command -v more >/dev/null; then
+    defpager="more"
+  else
+    defpager="cat"
+  fi
+}
+
+chtsh_page_file()
+{
+  if [ -t 1 ]; then
+    init_pager
+    ${PAGER:-$defpager} "$1"
+  else
+    cat "$1"
+  fi
+}
+
 do_query()
 {
   local query="$*"
@@ -341,12 +364,7 @@ do_query()
   fi
 
   eval curl "$b_opts" -s "$uri" > "$TMP1"
-
-  if [ -z "$lines" ] || [ "$(wc -l "$TMP1" | awk '{print $1}')" -lt "$lines" ]; then
-    cat "$TMP1"
-  else
-    ${PAGER:-$defpager} "$TMP1"
-  fi
+  chtsh_page_file "$TMP1"
 }
 
 prepare_query()
@@ -490,8 +508,12 @@ for o; do
 done
 query=$(echo "$input" | sed 's@ *$@@; s@^ *@@; s@ @/@; s@ @+@g')
 
+TMP1=$(mktemp /tmp/cht.sh.XXXXXXXXXXXXX)
+trap 'rm -f $TMP1 $TMP2' EXIT
+trap 'true' INT
+
 if [ "$shell_mode" != yes ]; then
-  curl -s "${CHTSH_URL}"/"$(get_query_options "$query")"
+  do_query "$query"
   exit 0
 else
   new_section="$1"
@@ -509,7 +531,7 @@ else
   fi
   if [ -n "$this_query" ] && [ -z "$CHEATSH_RESTART" ]; then
     printf "$this_prompt$this_query\n"
-    curl -s "${CHTSH_URL}"/"$(get_query_options "$query")"
+    do_query "$query"
   fi
 fi
 
@@ -523,15 +545,7 @@ fi
 command -v rlwrap >/dev/null || { echo 'DEPENDENCY: install "rlwrap" to use cht.sh in the shell mode' >&2; exit 1; }
 
 mkdir -p "$CHTSH_HOME/"
-lines=$(tput lines)
-
-if command -v less >/dev/null; then
-  defpager="less -R"
-elif command -v more >/dev/null; then
-  defpager="more"
-else
-  defpager="cat"
-fi
+init_pager
 
 cmd_cd() {
   if [ $# -eq 0 ]; then
@@ -756,10 +770,6 @@ cmd_version() {
   fi
   rm -f "$TMP2" > /dev/null 2>&1
 }
-
-TMP1=$(mktemp /tmp/cht.sh.XXXXXXXXXXXXX)
-trap 'rm -f $TMP1 $TMP2' EXIT
-trap 'true' INT
 
 if ! [ -e "$CHTSH_HOME/.hushlogin" ] && [ -z "$this_query" ]; then
   echo "type 'help' for the cht.sh shell help"

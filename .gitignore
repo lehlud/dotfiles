@@ -51,6 +51,7 @@
 !/.local/bin/hx-git-blame
 !/.local/bin/cht.sh
 !/.local/bin/murat
+!/.local/bin/xdg-open
 
 !/.config/
 /.config/*

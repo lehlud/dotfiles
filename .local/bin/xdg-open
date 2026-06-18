@@ -1,0 +1,127 @@
+#!/bin/sh
+# lubox xdg-open shim. Inside containers, open targets on host.
+
+usage()
+{
+    cat <<'EOF'
+Usage: xdg-open { file | URL }
+       xdg-open { --help | --manual | --version }
+
+Opens a file or URL in the user's preferred application.
+EOF
+}
+
+host_os="${LUBOX_HOST_OS:-}"
+if [ -z "$host_os" ]; then
+    case "$(uname -s)" in
+        Darwin) host_os=darwin ;;
+        Linux) host_os=linux ;;
+        *) host_os="$(uname -s | tr '[:upper:]' '[:lower:]')" ;;
+    esac
+fi
+
+host_os="$(printf '%s' "$host_os" | tr '[:upper:]' '[:lower:]')"
+
+system_xdg_open()
+{
+    self="$0"
+    case "$self" in
+        /*) ;;
+        */*) self="$(pwd -P)/$self" ;;
+        *) self="$(command -v -- "$self" 2>/dev/null || printf '%s\n' "$self")" ;;
+    esac
+
+    old_ifs=$IFS
+    IFS=:
+    for dir in $PATH; do
+        [ -n "$dir" ] || dir=.
+        candidate="$dir/xdg-open"
+        [ -x "$candidate" ] || continue
+        case "$candidate" in
+            /*) abs="$candidate" ;;
+            *) abs="$(pwd -P)/$candidate" ;;
+        esac
+        if [ "$abs" = "$self" ] || [ "$candidate" = "$0" ]; then
+            continue
+        fi
+        printf '%s\n' "$candidate"
+        IFS=$old_ifs
+        return 0
+    done
+    IFS=$old_ifs
+    return 1
+}
+
+if [ -z "${LUBOX_CONTAINER_NAME:-}" ] && [ "$host_os" = linux ]; then
+    xdg_open="$(system_xdg_open)" || {
+        printf 'xdg-open: no system xdg-open found\n' >&2
+        exit 3
+    }
+    exec "$xdg_open" "$@"
+fi
+
+case "${1:-}" in
+    --help)
+        usage
+        exit 0
+        ;;
+    --manual)
+        if command -v man >/dev/null 2>&1; then
+            exec man xdg-open
+        fi
+        usage
+        exit 0
+        ;;
+    --version)
+        printf '%s\n' 'xdg-open lubox-host-bridge'
+        exit 0
+        ;;
+    --*)
+        printf 'xdg-open: unexpected option: %s\n' "$1" >&2
+        usage >&2
+        exit 1
+        ;;
+esac
+
+if [ "$#" -ne 1 ]; then
+    usage >&2
+    exit 1
+fi
+
+target=$1
+
+if [ -n "${LUBOX_CONTAINER_NAME:-}" ]; then
+    if [ "${LUBOX_HOST_EXEC:-1}" = 0 ]; then
+        printf 'xdg-open: lubox host-exec disabled for this container\n' >&2
+        exit 3
+    fi
+    case "$host_os" in
+        darwin | macos)
+            exec /usr/local/bin/lubox host-exec open "$target"
+            ;;
+        linux)
+            exec /usr/local/bin/lubox host-exec xdg-open "$target"
+            ;;
+        *)
+            printf 'xdg-open: unsupported host OS: %s\n' "$host_os" >&2
+            exit 3
+            ;;
+    esac
+fi
+
+case "$host_os" in
+    darwin | macos)
+        exec open "$target"
+        ;;
+    linux)
+        xdg_open="$(system_xdg_open)" || {
+            printf 'xdg-open: no system xdg-open found\n' >&2
+            exit 3
+        }
+        exec "$xdg_open" "$target"
+        ;;
+    *)
+        printf 'xdg-open: unsupported host OS: %s\n' "$host_os" >&2
+        exit 3
+        ;;
+esac

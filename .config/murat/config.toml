@@ -5,13 +5,6 @@ split = "vertical" # vertical = top/bottom, horizontal = side-by-side
 page_size = 50
 editor = "" # empty = $EDITOR, then vi
 
-[theme]
-header = "reverse"
-selected = "reverse"
-unread = "bold"
-status = "reverse"
-error = "bold"
-
 [keys]
 quit = "q"
 force_quit = "Q"
@@ -35,8 +28,8 @@ gpg_recipient = "0A12120F017001CDABDFDC468874D17B49BF1763"
 
 [pgp]
 enabled = true
-sign = false
+sign = true
 encrypt = false
-encrypt_to_self = true
-attach_public_key = false
+encrypt_to_self = false
+attach_public_key = true
 public_key = ""
