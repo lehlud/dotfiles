@@ -52,6 +52,7 @@
 !/.local/bin/cht.sh
 !/.local/bin/murat
 !/.local/bin/xdg-open
+!/.local/bin/gdu
 
 !/.config/
 /.config/*

@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_gdu_download() {
+    local arch
+    local os
+    local release
+    local archive_name
+    local bin_name
+
+    case "$(uname -m)" in
+        x86_64 | amd64)
+            arch=amd64
+            ;;
+        aarch64 | arm64)
+            arch=arm64
+            ;;
+        i386 | i686)
+            arch=386
+            ;;
+        armv5*)
+            arch=armv5l
+            ;;
+        armv6*)
+            arch=armv6l
+            ;;
+        armv7*)
+            arch=armv7l
+            ;;
+        arm*)
+            arch=arm
+            ;;
+        ppc64le | ppc64 | s390x)
+            arch="$(uname -m)"
+            ;;
+        *)
+            printf 'gdu update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+            return 2
+            ;;
+    esac
+
+    case "$(uname -s)" in
+        Linux)
+            os=linux
+            ;;
+        Darwin)
+            os=darwin
+            ;;
+        FreeBSD)
+            os=freebsd
+            ;;
+        NetBSD)
+            os=netbsd
+            ;;
+        OpenBSD)
+            os=openbsd
+            ;;
+        *)
+            printf 'gdu update failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    release="$(auto_update_latest_release_tag dundee/gdu)" || return 1
+    bin_name="gdu_${os}_${arch}"
+    archive_name="$bin_name.tgz"
+
+    AUTO_UPDATE_URL="https://github.com/dundee/gdu/releases/download/$release/$archive_name"
+    AUTO_UPDATE_SOURCE_REL="$bin_name"
+    AUTO_UPDATE_SOURCE_BIN_REL="$bin_name"
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_gdu_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/gdu")"
+
+if auto_update_ensure_tar_app gdu "$_gdu_cache_dir" gdu gdu 3 _gdu_download; then
+    exec "$_gdu_cache_dir/gdu" "$@"
+fi
+
+exit 1
