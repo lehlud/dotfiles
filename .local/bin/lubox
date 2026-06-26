@@ -1242,6 +1242,26 @@ class Engine:
             die(f"lubox: container not found: {cname}\nTry: lubox create {cname.removeprefix('lubox-')}")
         return None
 
+    def inspect_containers(self, cnames: Sequence[str]) -> Dict[str, Dict[str, Any]]:
+        names = list(cnames)
+        if not names:
+            return {}
+        cp = self.run(["inspect"] + names, check=False, capture=True)
+        if cp.returncode != 0:
+            if engine_unavailable_error(self.name, cp.stderr, cp.stdout):
+                raise CommandError(self.argv(["inspect"] + names), cp.returncode, cp.stderr or cp.stdout)
+            return {}
+        try:
+            data = json.loads(_decode_output(cp.stdout))
+        except json.JSONDecodeError as exc:
+            die(f"lubox: cannot parse inspect JSON: {exc}")
+        rows = data if isinstance(data, list) else [data]
+        infos: Dict[str, Dict[str, Any]] = {}
+        for cname, item in zip(names, rows):
+            if isinstance(item, dict):
+                infos[cname] = item
+        return infos
+
     def container_exists(self, cname: str) -> bool:
         return self.inspect_container(cname, required=False) is not None
 
@@ -1550,7 +1570,7 @@ class ContainerManager:
         args += self.key_value_args("--label", self.create_labels(name, base_image, host_exec, sockets))
         args += self.env_args(self.create_env(name, cname, shell_path, host_exec, sockets))
         if is_linux():
-            args += self.linux_session_args()
+            args += self.linux_session_mount_args()
         args += self.create_mount_args(mount_dir, sockets)
         args += self.create_secret_args(name, host_exec)
         args += self.create_engine_identity_args()
@@ -1837,9 +1857,8 @@ class ContainerManager:
                     groups.append(self.gpg_socket_forward_group(tuple(forwards), host_home, container_id, proxy_home))
         return groups
 
-    def linux_session_args(self) -> List[str]:
-        args: List[str] = []
-        pass_env = [
+    def linux_session_env_keys(self) -> List[str]:
+        keys = [
             "DISPLAY",
             "WAYLAND_DISPLAY",
             "XDG_RUNTIME_DIR",
@@ -1853,18 +1872,21 @@ class ContainerManager:
         ]
         for key in sorted(os.environ):
             if key.startswith("LC_"):
-                pass_env.append(key)
-        for key in pass_env:
+                keys.append(key)
+        return keys
+
+    def linux_session_env(self) -> List[Tuple[str, str]]:
+        env: List[Tuple[str, str]] = []
+        for key in self.linux_session_env_keys():
             value = os.environ.get(key)
             if value:
-                args += ["--env", f"{key}={value}"]
+                env.append((key, value))
+        return env
+
+    def linux_session_mount_args(self) -> List[str]:
+        args: List[str] = []
         if os.environ.get("DISPLAY") and pathlib.Path("/tmp/.X11-unix").exists():
             args += ["--mount", "type=bind,src=/tmp/.X11-unix,dst=/tmp/.X11-unix"]
-        xauth = os.environ.get("XAUTHORITY")
-        if xauth:
-            xp = pathlib.Path(xauth)
-            if xp.exists() and not path_under(xp, self.ident.home):
-                args += ["--mount", f"type=bind,src={xp},dst={xp},readonly"]
         runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
         if runtime_dir:
             xr = pathlib.Path(runtime_dir)
@@ -2170,12 +2192,50 @@ class ContainerManager:
         else:
             print(f"destroyed {cname}; image kept: {image_name(name)}")
 
-    def enter(self, name: str, cmd: Sequence[str], *, xquartz: bool = False) -> int:
+    def enter(self, name: str, cmd: Sequence[str], *, xquartz: bool = False, fast: bool = False) -> int:
+        if fast:
+            result = self.enter_fast_linux(name, cmd)
+            if result is not None:
+                return result
         info = self.enter_info(name)
         cname = container_name(name)
         self.ensure_enter_ready(name, cname, info)
         exec_args = self.enter_exec_args(name, cname, info, cmd, xquartz=xquartz)
         return subprocess.call(self.engine.argv(exec_args))
+
+    def enter_fast_linux(self, name: str, cmd: Sequence[str]) -> Optional[int]:
+        if not is_linux():
+            return None
+        validate_box_name(name)
+        cname = container_name(name)
+        cfg = self.load_hostexec_config_if_present(name)
+        if cfg is None:
+            return None
+        host_exec = bool(cfg.get("enabled"))
+        if not host_exec and self.paths.token_file(name).exists():
+            return None
+        cwd = self.fast_container_cwd()
+        shell_path = self.container_shell_path()
+        exec_args = ["exec"]
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            exec_args.append("-it")
+        elif sys.stdin.isatty():
+            exec_args.append("-i")
+        exec_args += ["--user", f"{self.ident.uid}:{self.ident.gid}", "-w", cwd]
+        exec_args += self.env_args(self.lubox_exec_env(name, cname, host_exec))
+        exec_args += self.env_args(self.linux_session_env())
+        run_cmd = strip_dashdash(cmd)
+        if run_cmd:
+            exec_args += [cname, shell_path, "-l", "-c", shlex.join(run_cmd)]
+        else:
+            exec_args += [cname, shell_path, "-l"]
+        return subprocess.call(self.engine.argv(exec_args))
+
+    def fast_container_cwd(self) -> str:
+        cwd = pathlib.Path.cwd()
+        if cwd.exists() and path_under(cwd, self.ident.home):
+            return str(cwd)
+        return str(self.ident.home)
 
     def enter_info(self, name: str) -> Dict[str, Any]:
         try:
@@ -2211,7 +2271,10 @@ class ContainerManager:
                     die(f"lubox: enter preflight failed for {name}: {detail}")
 
     def ensure_enter_socket_proxies(self, name: str, info: Dict[str, Any]) -> None:
-        if is_linux() or not self.hostexec_enabled(name, info):
+        if not self.hostexec_enabled(name, info):
+            return
+        if is_linux():
+            self.ensure_hostexec_server(name, True, False, False)
             return
         ssh_agent = self.ssh_agent_enabled(name, info)
         gpg_agent = self.gpg_agent_enabled(name, info)
@@ -2265,7 +2328,9 @@ class ContainerManager:
         return engine_unavailable_error(self.engine.name, exc.stderr)
 
     def enter_preflight_needed(self, name: str, info: Dict[str, Any]) -> bool:
-        return self.hostexec_enabled(name, info) or ((self.ssh_agent_enabled(name, info) or self.gpg_agent_label_enabled(info)) and not is_linux())
+        if is_linux():
+            return False
+        return self.hostexec_enabled(name, info) or self.ssh_agent_enabled(name, info) or self.gpg_agent_label_enabled(info)
 
     def enter_preflight(self, name: str, cname: str, info: Dict[str, Any]) -> subprocess.CompletedProcess:
         host_exec = self.hostexec_enabled(name, info)
@@ -2473,28 +2538,10 @@ class ContainerManager:
         bind_host: str,
         host_exec: bool,
     ) -> subprocess.Popen:
-        exec_args = [
-            "exec",
-            "-i",
-            "--user",
-            f"{self.ident.uid}:{self.ident.gid}",
-            "--env",
-            f"LUBOX_NAME={name}",
-            "--env",
-            f"LUBOX_CONTAINER_NAME={name}",
-            "--env",
-            f"LUBOX_ENGINE_CONTAINER_NAME={cname}",
-            "--env",
-            f"LUBOX_HOST_LUBOX={host_lubox_path()}",
-            "--env",
-            f"LUBOX_HOST_OS={host_os_name()}",
-            "--env",
-            f"LUBOX_HOST_EXEC={'1' if host_exec else '0'}",
-            "--env",
-            f"LUBOX_HOSTEXEC_CONFIG={CONTAINER_CONFIG_PATH}",
-            "--env",
-            f"PATH={self.container_path_value(host_exec)}",
-        ]
+        exec_args = ["exec", "-i", "--user", f"{self.ident.uid}:{self.ident.gid}"]
+        exec_args += self.env_args(self.lubox_exec_env(name, cname, host_exec))
+        if is_linux():
+            exec_args += self.env_args(self.linux_session_env())
         if auth == "password":
             exec_args += ["--env", f"PASSWORD={password}"]
         if self.ssh_agent_enabled(name):
@@ -2957,13 +3004,16 @@ class ContainerManager:
         if gpg_agent and not is_linux():
             args += ["--env", f"GNUPGHOME={container_gpg_home(self.ident.uid)}"]
             args += ["--env", "LUBOX_GPG_AGENT_PROXY=1"]
-        for key, value in self.xquartz_env(auto_start=auto_start_xquartz).items():
-            args += ["--env", f"{key}={value}"]
-        keys = ["TERM", "COLORTERM", "LANG"] + [k for k in sorted(os.environ) if k.startswith("LC_")]
-        for key in keys:
-            value = os.environ.get(key)
-            if value:
+        if is_linux():
+            args += self.env_args(self.linux_session_env())
+        else:
+            for key, value in self.xquartz_env(auto_start=auto_start_xquartz).items():
                 args += ["--env", f"{key}={value}"]
+            keys = ["TERM", "COLORTERM", "LANG"] + [k for k in sorted(os.environ) if k.startswith("LC_")]
+            for key in keys:
+                value = os.environ.get(key)
+                if value:
+                    args += ["--env", f"{key}={value}"]
         return args
 
     def xquartz_env(self, *, auto_start: bool) -> Dict[str, str]:
@@ -3145,8 +3195,10 @@ class ContainerManager:
 
     def list_infos(self) -> List[ContainerInfo]:
         infos: List[ContainerInfo] = []
-        for cname in self.engine.list_lubox_names():
-            info = self.engine.inspect_container(cname, required=False)
+        cnames = self.engine.list_lubox_names()
+        inspected = self.engine.inspect_containers(cnames)
+        for cname in cnames:
+            info = inspected.get(cname)
             if not info:
                 continue
             labels = self.labels_from_info(info)
@@ -5119,6 +5171,7 @@ destroy keeps lubox/NAME:latest by default; destroy --force also removes it.
     p = sub.add_parser("enter", help="enter container login shell, or run command after --")
     add_engine(p)
     p.add_argument("--xquartz", action="store_true", help="enable XQuartz DISPLAY forwarding on macOS")
+    p.add_argument("--fast", action="store_true", help="skip Linux enter readiness checks and use cached runtime state")
     p.add_argument("name", metavar="NAME")
     p.add_argument("cmd", nargs=argparse.REMAINDER, metavar="CMD")
 
@@ -5245,7 +5298,7 @@ def dispatch(args: argparse.Namespace) -> int:
             manager.restart_socket_proxies(args.name, args.kind)
             return 0
     if args.command == "enter":
-        return manager.enter(args.name, args.cmd, xquartz=args.xquartz)
+        return manager.enter(args.name, args.cmd, xquartz=args.xquartz, fast=args.fast)
     if args.command == "exec":
         return manager.exec(args.name, args.cmd)
     if args.command == "code-server":

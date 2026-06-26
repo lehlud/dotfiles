@@ -45,7 +45,7 @@
 !/.local/bin/enable-my-ssh-agent
 !/.local/bin/authinfo-pass
 !/.local/bin/lubox
-!/.local/bin/kitty-lubox-shell
+!/.local/bin/termemu-lubox-shell
 !/.local/bin/hx-man-file
 !/.local/bin/man
 !/.local/bin/hx-git-blame

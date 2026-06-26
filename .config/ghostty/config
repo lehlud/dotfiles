@@ -1,12 +1,12 @@
 # Mirrored from ../kitty/kitty.conf where Ghostty has matching options.
 
 font-family = JetBrains Mono
-font-size = 18
+font-size = 16
 
 window-padding-x = 0
 window-padding-y = 0
 
-command = /bin/sh -lc 'exec "$HOME/.local/bin/kitty-lubox-shell"'
+command = /bin/sh -lc 'exec "$HOME/.local/bin/termemu-lubox-shell"'
 
 env = TERMINAL=ghostty
 
@@ -20,7 +20,7 @@ cursor-color = #ffffff
 selection-foreground = #ffffff
 selection-background = #1f6feb
 
-palette = 0=#f0f3f6
+palette = 0=#0d1117
 palette = 1=#ff6b7a
 palette = 2=#4ade80
 palette = 3=#facc15

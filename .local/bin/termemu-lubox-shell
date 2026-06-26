@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -u
 
-box="${LUBOX_KITTY_BOX:-fedora1}"
+box="${LUBOX_TERMEMU_BOX:-fedora1}"
 lubox_bin="${LUBOX_BIN:-$HOME/.local/bin/lubox}"
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/lubox"
-log_file="$state_dir/kitty-shell.log"
+log_file="$state_dir/termemu-shell.log"
 
 PATH="$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin:/Applications/kitty.app/Contents/MacOS:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 export PATH
@@ -28,7 +28,7 @@ fallback_shell() {
 }
 
 debug() {
-  printf 'kitty-lubox-shell debug\n'
+  printf 'termemu-lubox-shell debug\n'
   printf 'box=%s\n' "$box"
   printf 'lubox_bin=%s\n' "$lubox_bin"
   printf 'host_login_shell=%s\n' "$(host_login_shell)"
@@ -58,15 +58,8 @@ if [ ! -x "$lubox_bin" ]; then
   fallback_shell
 fi
 
-if ! "$lubox_bin" list 2>/dev/null | awk -v box="$box" 'NR > 1 && $1 == box { found = 1 } END { exit found ? 0 : 1 }'; then
-  list_output="$("$lubox_bin" list 2>&1)"
-  list_status=$?
-  log "container not listed: $box; lubox list status=$list_status output=$(printf '%s' "$list_output" | tr '\n' ' ' | cut -c 1-500)"
-  fallback_shell
-fi
-
 log "entering lubox: $box"
-"$lubox_bin" enter "$box"
+"$lubox_bin" enter --fast "$box"
 status=$?
 log "lubox enter exited: $status"
 
