@@ -58,6 +58,7 @@
   [class^="secondaryIcon-"], [class*=" secondaryIcon-"],
   [class^="icon-"], [class*=" icon-"],
   [class^="lightIcon--"], [class*=" lightIcon--"],
+  [data-icon-name],
 
   /* VR Bank */
   .kf-icon-font-container,
@@ -70,7 +71,19 @@
 
   /* campo (fuck campo) */
   [class^="iconfont-"], [class*=" iconfont-"],
-  [class^="tile-icon-"], [class*=" tile-icon-"]
+  [class^="tile-icon-"], [class*=" tile-icon-"],
+
+  /* Google */
+  .google-symbols, .google-material-icons,
+
+  /* vgn, other (generic) */
+  .icon, .Icon,
+
+  /* yuntrack */
+  [class^="el-icon-"], [class*=" el-icon-"],
+
+  /* claude */
+  [data-cds="Icon"]
 )) {
   font-family: monospace !important;
 }

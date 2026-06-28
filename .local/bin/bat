@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_bat_download() {
+    local arch
+    local target
+    local release
+    local archive_dir
+
+    case "$(uname -s)" in
+        Linux)
+            case "$(uname -m)" in
+                x86_64 | amd64)
+                    arch=x86_64
+                    ;;
+                aarch64 | arm64)
+                    arch=aarch64
+                    ;;
+                i386 | i686)
+                    arch=i686
+                    ;;
+                armv*)
+                    arch=arm
+                    ;;
+                *)
+                    printf 'bat update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+                    return 2
+                    ;;
+            esac
+
+            if [ "$arch" = arm ]; then
+                target=arm-unknown-linux-gnueabihf
+            else
+                target="$arch-unknown-linux-gnu"
+            fi
+            ;;
+        Darwin)
+            case "$(uname -m)" in
+                x86_64 | amd64)
+                    arch=x86_64
+                    ;;
+                aarch64 | arm64)
+                    arch=aarch64
+                    ;;
+                *)
+                    printf 'bat update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+                    return 2
+                    ;;
+            esac
+
+            target="$arch-apple-darwin"
+            ;;
+        *)
+            printf 'bat update failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    release="$(auto_update_latest_release_tag sharkdp/bat)" || return 1
+    archive_dir="bat-$release-$target"
+
+    AUTO_UPDATE_URL="https://github.com/sharkdp/bat/releases/download/$release/$archive_dir.tar.gz"
+    AUTO_UPDATE_SOURCE_REL="$archive_dir"
+    AUTO_UPDATE_SOURCE_BIN_REL="$archive_dir/bat"
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_bat_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/bat")"
+
+if auto_update_ensure_tar_app bat "$_bat_cache_dir" bat bat/bat 3 _bat_download; then
+    exec "$_bat_cache_dir/bat/bat" "$@"
+fi
+
+exit 1

@@ -29,6 +29,7 @@
 !/.local/bin/dart
 !/.local/bin/deno
 !/.local/bin/bun
+!/.local/bin/bat
 !/.local/bin/fff
 !/.local/bin/sendme
 !/.local/bin/lubox-podman/
