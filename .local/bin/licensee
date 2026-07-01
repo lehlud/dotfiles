@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ruby_image="${LICENSEE_RUBY_IMAGE:-docker.io/library/ruby:3.4}"
+image_cache_key="${ruby_image//[^A-Za-z0-9_.-]/_}"
+gem_home="${LICENSEE_GEM_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/licensee/gems}"
+container_cache="${LICENSEE_CONTAINER_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/licensee/container-gems/$image_cache_key}"
+
+self="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || printf '%s\n' "$0")"
+
+find_system_licensee() {
+    local old_ifs dir candidate resolved
+    old_ifs=$IFS
+    IFS=:
+    for dir in ${PATH:-}; do
+        [ -n "$dir" ] || dir=.
+        candidate="$dir/licensee"
+        [ -x "$candidate" ] || continue
+        resolved="$(readlink -f "$candidate" 2>/dev/null || realpath "$candidate" 2>/dev/null || printf '%s\n' "$candidate")"
+        [ "$resolved" != "$self" ] || continue
+        IFS=$old_ifs
+        printf '%s\n' "$candidate"
+        return 0
+    done
+    IFS=$old_ifs
+    return 1
+}
+
+if system_licensee="$(find_system_licensee)"; then
+    exec "$system_licensee" "$@"
+fi
+
+if command -v ruby >/dev/null 2>&1 && command -v gem >/dev/null 2>&1; then
+    if [ ! -x "$gem_home/bin/licensee" ] || [ "${LICENSEE_UPDATE:-0}" = 1 ]; then
+        mkdir -p "$gem_home"
+        GEM_HOME="$gem_home" GEM_PATH="$gem_home" gem install --no-document licensee
+    fi
+    exec "$gem_home/bin/licensee" "$@"
+fi
+
+engine=""
+if command -v podman >/dev/null 2>&1; then
+    engine=podman
+elif command -v docker >/dev/null 2>&1; then
+    engine=docker
+fi
+
+if [ -z "$engine" ]; then
+    printf 'licensee: need ruby+gem, podman, or docker\n' >&2
+    printf 'licensee: upstream install: gem install licensee\n' >&2
+    exit 127
+fi
+
+mkdir -p "$container_cache"
+workdir="$(pwd -P)"
+run_args=(run --rm -i -w "$workdir")
+if [ -t 0 ] && [ -t 1 ]; then
+    run_args+=(--tty)
+fi
+if [ "$engine" = podman ]; then
+    run_args+=(--security-opt label=disable)
+fi
+run_args+=(
+    -e HOME=/tmp
+    -e GEM_HOME=/bundle
+    -e GEM_PATH=/bundle
+    -e PATH=/bundle/bin:/usr/local/bundle/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    -v "$container_cache:/bundle"
+    -v "$workdir:$workdir:ro"
+    "$ruby_image"
+    sh -c 'if ! command -v licensee >/dev/null 2>&1; then gem install --no-document licensee; fi; exec licensee "$@"' licensee
+)
+
+exec "$engine" "${run_args[@]}" "$@"

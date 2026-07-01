@@ -53,7 +53,7 @@ alias ll="ls -lAh --color=auto"
 alias json-get="curl --request GET -H 'Content-Type: application/json'"
 alias json-post="curl --request POST -H 'Content-Type: application/json'"
 
-alias zj="zellij"
+alias z="zellij"
 alias ff="fastfetch"
 alias hx="helix"
 

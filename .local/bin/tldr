@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: tldr QUERY
+
+Run cht.sh QUERY and display only the tldr section.
+EOF
+}
+
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
+    usage
+    exit 0
+fi
+
+if [ "$#" -eq 0 ]; then
+    usage >&2
+    exit 2
+fi
+
+cht="${CHTSH_BIN:-$HOME/.local/bin/cht.sh}"
+if [ ! -x "$cht" ]; then
+    printf 'tldr: cht.sh not executable: %s\n' "$cht" >&2
+    exit 127
+fi
+
+query="$*"
+case "$query" in
+    *\?*) query="${query}&T" ;;
+    *) query="${query}?T" ;;
+esac
+
+"$cht" "$query" | awk '
+    /^#\[tldr:/ { found = 1; next }
+    /^#\[/ && found { exit }
+    found { print }
+    END { if (!found) exit 1 }
+'

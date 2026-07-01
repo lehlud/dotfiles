@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>name</key>
+  <string>i4neo relaxed</string>
+  <key>settings</key>
+  <array>
+    <dict>
+      <key>settings</key>
+      <dict>
+        <key>background</key>
+        <string>#EBECEE</string>
+        <key>foreground</key>
+        <string>#011F32</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Keywords</string>
+      <key>scope</key>
+      <string>keyword, storage, support.type</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#003865</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Comments</string>
+      <key>scope</key>
+      <string>comment</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#6F7F8B</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Strings</string>
+      <key>scope</key>
+      <string>string</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#2F7F68</string>
+      </dict>
+    </dict>
+    <dict>
+      <key>name</key>
+      <string>Plain Code</string>
+      <key>scope</key>
+      <string>constant, variable, entity.name.function, support.function, punctuation, operator</string>
+      <key>settings</key>
+      <dict>
+        <key>foreground</key>
+        <string>#011F32</string>
+      </dict>
+    </dict>
+  </array>
+</dict>
+</plist>

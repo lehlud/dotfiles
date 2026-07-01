@@ -45,8 +45,10 @@
 !/.local/bin/cowsay
 !/.local/bin/enable-my-ssh-agent
 !/.local/bin/authinfo-pass
+!/.local/bin/licensee
 !/.local/bin/lubox
 !/.local/bin/termemu-lubox-shell
+!/.local/bin/tldr
 !/.local/bin/hx-man-file
 !/.local/bin/man
 !/.local/bin/hx-git-blame
@@ -54,6 +56,12 @@
 !/.local/bin/murat
 !/.local/bin/xdg-open
 !/.local/bin/gdu
+
+!/.local/share/
+/.local/share/*
+!/.local/share/typst/
+/.local/share/typst/*
+!/.local/share/typst/packages/
 
 !/.config/
 /.config/*

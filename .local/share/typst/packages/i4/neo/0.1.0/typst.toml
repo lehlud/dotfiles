@@ -1,0 +1,10 @@
+[package]
+name = "neo"
+version = "0.1.0"
+entrypoint = "lib.typ"
+authors = ["i4neo-talk contributors"]
+license = "CC-BY-SA-4.0"
+description = "Typst port of the i4neo Beamer theme."
+repository = "https://gitlab.cs.fau.de/i4/tex/i4neo-talk"
+keywords = ["beamer", "slides", "presentation", "fau", "i4neo"]
+categories = ["presentation"]

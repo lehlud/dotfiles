@@ -1570,7 +1570,7 @@ class ContainerManager:
         args += self.key_value_args("--label", self.create_labels(name, base_image, host_exec, sockets))
         args += self.env_args(self.create_env(name, cname, shell_path, host_exec, sockets))
         if is_linux():
-            args += self.linux_session_mount_args()
+            args += self.linux_session_mount_args(host_exec)
         args += self.create_mount_args(mount_dir, sockets)
         args += self.create_secret_args(name, host_exec)
         args += self.create_engine_identity_args()
@@ -1632,6 +1632,10 @@ class ContainerManager:
             ("SHELL", shell_path),
         ]
         env += self.lubox_exec_env(name, cname, host_exec)
+        if is_linux() and host_exec:
+            runtime_dir = self.linux_host_runtime_dir()
+            if runtime_dir is not None:
+                env.append(("XDG_RUNTIME_DIR", str(runtime_dir)))
         if sockets.ssh_agent:
             env.append(("SSH_AUTH_SOCK", container_ssh_auth_sock(self.ident.uid)))
             env.append(("LUBOX_SSH_AGENT_PROXY", "1" if not is_linux() else "0"))
@@ -1875,26 +1879,65 @@ class ContainerManager:
                 keys.append(key)
         return keys
 
-    def linux_session_env(self) -> List[Tuple[str, str]]:
+    def linux_host_runtime_dir(self) -> Optional[pathlib.Path]:
+        if not is_linux():
+            return None
+        candidates: List[pathlib.Path] = []
+        runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+        if runtime_dir:
+            candidates.append(pathlib.Path(runtime_dir))
+        candidates.append(pathlib.Path("/run") / "user" / str(self.ident.uid))
+        seen = set()
+        for candidate in candidates:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if candidate.is_dir():
+                    return candidate
+            except OSError:
+                continue
+        return None
+
+    def linux_session_env(self, host_exec: bool = False) -> List[Tuple[str, str]]:
         env: List[Tuple[str, str]] = []
+        runtime_dir = self.linux_host_runtime_dir() if host_exec else None
         for key in self.linux_session_env_keys():
-            value = os.environ.get(key)
+            if key == "XDG_RUNTIME_DIR" and runtime_dir is not None:
+                value = str(runtime_dir)
+            else:
+                value = os.environ.get(key)
             if value:
                 env.append((key, value))
         return env
 
-    def linux_session_mount_args(self) -> List[str]:
+    def linux_session_mount_args(self, host_exec: bool) -> List[str]:
         args: List[str] = []
         if os.environ.get("DISPLAY") and pathlib.Path("/tmp/.X11-unix").exists():
             args += ["--mount", "type=bind,src=/tmp/.X11-unix,dst=/tmp/.X11-unix"]
-        runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-        if runtime_dir:
-            xr = pathlib.Path(runtime_dir)
-            if xr.is_dir():
-                args += ["--mount", f"type=bind,src={xr},dst={xr}"]
+        runtime_dir = self.linux_host_runtime_dir() if host_exec else None
+        if runtime_dir is not None:
+            args += ["--mount", f"type=bind,src={runtime_dir},dst={runtime_dir}"]
         if pathlib.Path("/dev/dri").exists():
             args += ["--device", "/dev/dri"]
         return args
+
+    def linux_host_runtime_mount_present(self, name: str, runtime_dir: pathlib.Path) -> Optional[bool]:
+        info = self.engine.inspect_container(container_name(name), required=False)
+        if not info:
+            return None
+        mounts = info.get("Mounts")
+        if not isinstance(mounts, list):
+            return False
+        source = str(runtime_dir)
+        target = str(runtime_dir)
+        for item in mounts:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("Source") or "") == source and str(item.get("Destination") or "") == target:
+                return True
+        return False
 
     def container_shell_path(self) -> str:
         common = [
@@ -2223,7 +2266,7 @@ class ContainerManager:
             exec_args.append("-i")
         exec_args += ["--user", f"{self.ident.uid}:{self.ident.gid}", "-w", cwd]
         exec_args += self.env_args(self.lubox_exec_env(name, cname, host_exec))
-        exec_args += self.env_args(self.linux_session_env())
+        exec_args += self.env_args(self.linux_session_env(host_exec))
         run_cmd = strip_dashdash(cmd)
         if run_cmd:
             exec_args += [cname, shell_path, "-l", "-c", shlex.join(run_cmd)]
@@ -2541,7 +2584,7 @@ class ContainerManager:
         exec_args = ["exec", "-i", "--user", f"{self.ident.uid}:{self.ident.gid}"]
         exec_args += self.env_args(self.lubox_exec_env(name, cname, host_exec))
         if is_linux():
-            exec_args += self.env_args(self.linux_session_env())
+            exec_args += self.env_args(self.linux_session_env(host_exec))
         if auth == "password":
             exec_args += ["--env", f"PASSWORD={password}"]
         if self.ssh_agent_enabled(name):
@@ -3005,7 +3048,7 @@ class ContainerManager:
             args += ["--env", f"GNUPGHOME={container_gpg_home(self.ident.uid)}"]
             args += ["--env", "LUBOX_GPG_AGENT_PROXY=1"]
         if is_linux():
-            args += self.env_args(self.linux_session_env())
+            args += self.env_args(self.linux_session_env(host_exec))
         else:
             for key, value in self.xquartz_env(auto_start=auto_start_xquartz).items():
                 args += ["--env", f"{key}={value}"]
@@ -5025,6 +5068,18 @@ def command_doctor(args: argparse.Namespace) -> int:
     print(f"lubox containers: {len(infos)}")
     for info in infos:
         print(f"- {info.name}: {info.status}, host_exec={info.host_exec}, base={info.base_image}")
+    if is_linux():
+        host_exec_infos = [info for info in infos if info.host_exec == "true"]
+        runtime_dir = manager.linux_host_runtime_dir()
+        if host_exec_infos and runtime_dir is None:
+            print("host runtime mount: WARN: no host runtime dir found; expected XDG_RUNTIME_DIR or /run/user/UID")
+        elif runtime_dir is not None:
+            for info in host_exec_infos:
+                mounted = manager.linux_host_runtime_mount_present(info.name, runtime_dir)
+                if mounted is False:
+                    print(f"host runtime mount: WARN ({info.name}): missing {runtime_dir}; recreate container")
+                elif mounted is None:
+                    print(f"host runtime mount: WARN ({info.name}): cannot inspect container mounts")
     probe_done = False
     for info in infos:
         if info.status == "running" and info.host_exec == "true":
