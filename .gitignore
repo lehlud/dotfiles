@@ -56,6 +56,7 @@
 !/.local/bin/murat
 !/.local/bin/xdg-open
 !/.local/bin/gdu
+!/.local/bin/add-private-ssh-key
 
 !/.local/share/
 /.local/share/*
