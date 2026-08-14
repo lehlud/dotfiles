@@ -57,6 +57,7 @@
 !/.local/bin/xdg-open
 !/.local/bin/gdu
 !/.local/bin/add-private-ssh-key
+!/.local/bin/faucip
 
 !/.local/share/
 /.local/share/*

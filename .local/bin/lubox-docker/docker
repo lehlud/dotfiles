@@ -28,6 +28,27 @@ _docker_find_original() {
   return 1
 }
 
+_docker_host_exec() {
+  local lubox_bin="$1"
+  local name
+  local -a forwarded_env=()
+  shift
+
+  # lubox host-exec intentionally filters process environment variables. Pass
+  # only the variables interpolated by this workspace's Compose configuration.
+  for name in HTTP_PORT CONTAINER_SOCKET SHIBBOLETH_EXTERNAL_URL SHIBBOLETH_SP_HOSTNAME; do
+    if [[ -v "$name" ]]; then
+      forwarded_env+=("$name=${!name}")
+    fi
+  done
+
+  if ((${#forwarded_env[@]})); then
+    exec "$lubox_bin" host-exec env "${forwarded_env[@]}" docker "$@"
+  fi
+
+  exec "$lubox_bin" host-exec docker "$@"
+}
+
 _docker_original="$(_docker_find_original)" || {
   _docker_original=
 }
@@ -35,11 +56,11 @@ _docker_original="$(_docker_find_original)" || {
 if [ -n "${LUBOX_CONTAINER_NAME:-}" ]; then
   if [ "${LUBOX_HOST_EXEC:-0}" = 1 ]; then
     if [ -x /usr/local/bin/lubox ]; then
-      exec /usr/local/bin/lubox host-exec docker "$@"
+      _docker_host_exec /usr/local/bin/lubox "$@"
     fi
 
     if command -v lubox >/dev/null 2>&1; then
-      exec lubox host-exec docker "$@"
+      _docker_host_exec lubox "$@"
     fi
 
     printf 'docker wrapper failed: lubox command not found for host-exec\n' >&2

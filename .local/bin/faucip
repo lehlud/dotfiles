@@ -1,0 +1,495 @@
+#!/bin/sh
+# Select a random FAU CIP-pool host by capabilities and open an SSH session.
+# POSIX shell; requires awk, sed, sort, cut, and either curl or wget.
+
+set -eu
+umask 077
+
+PROGRAM=${0##*/}
+VERSION=1.2.0
+INDEX_URL=${FAUCIP_INDEX_URL:-'https://wwwcip.informatik.uni-erlangen.de/cipPools/roomIndex.de.html'}
+CACHE_DIR=${XDG_CACHE_HOME:-"$HOME/.cache"}
+CACHE_FILE=$CACHE_DIR/faucipindex.tsv
+USER_CACHE_FILE=${FAUCIP_USER_CACHE_FILE:-"$CACHE_DIR/faucipuser.txt"}
+SSH_BIN=${SSH:-ssh}
+HOST_SUFFIX=${FAUCIP_HOST_SUFFIX:-'.cip.cs.fau.de'}
+
+refresh=0
+need_gpu=0
+min_cores=0
+min_ram=0
+room_filter=
+cpu_filter=
+gpu_filter=
+host_filter=
+remote_user=
+solo=0
+list_only=0
+connect_timeout=6
+
+usage()
+{
+    cat <<USAGE
+Usage: $PROGRAM [OPTIONS]
+
+Select a random matching FAU CIP-pool host and open an interactive SSH session.
+The parsed host index is cached at:
+  $CACHE_FILE
+The default CIP username is cached at:
+  $USER_CACHE_FILE
+
+Cache:
+  --refresh              Download and rebuild the host-index cache
+
+Capability filters:
+  --gpu                  Require any GPU listed in the index
+  --gpu-model REGEX      Require a GPU description matching REGEX
+  --cores N              Require at least N physical CPU cores
+  --ram N                Require at least N GiB RAM
+  --cpu REGEX            Require a CPU description matching REGEX
+  --room ROOM            Require a room, for example CIP3 or 3
+  --host REGEX           Require a host name matching REGEX
+
+Selection and SSH:
+  --solo                 Try hosts in random order until 'users' reports none
+  --user USER            Use USER for this run; do not change the cached user
+  --connect-timeout N    Timeout for each --solo probe in seconds (default: 6)
+  --list                 List matching hosts instead of connecting
+  --version              Show the script version
+  -h, --help             Show this help
+
+REGEX values are POSIX extended regular expressions as understood by awk.
+--solo uses non-interactive SSH probes, so key, agent, or GSSAPI authentication
+must work without a password prompt. The final SSH session is interactive.
+On the first connection without --user, the script asks for the CIP username
+and saves it for later runs. Hosts are connected to as NAME${HOST_SUFFIX}.
+USAGE
+}
+
+die()
+{
+    printf '%s: %s\n' "$PROGRAM" "$*" >&2
+    exit 1
+}
+
+need_value()
+{
+    [ "$#" -ge 2 ] || die "option $1 requires a value"
+}
+
+is_uint()
+{
+    case $1 in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+valid_username()
+{
+    case $1 in
+        ''|*[!A-Za-z0-9._-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+load_or_prompt_username()
+{
+    if [ -n "$remote_user" ]; then
+        valid_username "$remote_user" ||
+            die "invalid username: $remote_user"
+        return
+    fi
+
+    if [ -s "$USER_CACHE_FILE" ]; then
+        remote_user=$(sed -n '1p' "$USER_CACHE_FILE")
+        valid_username "$remote_user" ||
+            die "invalid cached username in $USER_CACHE_FILE; remove it or use --user USERNAME"
+        return
+    fi
+
+    mkdir -p "$CACHE_DIR" || die "cannot create cache directory: $CACHE_DIR"
+
+    if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+        die "CIP username is not cached; run interactively or use --user USERNAME"
+    fi
+
+    while :; do
+        printf 'CIP username: ' >/dev/tty
+        if ! IFS= read -r remote_user </dev/tty; then
+            die "could not read CIP username"
+        fi
+        if valid_username "$remote_user"; then
+            break
+        fi
+        printf '%s\n' 'Username may contain only letters, digits, dot, underscore, and hyphen.' >/dev/tty
+    done
+
+    user_tmp=$USER_CACHE_FILE.tmp.$$
+    if ! printf '%s\n' "$remote_user" >"$user_tmp"; then
+        rm -f "$user_tmp"
+        die "cannot write username cache: $USER_CACHE_FILE"
+    fi
+    if ! mv "$user_tmp" "$USER_CACHE_FILE"; then
+        rm -f "$user_tmp"
+        die "cannot install username cache: $USER_CACHE_FILE"
+    fi
+}
+
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --refresh)
+            refresh=1
+            shift
+            ;;
+        --gpu)
+            need_gpu=1
+            shift
+            ;;
+        --gpu-model)
+            need_value "$@"
+            gpu_filter=$2
+            shift 2
+            ;;
+        --cores)
+            need_value "$@"
+            is_uint "$2" || die "--cores requires a non-negative integer"
+            min_cores=$2
+            shift 2
+            ;;
+        --ram)
+            need_value "$@"
+            is_uint "$2" || die "--ram requires a non-negative integer"
+            min_ram=$2
+            shift 2
+            ;;
+        --cpu)
+            need_value "$@"
+            cpu_filter=$2
+            shift 2
+            ;;
+        --room)
+            need_value "$@"
+            room_filter=$2
+            case $room_filter in
+                ''|*[!0-9]*) : ;;
+                *) room_filter=CIP$room_filter ;;
+            esac
+            shift 2
+            ;;
+        --host)
+            need_value "$@"
+            host_filter=$2
+            shift 2
+            ;;
+        --user)
+            need_value "$@"
+            remote_user=$2
+            shift 2
+            ;;
+        --connect-timeout)
+            need_value "$@"
+            is_uint "$2" || die "--connect-timeout requires a non-negative integer"
+            connect_timeout=$2
+            shift 2
+            ;;
+        --solo)
+            solo=1
+            shift
+            ;;
+        --list)
+            list_only=1
+            shift
+            ;;
+        --version)
+            printf '%s %s\n' "$PROGRAM" "$VERSION"
+            exit 0
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            [ "$#" -eq 0 ] || die "unexpected positional argument: $1"
+            ;;
+        -*)
+            die "unknown option: $1"
+            ;;
+        *)
+            die "unexpected positional argument: $1"
+            ;;
+    esac
+done
+
+fetch_index()
+{
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$INDEX_URL"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$INDEX_URL"
+    else
+        die "neither curl nor wget is installed"
+    fi
+}
+
+# Turn the room table into one TSV row per host:
+# host, room, cpu, physical cores, RAM GiB, GPU, full description.
+parse_index()
+{
+    html_file=$1
+
+    # The page may wrap tags over multiple source lines. Flatten it, then put
+    # each relevant heading/table row onto its own line before parsing.
+    awk '{ gsub(/\r/, ""); printf "%s ", $0 } END { print "" }' "$html_file" |
+    sed '
+        s#</h2>#</h2>\
+#g
+        s#</tr>#</tr>\
+#g
+    ' |
+    awk '
+        BEGIN {
+            OFS = "\t"
+            sep = sprintf("%c", 28)
+            print "host", "room", "cpu", "cores", "ram_gib", "gpu", "description"
+        }
+
+        function trim(s) {
+            gsub(/&nbsp;|&#160;/, " ", s)
+            gsub(/[[:space:]]+/, " ", s)
+            sub(/^ /, "", s)
+            sub(/ $/, "", s)
+            return s
+        }
+
+        function plain_text(s) {
+            gsub(/<[^>]*>/, "", s)
+            return trim(s)
+        }
+
+        function physical_cores(cpu, desc) {
+            # Prefer an explicit core count when the page provides one.
+            if (match(desc, /[0-9]+[[:space:]]+cores/)) {
+                n = substr(desc, RSTART, RLENGTH)
+                sub(/[[:space:]].*$/, "", n)
+                return n + 0
+            }
+
+            # Current CPU models in the index. Unknown future models are 0 and
+            # therefore do not satisfy a positive --cores filter.
+            if (cpu ~ /Core i5-7500/)  return 4
+            if (cpu ~ /Core i7-8700/)  return 6
+            if (cpu ~ /Core i7-9700/)  return 8
+            if (cpu ~ /Core i7-10700/) return 8
+            if (cpu ~ /Core i7-12700/) return 12
+            if (cpu ~ /Xeon W-1370/)   return 8
+            return 0
+        }
+
+        function emit_host(host, room, cpu, cores, ram, gpu, desc) {
+            if (host ~ /^cip[0-9]+[[:alnum:]-]*$/)
+                print host, room, cpu, cores, ram, gpu, desc
+        }
+
+        function expand_token(token, room, cpu, cores, ram, gpu, desc,
+                              range, parts, prefix, first, last, width, i, num) {
+            gsub(/[[:space:]]/, "", token)
+            if (token == "")
+                return
+
+            if (match(token, /[0-9]+-[0-9]+$/)) {
+                range = substr(token, RSTART, RLENGTH)
+                split(range, parts, "-")
+                prefix = substr(token, 1, RSTART - 1)
+                first = parts[1] + 0
+                last = parts[2] + 0
+                width = length(parts[1])
+
+                for (i = first; i <= last; i++) {
+                    num = i ""
+                    while (length(num) < width)
+                        num = "0" num
+                    emit_host(prefix num, room, cpu, cores, ram, gpu, desc)
+                }
+            } else {
+                emit_host(token, room, cpu, cores, ram, gpu, desc)
+            }
+        }
+
+        /<h2[^>]*>/ {
+            heading = plain_text($0)
+            if (match(heading, /CIP[0-9]+/))
+                room = substr(heading, RSTART, RLENGTH)
+            next
+        }
+
+        /<tr[^>]*>/ {
+            row = $0
+            gsub(/<\/t[dh][^>]*>/, sep, row)
+            gsub(/<[^>]*>/, "", row)
+            gsub(/&nbsp;|&#160;/, " ", row)
+            nfields = split(row, field, sep)
+            if (nfields < 3)
+                next
+
+            hosts = trim(field[1])
+            desc = trim(field[3])
+            if (hosts !~ /^cip[0-9]/)
+                next
+
+            cpu = ""
+            if (match(desc, /Intel[^,]*/))
+                cpu = trim(substr(desc, RSTART, RLENGTH))
+
+            gpu = ""
+            if (match(desc, /[Nn]vidia[^,]*/))
+                gpu = trim(substr(desc, RSTART, RLENGTH))
+
+            ram = 0
+            if (match(desc, /[0-9]+[[:space:]]*GB[[:space:]]*RAM/)) {
+                ram_text = substr(desc, RSTART, RLENGTH)
+                sub(/[^0-9].*$/, "", ram_text)
+                ram = ram_text + 0
+            }
+
+            cores = physical_cores(cpu, desc)
+            count = split(hosts, host_token, ",")
+            for (i = 1; i <= count; i++)
+                expand_token(host_token[i], room, cpu, cores, ram, gpu, desc)
+        }
+    '
+}
+
+rebuild_cache()
+{
+    mkdir -p "$CACHE_DIR" || die "cannot create cache directory: $CACHE_DIR"
+
+    html_tmp=$CACHE_FILE.html.$$
+    tsv_tmp=$CACHE_FILE.tmp.$$
+    trap 'rm -f "$html_tmp" "$tsv_tmp"' 0 HUP INT TERM
+
+    if ! fetch_index >"$html_tmp"; then
+        die "failed to download $INDEX_URL"
+    fi
+    if ! parse_index "$html_tmp" >"$tsv_tmp"; then
+        die "failed to parse the downloaded index"
+    fi
+
+    rows=$(awk 'END { print NR - 1 }' "$tsv_tmp")
+    [ "$rows" -gt 0 ] || die "the downloaded index produced no hosts"
+
+    mv "$tsv_tmp" "$CACHE_FILE" || die "cannot install cache: $CACHE_FILE"
+    rm -f "$html_tmp"
+    trap - 0 HUP INT TERM
+}
+
+if [ "$refresh" -eq 1 ] || [ ! -s "$CACHE_FILE" ]; then
+    rebuild_cache
+fi
+
+matches_tmp=$CACHE_FILE.matches.$$
+shuffled_tmp=$CACHE_FILE.shuffled.$$
+trap 'rm -f "$matches_tmp" "$shuffled_tmp"' 0 HUP INT TERM
+
+awk -F '\t' \
+    -v need_gpu="$need_gpu" \
+    -v min_cores="$min_cores" \
+    -v min_ram="$min_ram" \
+    -v room_filter="$room_filter" \
+    -v cpu_filter="$cpu_filter" \
+    -v gpu_filter="$gpu_filter" \
+    -v host_filter="$host_filter" '
+        NR == 1 { next }
+        need_gpu && $6 == "" { next }
+        min_cores > 0 && ($4 + 0) < min_cores { next }
+        min_ram > 0 && ($5 + 0) < min_ram { next }
+        room_filter != "" && tolower($2) != tolower(room_filter) { next }
+        cpu_filter != "" && $3 !~ cpu_filter { next }
+        gpu_filter != "" && ($6 == "" || $6 !~ gpu_filter) { next }
+        host_filter != "" && $1 !~ host_filter { next }
+        { print }
+    ' "$CACHE_FILE" >"$matches_tmp" || die "invalid filter expression"
+
+[ -s "$matches_tmp" ] || die "no hosts match the requested capabilities"
+
+if [ "$list_only" -eq 0 ] && ! command -v "$SSH_BIN" >/dev/null 2>&1; then
+    die "SSH command not found: $SSH_BIN"
+fi
+
+if [ "$list_only" -eq 1 ]; then
+    awk -F '\t' '
+        BEGIN {
+            printf "%-10s %-5s %5s %7s  %-24s %s\n", "HOST", "ROOM", "CORES", "RAM", "CPU", "GPU"
+        }
+        {
+            gpu = ($6 == "" ? "-" : $6)
+            printf "%-10s %-5s %5d %5dGB  %-24s %s\n", $1, $2, $4, $5, $3, gpu
+        }
+    ' "$matches_tmp"
+    exit 0
+fi
+
+load_or_prompt_username
+
+# POSIX sh has no $RANDOM. Assign an awk PRNG key, then sort once so --solo
+# examines every matching host in a random order without repeats.
+awk 'BEGIN { srand() } { printf "%.17f\t%s\n", rand(), $0 }' "$matches_tmp" |
+    LC_ALL=C sort -n |
+    cut -f 2- >"$shuffled_tmp"
+
+qualified_host()
+{
+    case $1 in
+        *.*) printf '%s\n' "$1" ;;
+        *)   printf '%s%s\n' "$1" "$HOST_SUFFIX" ;;
+    esac
+}
+
+connect_to()
+{
+    host=$(qualified_host "$1")
+    if [ -n "$remote_user" ]; then
+        target=$remote_user@$host
+    else
+        target=$host
+    fi
+
+    printf 'Connecting to %s\n' "$target" >&2
+    rm -f "$matches_tmp" "$shuffled_tmp"
+    trap - 0 HUP INT TERM
+    exec "$SSH_BIN" "$target"
+}
+
+if [ "$solo" -eq 0 ]; then
+    selected=$(awk -F '\t' 'NR == 1 { print $1; exit }' "$shuffled_tmp")
+    connect_to "$selected"
+fi
+
+tab=$(printf '\t')
+while IFS="$tab" read -r host rest; do
+    [ -n "$host" ] || continue
+
+    qualified=$(qualified_host "$host")
+    if [ -n "$remote_user" ]; then
+        target=$remote_user@$qualified
+    else
+        target=$qualified
+    fi
+
+    printf 'Checking %s... ' "$target" >&2
+    if logged_in=$("$SSH_BIN" \
+        -o BatchMode=yes \
+        -o ConnectTimeout="$connect_timeout" \
+        "$target" users 2>/dev/null); then
+        if [ -z "$(printf '%s' "$logged_in" | tr -d '[:space:]')" ]; then
+            printf 'free\n' >&2
+            connect_to "$host"
+        fi
+        printf 'occupied\n' >&2
+    else
+        printf 'unreachable\n' >&2
+    fi
+done <"$shuffled_tmp"
+
+die "no reachable matching host was free"

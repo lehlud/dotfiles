@@ -1573,7 +1573,7 @@ class ContainerManager:
             args += self.linux_session_mount_args(host_exec)
         args += self.create_mount_args(mount_dir, sockets)
         args += self.create_secret_args(name, host_exec)
-        args += self.create_engine_identity_args()
+        args += self.create_engine_identity_args(host_exec)
         args += [tag, "/bin/sh", "-lc", KEEPALIVE_COMMAND]
         return args
 
@@ -1665,15 +1665,19 @@ class ContainerManager:
             f"{secret_name(name)},type=mount,target={PODMAN_TOKEN_PATH},uid={self.ident.uid},gid={self.ident.gid},mode=0400",
         ]
 
-    def create_engine_identity_args(self) -> List[str]:
+    def uses_host_network(self, host_exec: bool) -> bool:
+        return is_linux() or (self.engine.name == "docker" and host_exec)
+
+    def create_engine_identity_args(self, host_exec: bool) -> List[str]:
         if self.engine.name == "podman":
             args = ["--userns=keep-id", "--user", f"{self.ident.uid}:{self.ident.gid}"]
             if is_linux():
                 args += ["--group-add", "keep-groups", "--network=host", "--security-opt", "label=disable"]
             return args
         args = ["--user", f"{self.ident.uid}:{self.ident.gid}"]
-        if is_linux():
+        if self.uses_host_network(host_exec):
             args += ["--network=host"]
+        if is_linux():
             for gid in sorted(set(os.getgroups())):
                 args += ["--group-add", str(gid)]
         return args
@@ -2433,6 +2437,7 @@ class ContainerManager:
     def code_server(self, name: str, args: argparse.Namespace) -> int:
         info = self.start(name, start_server=True, announce=False)
         cname = container_name(name)
+        host_exec = self.hostexec_enabled(name, info)
         target = self.code_server_target(cname, args.path)
         bin_path = self.ensure_code_server_installed(cname, reinstall=bool(args.reinstall))
         if args.install_only:
@@ -2461,7 +2466,7 @@ class ContainerManager:
             auth,
             password,
             bind_host,
-            self.hostexec_enabled(name, info),
+            host_exec,
         )
         proxy_proc: Optional[subprocess.Popen] = None
         listen_host = "0.0.0.0" if args.host else "127.0.0.1"
@@ -2470,12 +2475,12 @@ class ContainerManager:
             if is_macos() and self.engine.name == "podman":
                 proxy_proc = self.start_code_server_proxy_foreground(name, cname, listen_host, host_port, container_port)
                 public_port = host_port
-            elif is_linux():
+            elif self.uses_host_network(host_exec):
                 if host_port != container_port:
-                    eprint("lubox: --port cannot remap on Linux host-network containers; using --container-port")
+                    eprint("lubox: --port cannot remap on host-network containers; using --container-port")
                 public_port = container_port
             else:
-                die("lubox: code-server supports Linux host-network containers and macOS Podman")
+                die("lubox: code-server supports host-network containers and macOS Podman")
         except Exception:
             self.terminate_process(code_proc)
             if proxy_proc is not None:
@@ -2766,11 +2771,11 @@ class ContainerManager:
             public_port = self.choose_code_server_host_port(name, host_port or 8080, explicit=explicit_port)
             self.ensure_code_server_proxy(name, cname, public_port, container_port)
             return public_port
-        if is_linux():
+        if self.uses_host_network(self.hostexec_enabled(name, info)):
             if host_port is not None and host_port != container_port:
-                eprint("lubox: --port cannot remap on Linux host-network containers; using --container-port")
+                eprint("lubox: --port cannot remap on host-network containers; using --container-port")
             return container_port
-        die("lubox: code-server host tunnel currently supports Linux host-network containers and macOS Podman")
+        die("lubox: code-server host tunnel currently supports host-network containers and macOS Podman")
 
     def choose_code_server_host_port(self, name: str, preferred: int, *, explicit: bool) -> int:
         if self.code_server_tunnel_running(name, preferred):
