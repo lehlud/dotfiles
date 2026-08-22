@@ -20,7 +20,7 @@
   yellow: rgb("#D9C689"),
   light-yellow: rgb("#F3EEDF"),
   black: rgb("#011F32"),
-  white: rgb("#FAFAFA"),
+  white: rgb("#FFFFFF"),
   title-separator: rgb("#CCCCCC"),
 )
 
@@ -45,8 +45,12 @@
 #let fira-mono = "Fira Mono"
 #let fira-sans-features = ("onum", "tnum")
 #let fira-mono-features = ("lnum", "tnum")
+#let body-text-size = 12pt
+#let code-text-size = 13.7pt
+#let list-marker = move(dy: 0.12em)[#square(size: 0.48em, fill: colors.dark-blue)]
 
 #let slide-counter = counter("neo-slide")
+#let section-slide-counter = counter("neo-section-slide")
 
 #let month-names = (
   en: ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"),
@@ -93,10 +97,10 @@
 #let setup(locale: "en", body) = {
   let lang = normalize-locale(locale)
   set page(width: page-width, height: page-height, margin: 0pt, fill: colors.white)
-  set text(font: fira-sans, size: 12pt, fill: colors.black, weight: 350, features: fira-sans-features, lang: lang)
+  set text(font: fira-sans, size: body-text-size, fill: colors.black, weight: 350, features: fira-sans-features, lang: lang)
   set par(leading: 0.65em, spacing: 0.5em)
   set list(
-    marker: square(size: 0.48em, fill: colors.dark-blue),
+    marker: list-marker,
     indent: 0.46cm,
     body-indent: 0.28cm,
     spacing: 0.40cm,
@@ -220,7 +224,7 @@
     )
     #text-frame(body-x, body-y, body-width, height: footer-y - header-height, size: 12pt, align-y: horizon)[
       #set list(
-        marker: square(size: 0.48em, fill: colors.dark-blue),
+        marker: list-marker,
         indent: 0.46cm,
         body-indent: 0.28cm,
         spacing: 0.40cm,
@@ -273,13 +277,28 @@
   ]
 }
 
-#let section-slide(title, progress: none, subtitle: none) = {
+#let section-progress-bar(width, progress) = {
+  if progress == none {
+    []
+  } else if progress == auto {
+    context {
+      let current = section-slide-counter.get().first()
+      let total = section-slide-counter.final().first()
+      let fraction = if total == 0 { 0 } else { current / total }
+      rect(width: width * fraction, height: 0.4pt, fill: colors.dark-blue, stroke: none)
+    }
+  } else {
+    rect(width: width * progress, height: 0.4pt, fill: colors.dark-blue, stroke: none)
+  }
+}
+
+#let section-slide(title, progress: auto, subtitle: none) = {
   page(width: page-width, height: page-height, margin: 0pt, fill: colors.white)[
+    #section-slide-counter.step()
     #let bar-width = scaled(13.3cm)
-    #let filled = if progress == none { scaled(0cm) } else { bar-width * progress }
     #text-frame(scaled(6.05cm), scaled(6.70cm), bar-width, height: scaled(0.9cm), size: 17.28pt, fill: colors.black, weight: "bold")[#title]
     #at(scaled(6.05cm), scaled(7.72cm))[#rect(width: bar-width, height: 0.4pt, fill: colors.light-blue, stroke: none)]
-    #at(scaled(6.05cm), scaled(7.72cm))[#rect(width: filled, height: 0.4pt, fill: colors.dark-blue, stroke: none)]
+    #at(scaled(6.05cm), scaled(7.72cm))[#section-progress-bar(bar-width, progress)]
     #if subtitle != none {
       text-frame(scaled(6.05cm), scaled(8.08cm), bar-width, size: 12pt, fill: colors.black)[#subtitle]
     }
@@ -336,7 +355,9 @@
   }
 }
 
-#let code-comment-token(token, lang) = {
+#let code-comment-fill = colors.dark-grey
+
+#let code-line-comment-token(token, lang) = {
   if lang == "python" or lang == "py" {
     token.starts-with("#")
   } else if lang == "haskell" or lang == "hs" {
@@ -348,10 +369,30 @@
   }
 }
 
+#let code-block-comment-start(lang) = {
+  if lang == "c" or lang == "cpp" or lang == "c++" or lang == "go" or lang == "rust" or lang == "rs" {
+    "/*"
+  } else if lang == "haskell" or lang == "hs" {
+    "{-"
+  } else {
+    none
+  }
+}
+
+#let code-block-comment-end(lang) = {
+  if lang == "c" or lang == "cpp" or lang == "c++" or lang == "go" or lang == "rust" or lang == "rs" {
+    "*/"
+  } else if lang == "haskell" or lang == "hs" {
+    "-}"
+  } else {
+    none
+  }
+}
+
 #let code-string-token(token) = token.starts-with("\"") or token.starts-with("'")
 
 #let code-token-pattern(lang) = {
-  let comment = if lang == "python" or lang == "py" {
+  let line-comment = if lang == "python" or lang == "py" {
     "#.*|"
   } else if lang == "haskell" or lang == "hs" {
     "--.*|"
@@ -360,24 +401,27 @@
   } else {
     ""
   }
-  regex(comment + "\"[^\"]*\"|'[^']*'|\\w+|\\W")
+  let block-comment = if lang == "c" or lang == "cpp" or lang == "c++" or lang == "go" or lang == "rust" or lang == "rs" {
+    "/\\*|\\*/|"
+  } else if lang == "haskell" or lang == "hs" {
+    "\\{-|-\\}|"
+  } else {
+    ""
+  }
+  regex("\"[^\"]*\"|'[^']*'|" + block-comment + line-comment + "\\w+|\\W")
+}
+
+#let render-comment-token(token) = {
+  text(fill: code-comment-fill)[#raw(token)]
 }
 
 #let render-code-token(token, lang, keywords) = {
-  if code-comment-token(token, lang) {
-    text(fill: rgb("#6F7F8B"))[#raw(token)]
-  } else if code-string-token(token) {
+  if code-string-token(token) {
     text(fill: rgb("#2F7F68"))[#raw(token)]
   } else if keywords.contains(token) {
     text(fill: colors.dark-blue, weight: 500)[#raw(token)]
   } else {
     raw(token)
-  }
-}
-
-#let render-code-line(line, lang, keywords) = {
-  for token in line.matches(code-token-pattern(lang)) {
-    render-code-token(token.text, lang, keywords)
   }
 }
 
@@ -387,20 +431,50 @@
     raw(source, block: true, lang: lang, theme: theme)
   } else {
     let lines = source.split("\n")
+    let in-block-comment = false
+    let block-start = code-block-comment-start(lang)
+    let block-end = code-block-comment-end(lang)
+
     for (index, line) in lines.enumerate() {
-      render-code-line(line, lang, keywords)
+      for token in line.matches(code-token-pattern(lang)) {
+        let text = token.text
+        if in-block-comment {
+          render-comment-token(text)
+          if block-end != none and text == block-end {
+            in-block-comment = false
+          }
+        } else if block-start != none and text == block-start {
+          render-comment-token(text)
+          in-block-comment = true
+        } else if code-line-comment-token(text, lang) {
+          render-comment-token(text)
+        } else {
+          render-code-token(text, lang, keywords)
+        }
+      }
       if index < lines.len() - 1 { linebreak() }
     }
   }
 }
 
-#let neo-code(source, lang: none, theme: "themes/i4neo-relaxed.tmTheme") = {
+#let neo-code(source, lang: none, theme: "themes/i4neo-relaxed.tmTheme", size: auto) = context {
+  let code-source = if type(source) == content { source.text } else { source }
+  let code-lang = if lang == none and type(source) == content { source.lang } else { lang }
+  let inherited-size = text.size
+  let effective-size = if size != auto {
+    size
+  } else if inherited-size == body-text-size {
+    code-text-size
+  } else {
+    inherited-size
+  }
+
   block(width: 100%)[
     #rect(width: 100%, fill: colors.light-grey, stroke: none, inset: (x: 0pt, y: 0.5em))[
-      #set text(font: fira-mono, size: 13.7pt, fill: colors.black, features: fira-mono-features)
+      #set text(font: fira-mono, size: effective-size, fill: colors.black, features: fira-mono-features)
       #set par(leading: 0.65em, spacing: 0pt)
       #show raw: set text(font: fira-mono)
-      #render-code(source, lang, theme)
+      #render-code(code-source, code-lang, theme)
     ]
   ]
 }
