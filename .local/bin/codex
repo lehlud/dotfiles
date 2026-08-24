@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_codex_download() {
+    local arch
+    local sys
+    local release
+    local binary
+
+    case "$(uname -m)" in
+        x86_64 | aarch64)
+            arch="$(uname -m)"
+            ;;
+        arm64)
+            arch=aarch64
+            ;;
+        *)
+            printf 'codex update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+            return 2
+            ;;
+    esac
+
+    case "$(uname -s)" in
+        Linux)
+            sys=unknown-linux-musl
+            ;;
+        Darwin)
+            sys=apple-darwin
+            ;;
+        *)
+            printf 'codex update failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    release="$(auto_update_latest_release_tag openai/codex)" || return 1
+    binary="codex-$arch-$sys"
+
+    AUTO_UPDATE_URL="https://github.com/openai/codex/releases/download/$release/$binary.tar.gz"
+    AUTO_UPDATE_SOURCE_REL="$binary"
+    AUTO_UPDATE_SOURCE_BIN_REL="$binary"
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_codex_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/codex")"
+
+if auto_update_ensure_tar_app codex "$_codex_cache_dir" codex codex 3 _codex_download; then
+    exec "$_codex_cache_dir/codex" "$@"
+fi
+
+exit 1

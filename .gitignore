@@ -22,6 +22,7 @@
 /.local/bin/*
 !/.local/bin/fish
 !/.local/bin/helix
+!/.local/bin/codex
 !/.local/bin/fastfetch
 !/.local/bin/zellij
 !/.local/bin/auto-update-app.bash
