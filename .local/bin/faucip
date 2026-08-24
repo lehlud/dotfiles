@@ -6,7 +6,7 @@ set -eu
 umask 077
 
 PROGRAM=${0##*/}
-VERSION=1.2.0
+VERSION=1.2.4
 INDEX_URL=${FAUCIP_INDEX_URL:-'https://wwwcip.informatik.uni-erlangen.de/cipPools/roomIndex.de.html'}
 CACHE_DIR=${XDG_CACHE_HOME:-"$HOME/.cache"}
 CACHE_FILE=$CACHE_DIR/faucipindex.tsv
@@ -51,7 +51,7 @@ Capability filters:
   --host REGEX           Require a host name matching REGEX
 
 Selection and SSH:
-  --solo                 Try hosts in random order until 'users' reports none
+  --solo                 Try hosts until no users other than you are logged in
   --user USER            Use USER for this run; do not change the cached user
   --connect-timeout N    Timeout for each --solo probe in seconds (default: 6)
   --list                 List matching hosts instead of connecting
@@ -61,6 +61,8 @@ Selection and SSH:
 REGEX values are POSIX extended regular expressions as understood by awk.
 --solo uses non-interactive SSH probes, so key, agent, or GSSAPI authentication
 must work without a password prompt. The final SSH session is interactive.
+Sessions belonging to the selected CIP username do not count as occupants.
+New host keys are accepted on first use; changed host keys are still rejected.
 On the first connection without --user, the script asks for the CIP username
 and saves it for later runs. Hosts are connected to as NAME${HOST_SUFFIX}.
 USAGE
@@ -367,7 +369,10 @@ rebuild_cache()
 
     html_tmp=$CACHE_FILE.html.$$
     tsv_tmp=$CACHE_FILE.tmp.$$
-    trap 'rm -f "$html_tmp" "$tsv_tmp"' 0 HUP INT TERM
+    trap 'rm -f "$html_tmp" "$tsv_tmp"' 0
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
 
     if ! fetch_index >"$html_tmp"; then
         die "failed to download $INDEX_URL"
@@ -390,7 +395,11 @@ fi
 
 matches_tmp=$CACHE_FILE.matches.$$
 shuffled_tmp=$CACHE_FILE.shuffled.$$
-trap 'rm -f "$matches_tmp" "$shuffled_tmp"' 0 HUP INT TERM
+probe_error_tmp=$CACHE_FILE.probe-error.$$
+trap 'rm -f "$matches_tmp" "$shuffled_tmp" "$probe_error_tmp"' 0
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 awk -F '\t' \
     -v need_gpu="$need_gpu" \
@@ -456,8 +465,11 @@ connect_to()
     fi
 
     printf 'Connecting to %s\n' "$target" >&2
-    rm -f "$matches_tmp" "$shuffled_tmp"
+    rm -f "$matches_tmp" "$shuffled_tmp" "$probe_error_tmp"
     trap - 0 HUP INT TERM
+    if [ "$solo" -eq 1 ]; then
+        exec 3<&-
+    fi
     exec "$SSH_BIN" "$target"
 }
 
@@ -467,7 +479,7 @@ if [ "$solo" -eq 0 ]; then
 fi
 
 tab=$(printf '\t')
-while IFS="$tab" read -r host rest; do
+while IFS="$tab" read -r host rest <&3; do
     [ -n "$host" ] || continue
 
     qualified=$(qualified_host "$host")
@@ -480,16 +492,36 @@ while IFS="$tab" read -r host rest; do
     printf 'Checking %s... ' "$target" >&2
     if logged_in=$("$SSH_BIN" \
         -o BatchMode=yes \
+        -n \
         -o ConnectTimeout="$connect_timeout" \
-        "$target" users 2>/dev/null); then
-        if [ -z "$(printf '%s' "$logged_in" | tr -d '[:space:]')" ]; then
+        -o StrictHostKeyChecking=accept-new \
+        "$target" users 2>"$probe_error_tmp"); then
+        other_users=$(printf '%s\n' "$logged_in" | awk -v self="$remote_user" '
+            {
+                for (i = 1; i <= NF; i++)
+                    if ($i != self)
+                        print $i
+            }
+        ')
+        if [ -z "$other_users" ]; then
             printf 'free\n' >&2
             connect_to "$host"
         fi
         printf 'occupied\n' >&2
     else
-        printf 'unreachable\n' >&2
+        reason=$(awk '
+            NF {
+                gsub(/\r/, "")
+                line = $0
+            }
+            END { print line }
+        ' "$probe_error_tmp")
+        if [ -n "$reason" ]; then
+            printf 'SSH failed: %s\n' "$reason" >&2
+        else
+            printf 'SSH failed\n' >&2
+        fi
     fi
-done <"$shuffled_tmp"
+done 3<"$shuffled_tmp"
 
-die "no reachable matching host was free"
+die "no matching host could be confirmed free"

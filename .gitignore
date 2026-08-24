@@ -90,6 +90,19 @@
 !/.emacs.d/config.org
 !/.emacs.d/themes/
 
+!/.codex/
+/.codex/*
+
+# Sol Advisor plugin and its installed agent definitions
+!/.codex/agents/
+/.codex/agents/*
+!/.codex/agents/sol-advisor-*.toml
+!/.codex/plugins/
+/.codex/plugins/*
+!/.codex/plugins/cache/
+/.codex/plugins/cache/*
+!/.codex/plugins/cache/sol-advisor/
+
 !/.config/fish/
 /.config/fish/fish_variables
 /.config/fish/conf.d/*
