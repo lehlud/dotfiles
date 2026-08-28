@@ -6,11 +6,12 @@ set -eu
 umask 077
 
 PROGRAM=${0##*/}
-VERSION=1.2.4
+VERSION=1.3.0
 INDEX_URL=${FAUCIP_INDEX_URL:-'https://wwwcip.informatik.uni-erlangen.de/cipPools/roomIndex.de.html'}
 CACHE_DIR=${XDG_CACHE_HOME:-"$HOME/.cache"}
 CACHE_FILE=$CACHE_DIR/faucipindex.tsv
 USER_CACHE_FILE=${FAUCIP_USER_CACHE_FILE:-"$CACHE_DIR/faucipuser.txt"}
+LATEST_HOST_FILE=${FAUCIP_LATEST_HOST_FILE:-"$CACHE_DIR/fauciplatest.txt"}
 SSH_BIN=${SSH:-ssh}
 HOST_SUFFIX=${FAUCIP_HOST_SUFFIX:-'.cip.cs.fau.de'}
 
@@ -25,6 +26,7 @@ host_filter=
 remote_user=
 solo=0
 list_only=0
+latest=0
 connect_timeout=6
 
 usage()
@@ -37,6 +39,8 @@ The parsed host index is cached at:
   $CACHE_FILE
 The default CIP username is cached at:
   $USER_CACHE_FILE
+The most recently selected host is cached at:
+  $LATEST_HOST_FILE
 
 Cache:
   --refresh              Download and rebuild the host-index cache
@@ -51,6 +55,7 @@ Capability filters:
   --host REGEX           Require a host name matching REGEX
 
 Selection and SSH:
+  --latest               Connect directly to the most recently selected host
   --solo                 Try hosts until no users other than you are logged in
   --user USER            Use USER for this run; do not change the cached user
   --connect-timeout N    Timeout for each --solo probe in seconds (default: 6)
@@ -92,6 +97,22 @@ valid_username()
     case $1 in
         ''|*[!A-Za-z0-9._-]*) return 1 ;;
         *) return 0 ;;
+    esac
+}
+
+valid_host()
+{
+    case $1 in
+        ''|*[!A-Za-z0-9.-]*|.*|*..*|*.) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+qualified_host()
+{
+    case $1 in
+        *.*) printf '%s\n' "$1" ;;
+        *)   printf '%s%s\n' "$1" "$HOST_SUFFIX" ;;
     esac
 }
 
@@ -199,6 +220,10 @@ while [ "$#" -gt 0 ]; do
             solo=1
             shift
             ;;
+        --latest)
+            latest=1
+            shift
+            ;;
         --list)
             list_only=1
             shift
@@ -223,6 +248,31 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+if [ "$latest" -eq 1 ]; then
+    if [ "$refresh" -eq 1 ] || [ "$need_gpu" -eq 1 ] ||
+       [ "$min_cores" -ne 0 ] || [ "$min_ram" -ne 0 ] ||
+       [ -n "$room_filter" ] || [ -n "$cpu_filter" ] ||
+       [ -n "$gpu_filter" ] || [ -n "$host_filter" ] ||
+       [ "$solo" -eq 1 ] || [ "$list_only" -eq 1 ]; then
+        die "--latest cannot be combined with selection, refresh, --solo, or --list options"
+    fi
+
+    [ -s "$LATEST_HOST_FILE" ] ||
+        die "no previously selected host; connect normally first"
+    latest_host=$(sed -n '1p' "$LATEST_HOST_FILE")
+    valid_host "$latest_host" ||
+        die "invalid host in $LATEST_HOST_FILE; remove it and connect normally"
+
+    load_or_prompt_username
+    command -v "$SSH_BIN" >/dev/null 2>&1 ||
+        die "SSH command not found: $SSH_BIN"
+
+    host=$(qualified_host "$latest_host")
+    target=$remote_user@$host
+    printf 'Connecting to %s\n' "$target" >&2
+    exec "$SSH_BIN" "$target"
+fi
 
 fetch_index()
 {
@@ -447,12 +497,17 @@ awk 'BEGIN { srand() } { printf "%.17f\t%s\n", rand(), $0 }' "$matches_tmp" |
     LC_ALL=C sort -n |
     cut -f 2- >"$shuffled_tmp"
 
-qualified_host()
+save_latest_host()
 {
-    case $1 in
-        *.*) printf '%s\n' "$1" ;;
-        *)   printf '%s%s\n' "$1" "$HOST_SUFFIX" ;;
-    esac
+    latest_tmp=$LATEST_HOST_FILE.tmp.$$
+    if ! printf '%s\n' "$1" >"$latest_tmp"; then
+        rm -f "$latest_tmp"
+        die "cannot write latest-host cache: $LATEST_HOST_FILE"
+    fi
+    if ! mv "$latest_tmp" "$LATEST_HOST_FILE"; then
+        rm -f "$latest_tmp"
+        die "cannot install latest-host cache: $LATEST_HOST_FILE"
+    fi
 }
 
 connect_to()
@@ -466,6 +521,7 @@ connect_to()
 
     printf 'Connecting to %s\n' "$target" >&2
     rm -f "$matches_tmp" "$shuffled_tmp" "$probe_error_tmp"
+    save_latest_host "$1"
     trap - 0 HUP INT TERM
     if [ "$solo" -eq 1 ]; then
         exec 3<&-
