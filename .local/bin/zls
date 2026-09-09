@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_zls_download() {
+    local arch
+    local sys
+    local release
+
+    case "$(uname -m)" in
+        x86_64 | aarch64)
+            arch="$(uname -m)"
+            ;;
+        arm64)
+            arch=aarch64
+            ;;
+        *)
+            printf 'zls update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+            return 2
+            ;;
+    esac
+
+    case "$(uname -s)" in
+        Linux)
+            sys=linux
+            ;;
+        Darwin)
+            sys=macos
+            ;;
+        *)
+            printf 'zls update failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    release="$(auto_update_latest_release_tag zigtools/zls)" || return 1
+
+    AUTO_UPDATE_URL="https://github.com/zigtools/zls/releases/download/$release/zls-$arch-$sys.tar.xz"
+    AUTO_UPDATE_SOURCE_REL=zls
+    AUTO_UPDATE_SOURCE_BIN_REL=zls
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_zls_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/zls")"
+
+if auto_update_ensure_tar_app zls "$_zls_cache_dir" zls zls 3 _zls_download; then
+    exec "$_zls_cache_dir/zls" "$@"
+fi
+
+exit 1

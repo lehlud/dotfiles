@@ -24,6 +24,7 @@
 !/.local/bin/helix
 !/.local/bin/fastfetch
 !/.local/bin/zellij
+!/.local/bin/zls
 !/.local/bin/auto-update-app.bash
 !/.local/bin/flutter
 !/.local/bin/dart
