@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_typst_download() {
+    local arch
+    local release
+    local target
+    local archive_dir
+
+    case "$(uname -m)" in
+        x86_64 | amd64)
+            arch=x86_64
+            ;;
+        aarch64 | arm64)
+            arch=aarch64
+            ;;
+        armv7 | armv7l)
+            arch=armv7
+            ;;
+        riscv64)
+            arch=riscv64gc
+            ;;
+        *)
+            printf 'typst update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+            return 2
+            ;;
+    esac
+
+    case "$(uname -s)" in
+        Linux)
+            case "$arch" in
+                armv7)
+                    target=armv7-unknown-linux-musleabi
+                    ;;
+                riscv64gc)
+                    target=riscv64gc-unknown-linux-gnu
+                    ;;
+                *)
+                    target="$arch-unknown-linux-musl"
+                    ;;
+            esac
+            ;;
+        Darwin)
+            case "$arch" in
+                x86_64 | aarch64)
+                    target="$arch-apple-darwin"
+                    ;;
+                *)
+                    printf 'typst update failed: unsupported macOS cpu arch: %s\n' "$(uname -m)" >&2
+                    return 2
+                    ;;
+            esac
+            ;;
+        *)
+            printf 'typst update failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    release="$(auto_update_latest_release_tag typst/typst)" || return 1
+    archive_dir="typst-$target"
+
+    AUTO_UPDATE_URL="https://github.com/typst/typst/releases/download/$release/$archive_dir.tar.xz"
+    AUTO_UPDATE_SOURCE_REL="$archive_dir"
+    AUTO_UPDATE_SOURCE_BIN_REL="$archive_dir/typst"
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_typst_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/typst")"
+
+if auto_update_ensure_tar_app typst "$_typst_cache_dir" typst typst/typst 3 _typst_download; then
+    exec "$_typst_cache_dir/typst/typst" "$@"
+fi
+
+exit 1
