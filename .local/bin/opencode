@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_opencode_download() {
+    local arch
+    local os
+    local target
+    local extension
+    local release
+    local translated
+
+    case "$(uname -s)" in
+        Linux)
+            os=linux
+            extension=tar.gz
+            ;;
+        Darwin)
+            os=darwin
+            extension=zip
+            ;;
+        *)
+            printf 'opencode update failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    case "$(uname -m)" in
+        x86_64 | amd64)
+            arch=x64
+            ;;
+        aarch64 | arm64)
+            arch=arm64
+            ;;
+        *)
+            printf 'opencode update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+            return 2
+            ;;
+    esac
+
+    if [ "$os" = darwin ] && [ "$arch" = x64 ]; then
+        translated="$(sysctl -n sysctl.proc_translated 2>/dev/null || printf '0\n')"
+        if [ "$translated" = 1 ]; then
+            arch=arm64
+        fi
+    fi
+
+    target="$os-$arch"
+
+    if [ "$arch" = x64 ]; then
+        case "$os" in
+            linux)
+                if ! grep -qwi avx2 /proc/cpuinfo 2>/dev/null; then
+                    target="$target-baseline"
+                fi
+                ;;
+            darwin)
+                if [ "$(sysctl -n hw.optional.avx2_0 2>/dev/null || printf '0\n')" != 1 ]; then
+                    target="$target-baseline"
+                fi
+                ;;
+        esac
+    fi
+
+    if [ "$os" = linux ]; then
+        if [ -f /etc/alpine-release ] || \
+            { command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; }
+        then
+            target="$target-musl"
+        fi
+    fi
+
+    release="$(auto_update_latest_release_tag anomalyco/opencode)" || return 1
+
+    AUTO_UPDATE_URL="https://github.com/anomalyco/opencode/releases/download/$release/opencode-$target.$extension"
+    AUTO_UPDATE_SOURCE_REL=opencode
+    AUTO_UPDATE_SOURCE_BIN_REL=opencode
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_opencode_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/opencode")"
+
+case "$(uname -s)" in
+    Linux)
+        if auto_update_ensure_tar_app opencode "$_opencode_cache_dir" opencode opencode 3 _opencode_download; then
+            exec "$_opencode_cache_dir/opencode" "$@"
+        fi
+        ;;
+    Darwin)
+        if auto_update_ensure_zip_app opencode "$_opencode_cache_dir" opencode opencode 3 _opencode_download; then
+            exec "$_opencode_cache_dir/opencode" "$@"
+        fi
+        ;;
+    *)
+        printf 'opencode update failed: unsupported system: %s\n' "$(uname -s)" >&2
+        ;;
+esac
+
+exit 1
