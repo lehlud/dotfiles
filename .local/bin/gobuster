@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_gobuster_download() {
+    local os arch release
+    case "$(uname -s)" in
+        Linux) os=Linux ;;
+        Darwin) os=Darwin ;;
+        *) printf 'gobuster: unsupported system: %s\n' "$(uname -s)" >&2; return 2 ;;
+    esac
+    case "$(uname -m)" in
+        x86_64 | amd64) arch=x86_64 ;;
+        aarch64 | arm64) arch=arm64 ;;
+        *) printf 'gobuster: unsupported cpu arch: %s\n' "$(uname -m)" >&2; return 2 ;;
+    esac
+    release="$(auto_update_latest_release_tag OJ/gobuster)" || return 1
+    AUTO_UPDATE_URL="https://github.com/OJ/gobuster/releases/download/$release/gobuster_${os}_${arch}.tar.gz"
+    AUTO_UPDATE_SOURCE_REL=gobuster
+    AUTO_UPDATE_SOURCE_BIN_REL=gobuster
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_gobuster_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/gobuster")"
+if auto_update_ensure_tar_app gobuster "$_gobuster_cache_dir" gobuster gobuster 3 _gobuster_download; then
+    exec "$_gobuster_cache_dir/gobuster" "$@"
+fi
+exit 1

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_sqlmap_download() {
+    local release
+    local archive_dir
+
+    release="$(auto_update_latest_release_tag sqlmapproject/sqlmap)" || return 1
+    archive_dir="sqlmap-$release"
+
+    AUTO_UPDATE_URL="https://github.com/sqlmapproject/sqlmap/archive/refs/tags/$release.tar.gz"
+    AUTO_UPDATE_SOURCE_REL="$archive_dir"
+    AUTO_UPDATE_SOURCE_BIN_REL="$archive_dir/sqlmap.py"
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_sqlmap_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/sqlmap")"
+
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'sqlmap: python3 not found\n' >&2
+    exit 127
+fi
+
+if auto_update_ensure_tar_app sqlmap "$_sqlmap_cache_dir" sqlmap sqlmap/sqlmap.py 3 _sqlmap_download; then
+    exec python3 "$_sqlmap_cache_dir/sqlmap/sqlmap.py" "$@"
+fi
+
+exit 1

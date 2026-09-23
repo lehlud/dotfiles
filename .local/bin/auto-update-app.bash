@@ -391,3 +391,42 @@ auto_update_ensure_tar_app() {
 auto_update_ensure_zip_app() {
     _auto_update_ensure_app "$1" "$2" "$3" "$4" "${5:-3}" "$6" "${7:-https://github.com}" unzip _auto_update_install_zip_app
 }
+
+auto_update_ensure_docker_image() {
+    local name="$1"
+    local image="$2"
+    local cache_dir="$3"
+    local max_age_days="${4:-3}"
+    local platform="${5:-}"
+    local marker="$cache_dir/.auto-update-checked"
+    local installed=0
+    local pull_args=()
+
+    if ! command -v docker >/dev/null 2>&1; then
+        printf '%s: docker not found\n' "$name" >&2
+        return 127
+    fi
+    if ! mkdir -p "$cache_dir"; then
+        printf '%s: could not create cache dir\n' "$name" >&2
+        return 1
+    fi
+    if [ -n "$platform" ]; then
+        pull_args+=(--platform "$platform")
+    fi
+    if docker image inspect "$image" >/dev/null 2>&1; then
+        installed=1
+        if ! auto_update_is_stale "$marker" "$max_age_days"; then
+            return 0
+        fi
+    fi
+    if docker pull --quiet "${pull_args[@]}" "$image" >/dev/null; then
+        touch "$marker"
+        return 0
+    fi
+    if [ "$installed" -eq 1 ]; then
+        printf '%s update failed; using cached image\n' "$name" >&2
+        return 0
+    fi
+    printf '%s install failed: could not pull image\n' "$name" >&2
+    return 1
+}

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_ffuf_download() {
+    local os arch release version
+    case "$(uname -s)" in
+        Linux) os=linux ;;
+        Darwin) os=macOS ;;
+        *) printf 'ffuf: unsupported system: %s\n' "$(uname -s)" >&2; return 2 ;;
+    esac
+    case "$(uname -m)" in
+        x86_64 | amd64) arch=amd64 ;;
+        aarch64 | arm64) arch=arm64 ;;
+        *) printf 'ffuf: unsupported cpu arch: %s\n' "$(uname -m)" >&2; return 2 ;;
+    esac
+    release="$(auto_update_latest_release_tag ffuf/ffuf)" || return 1
+    version="${release#v}"
+    AUTO_UPDATE_URL="https://github.com/ffuf/ffuf/releases/download/$release/ffuf_${version}_${os}_${arch}.tar.gz"
+    AUTO_UPDATE_SOURCE_REL=ffuf
+    AUTO_UPDATE_SOURCE_BIN_REL=ffuf
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_ffuf_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/ffuf")"
+if auto_update_ensure_tar_app ffuf "$_ffuf_cache_dir" ffuf ffuf 3 _ffuf_download; then
+    exec "$_ffuf_cache_dir/ffuf" "$@"
+fi
+exit 1

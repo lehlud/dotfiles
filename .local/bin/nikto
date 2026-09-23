@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_nikto_download() {
+    local release archive_dir
+    release="$(auto_update_latest_release_tag sullo/nikto)" || return 1
+    archive_dir="nikto-$release"
+    AUTO_UPDATE_URL="https://github.com/sullo/nikto/archive/refs/tags/$release.tar.gz"
+    AUTO_UPDATE_SOURCE_REL="$archive_dir"
+    AUTO_UPDATE_SOURCE_BIN_REL="$archive_dir/program/nikto.pl"
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_nikto_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/nikto")"
+if ! auto_update_ensure_tar_app nikto "$_nikto_cache_dir" nikto nikto/program/nikto.pl 3 _nikto_download; then
+    exit 1
+fi
+
+if command -v perl >/dev/null 2>&1 &&
+    perl -MFindBin -MJSON::PP -MNet::hostent -MTime::Piece -MTime::Seconds -MXML::Writer -e 1 >/dev/null 2>&1; then
+    exec perl "$_nikto_cache_dir/nikto/program/nikto.pl" "$@"
+fi
+
+_nikto_image=hackllc/nikto:2.6.1
+if ! auto_update_ensure_docker_image nikto "$_nikto_image" "$_nikto_cache_dir" 3; then
+    printf 'nikto: required Perl modules missing and Docker runtime unavailable\n' >&2
+    exit 1
+fi
+exec docker run --rm --user "$(id -u):$(id -g)" \
+    --volume "$_nikto_cache_dir/nikto:/nikto:ro" --entrypoint perl \
+    "$_nikto_image" /nikto/program/nikto.pl "$@"

@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_nuclei_download() {
+    local arch
+    local os
+    local release
+    local version
+    local archive_name
+
+    case "$(uname -m)" in
+        x86_64 | amd64)
+            arch=amd64
+            ;;
+        aarch64 | arm64)
+            arch=arm64
+            ;;
+        i386 | i686)
+            arch=386
+            ;;
+        arm | armv6* | armv7*)
+            arch=arm
+            ;;
+        *)
+            printf 'nuclei update failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+            return 2
+            ;;
+    esac
+
+    case "$(uname -s)" in
+        Linux)
+            os=linux
+            ;;
+        Darwin)
+            os=macOS
+            case "$arch" in
+                amd64 | arm64) ;;
+                *)
+                    printf 'nuclei update failed: unsupported macOS cpu arch: %s\n' "$(uname -m)" >&2
+                    return 2
+                    ;;
+            esac
+            ;;
+        *)
+            printf 'nuclei update failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    release="$(auto_update_latest_release_tag projectdiscovery/nuclei)" || return 1
+    version="${release#v}"
+    archive_name="nuclei_${version}_${os}_${arch}.zip"
+
+    AUTO_UPDATE_URL="https://github.com/projectdiscovery/nuclei/releases/download/$release/$archive_name"
+    AUTO_UPDATE_SOURCE_REL=nuclei
+    AUTO_UPDATE_SOURCE_BIN_REL=nuclei
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_nuclei_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/nuclei")"
+
+if auto_update_ensure_zip_app nuclei "$_nuclei_cache_dir" nuclei nuclei 3 _nuclei_download; then
+    exec "$_nuclei_cache_dir/nuclei" "$@"
+fi
+
+exit 1

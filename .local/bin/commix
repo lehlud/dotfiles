@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_commix_download() {
+    local release archive_dir
+    release="$(auto_update_latest_release_tag commixproject/commix)" || return 1
+    archive_dir="commix-${release#v}"
+    AUTO_UPDATE_URL="https://github.com/commixproject/commix/archive/refs/tags/$release.tar.gz"
+    AUTO_UPDATE_SOURCE_REL="$archive_dir"
+    AUTO_UPDATE_SOURCE_BIN_REL="$archive_dir/commix.py"
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_commix_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/commix")"
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'commix: python3 not found\n' >&2
+    exit 127
+fi
+if auto_update_ensure_tar_app commix "$_commix_cache_dir" commix commix/commix.py 3 _commix_download; then
+    exec python3 "$_commix_cache_dir/commix/commix.py" "$@"
+fi
+exit 1

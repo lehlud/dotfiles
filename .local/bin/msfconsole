@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+source "$HOME/.local/bin/auto-update-app.bash"
+
+_msf_image=metasploitframework/metasploit-framework:latest
+_msf_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/msfconsole")"
+
+if ! auto_update_ensure_docker_image msfconsole "$_msf_image" "$_msf_cache_dir" 3 linux/amd64; then
+    exit 1
+fi
+
+if ! mkdir -p "$HOME/.msf4"; then
+    printf 'msfconsole: could not create ~/.msf4\n' >&2
+    exit 1
+fi
+
+_msf_tty=(-i)
+if [ -t 0 ] && [ -t 1 ]; then
+    _msf_tty=(-it)
+fi
+
+exec docker run "${_msf_tty[@]}" --rm --platform linux/amd64 \
+    --env "MSF_UID=$(id -u)" --env "MSF_GID=$(id -g)" \
+    --volume "$HOME/.msf4:/home/msf/.msf4" \
+    "$_msf_image" ./msfconsole "$@"
