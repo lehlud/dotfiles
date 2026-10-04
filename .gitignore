@@ -91,6 +91,53 @@
 !/.emacs.d/config.org
 !/.emacs.d/themes/
 
+# Pi: track configuration and custom resources; ignore other runtime data.
+!/.pi/
+/.pi/*
+!/.pi/agent/
+/.pi/agent/*
+!/.pi/agent/settings.json
+!/.pi/agent/keybindings.json
+!/.pi/agent/models.json
+!/.pi/agent/mcp.json
+!/.pi/agent/AGENTS.override.md
+!/.pi/agent/AGENTS.md
+!/.pi/agent/AGENTS.MD
+!/.pi/agent/CLAUDE.md
+!/.pi/agent/CLAUDE.MD
+!/.pi/agent/SYSTEM.md
+!/.pi/agent/APPEND_SYSTEM.md
+!/.pi/agent/extensions/
+!/.pi/agent/skills/
+!/.pi/agent/prompts/
+!/.pi/agent/themes/
+
+# Keep credentials, private overrides, dependencies, and generated files out.
+/.pi/**/auth.json*
+/.pi/**/mcp-auth.json*
+/.pi/**/.env
+/.pi/**/.env.*
+/.pi/**/secrets.*
+/.pi/**/credentials.*
+/.pi/**/*.pem
+/.pi/**/*.key
+/.pi/**/*.p12
+/.pi/**/*.pfx
+/.pi/**/id_rsa*
+/.pi/**/id_ed25519*
+/.pi/**/*.local.*
+/.pi/**/*~
+/.pi/**/*.bak
+/.pi/**/*.swp
+/.pi/**/*.log
+/.pi/**/node_modules/
+/.pi/**/sessions/
+/.pi/**/cache/
+/.pi/**/.cache/
+/.pi/**/dist/
+/.pi/**/build/
+/.pi/**/__pycache__/
+
 !/.codex/
 /.codex/*
 
