@@ -430,3 +430,52 @@ auto_update_ensure_docker_image() {
     printf '%s install failed: could not pull image\n' "$name" >&2
     return 1
 }
+
+# Build a small image from a Dockerfile supplied on stdin (no host build context).
+auto_update_ensure_docker_build() {
+    local name="$1"
+    local image="$2"
+    local cache_dir="$3"
+    local dockerfile="$4"
+    local max_age_days="${5:-3}"
+    local marker="$cache_dir/.auto-update-checked"
+    local source_marker="$cache_dir/.auto-update-source"
+    local source_version
+    local installed_source
+    local installed=0
+
+    if ! command -v docker >/dev/null 2>&1; then
+        printf '%s: docker not found\n' "$name" >&2
+        return 127
+    fi
+    if ! mkdir -p "$cache_dir"; then
+        printf '%s: could not create cache dir\n' "$name" >&2
+        return 1
+    fi
+    if ! source_version="$(cksum <"$dockerfile")"; then
+        printf '%s: could not read Dockerfile: %s\n' "$name" "$dockerfile" >&2
+        return 1
+    fi
+    if docker image inspect "$image" >/dev/null 2>&1; then
+        installed=1
+        installed_source=
+        if [ -r "$source_marker" ]; then
+            IFS= read -r installed_source <"$source_marker" || installed_source=
+        fi
+        if [ "$installed_source" = "$source_version" ] && ! auto_update_is_stale "$marker" "$max_age_days"; then
+            return 0
+        fi
+    fi
+    if _auto_update_run_with_progress "$name: updating image" \
+        docker build --pull --no-cache --quiet --tag "$image" - <"$dockerfile" >/dev/null; then
+        printf '%s\n' "$source_version" >"$source_marker"
+        touch "$marker"
+        return 0
+    fi
+    if [ "$installed" -eq 1 ]; then
+        printf '%s update failed; using cached image\n' "$name" >&2
+        return 0
+    fi
+    printf '%s install failed: could not build image\n' "$name" >&2
+    return 1
+}

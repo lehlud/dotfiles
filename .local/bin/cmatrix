@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+
+_helper="${AUTO_UPDATE_APP_HELPER:-$HOME/.local/bin/auto-update-app.bash}"
+if [ ! -r "$_helper" ]; then
+    printf 'cmatrix: missing auto-update helper: %s\n' "$_helper" >&2
+    exit 1
+fi
+source "$_helper"
+
+_image=dotfiles/terminal-toys:latest
+_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/terminal-toys")"
+if ! auto_update_ensure_docker_build cmatrix "$_image" "$_cache_dir" \
+    "$HOME/.local/scripts/terminal-toys.Dockerfile" 3; then
+    exit 1
+fi
+
+_tty=(-i)
+if [ -t 0 ] && [ -t 1 ]; then
+    _tty=(-it)
+fi
+exec docker run "${_tty[@]}" --rm --init \
+    --env "TERM=${TERM:-xterm-256color}" --entrypoint /usr/bin/cmatrix \
+    "$_image" "$@"

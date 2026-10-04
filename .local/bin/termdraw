@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+
+_helper="${AUTO_UPDATE_APP_HELPER:-$HOME/.local/bin/auto-update-app.bash}"
+if [ ! -r "$_helper" ]; then
+    printf 'termdraw: missing auto-update helper: %s\n' "$_helper" >&2
+    exit 1
+fi
+source "$_helper"
+
+_termdraw_download() {
+    local version
+    if ! command -v npm >/dev/null 2>&1; then
+        printf 'termdraw: npm is required for installation and updates\n' >&2
+        return 1
+    fi
+    version="$(npm view --registry=https://registry.npmjs.org @termdraw/app version)" || return 1
+    if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.-]+)?$ ]]; then
+        printf 'termdraw: invalid package version\n' >&2
+        return 1
+    fi
+    AUTO_UPDATE_URL="https://registry.npmjs.org/@termdraw/app/-/app-$version.tgz"
+    AUTO_UPDATE_SOURCE_REL=package
+    AUTO_UPDATE_SOURCE_BIN_REL=package/dist/cli.js
+    AUTO_UPDATE_VERSION="$version"
+}
+
+_termdraw_extract() {
+    local url="$1"
+    local archive="$2"
+    local extract_dir="$3"
+    local label="$4"
+    _auto_update_extract_tar "$url" "$archive" "$extract_dir" "$label" || return 1
+    _auto_update_run_with_progress 'termdraw: installing dependencies' \
+        npm install --prefix "$extract_dir/package" --registry=https://registry.npmjs.org \
+        --omit=dev --ignore-scripts --no-audit --no-fund --package-lock=false >/dev/null
+}
+
+_termdraw_install() {
+    _auto_update_install_app "$@" _termdraw_extract
+}
+
+if ! command -v bun >/dev/null 2>&1; then
+    printf 'termdraw: Bun 1.3 or newer is required\n' >&2
+    exit 127
+fi
+
+_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/termdraw")"
+if _auto_update_ensure_app termdraw "$_cache_dir" termdraw termdraw/dist/cli.js \
+    3 _termdraw_download https://registry.npmjs.org tar _termdraw_install; then
+    exec bun "$_cache_dir/termdraw/dist/cli.js" "$@"
+fi
+
+exit 1

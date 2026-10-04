@@ -27,6 +27,10 @@
 !/.local/bin/zls
 !/.local/bin/auto-update-app.bash
 !/.local/bin/pi
+!/.local/bin/cmatrix
+!/.local/bin/sl
+!/.local/bin/hollywood
+!/.local/bin/termdraw
 !/.local/bin/flutter
 !/.local/bin/dart
 !/.local/bin/deno
