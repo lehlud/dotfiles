@@ -1,7 +1,8 @@
 import { describe, test, expect } from "bun:test";
 import { buildReview, constrainReviewPayload, parseConfig, parseVerdict, sandboxRequestSchema, textContent, withWatchdog, type Config } from "../policy.ts";
 import { Check } from "typebox/value";
-const config: Config = { provider: "openai", model: "gpt-6-luna", thinking: "medium", recentUserPrompts: 2, requestTimeoutMs: 120000, sandbox: { dockerExecutable: "/usr/bin/docker", image: `sha256:${"a".repeat(64)}`, workspaceRoots: [] } };
+const portable = { provider: "openai", model: "gpt-6-luna", thinking: "medium", recentUserPrompts: 2, requestTimeoutMs: 120000, sandbox: { backend: "bwrap" } };
+const config: Config = { ...portable, thinking: "medium", sandbox: { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/executor/runner" } };
 const request = { tool: "bash", arguments: { command: "printf ok" }, goal: "Test", justification: "Smoke test" };
 
 describe("review policy", () => {
@@ -14,16 +15,15 @@ describe("review policy", () => {
     expect(data.action.sandbox).toEqual(sandbox); expect(data.sandboxPlan).toEqual(plan);
   });
   test("strict config and easily replaceable model", () => {
-    expect(parseConfig(JSON.stringify({ ...config, provider: "other", model: "replacement", thinking: "low" })).model).toBe("replacement");
-    for (const bad of [{ ...config, thinking: "banana" }, { ...config, recentUserPrompts: 0 }, { ...config, enabled: false }, { ...config, requestTimeoutMs: -1 }]) {
+    expect(parseConfig(JSON.stringify({ ...portable, provider: "other", model: "replacement", thinking: "low" })).model).toBe("replacement");
+    for (const bad of [{ ...portable, thinking: "banana" }, { ...portable, recentUserPrompts: 0 }, { ...portable, enabled: false }, { ...portable, requestTimeoutMs: -1 }]) {
       expect(() => parseConfig(JSON.stringify(bad))).toThrow();
     }
   });
-  test("bwrap config needs no manually granted workspaceRoots", () => {
-    const sandbox = { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/executor/runner" };
-    expect(parseConfig(JSON.stringify({ ...config, sandbox })).sandbox.backend).toBe("bwrap");
-    for (const bad of [{ ...sandbox, executable: "bwrap" }, { ...sandbox, runnerExecutable: "relative" }, { ...sandbox, hostFallback: true }]) {
-      expect(() => parseConfig(JSON.stringify({ ...config, sandbox: bad }))).toThrow();
+  test("portable config rejects device paths, workspace grants and gate overrides", () => {
+    expect(parseConfig(JSON.stringify(portable)).sandbox.backend).toBe("bwrap");
+    for (const extra of [{ executable: "/usr/bin/bwrap" }, { runnerExecutable: "/executor/runner" }, { workspaceViews: [] }, { workspaceRoots: [] }, { hostFallback: true }, { token: "secret" }]) {
+      expect(() => parseConfig(JSON.stringify({ ...portable, sandbox: { ...portable.sandbox, ...extra } }))).toThrow();
     }
   });
   test("uses only actual raw recent user prompts from the supplied branch", () => {

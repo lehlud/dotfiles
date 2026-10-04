@@ -28,7 +28,8 @@ mock.module("../isolation.ts", () => ({
 }));
 const { default: extension } = await import("../index.ts");
 const configPath = join(agentRoot, "auto-approval.json");
-const config = { provider: "openai", model: "gpt-6-luna", thinking: "medium", recentUserPrompts: 6, requestTimeoutMs: 120000, sandbox: { dockerExecutable: "/usr/bin/docker", image: `sha256:${"a".repeat(64)}`, workspaceRoots: [root] } };
+const localConfigPath = join(agentRoot, "auto-approval.local.json");
+const config = { provider: "openai", model: "gpt-6-luna", thinking: "medium", recentUserPrompts: 6, requestTimeoutMs: 120000, sandbox: { backend: "docker", image: `sha256:${"a".repeat(64)}` } };
 const usage = { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 20, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 let mode: "approve" | "deny" | "invalid" | "error" | "mismatch" = "approve";
 let requested: any[];
@@ -44,6 +45,7 @@ let ctx: ExtensionToolContext;
 
 beforeEach(async () => {
   await writeFile(configPath, JSON.stringify(config));
+  await writeFile(localConfigPath, JSON.stringify({ sandbox: { dockerExecutable: "/usr/bin/docker" } }));
   mode = "approve"; requested = []; hooks = {}; actions = {}; active = []; auditFails = false; responseHook = undefined; widgets = []; statuses = [];
   validatedScopes = []; executedRequests = [];
   entries = [{ type: "message", message: { role: "user", content: "Run a harmless smoke test in the temporary working directory. Do not change any approval settings." } }];
@@ -191,10 +193,19 @@ test("file mutations are reviewed too", async () => {
   expect(requested[0].data.action.tool).toBe("write");
 });
 test("direct attempts to modify approval configuration cannot even ask for approval", async () => {
-  const original = await readFile(configPath, "utf8");
-  expect((await call({ tool: "write", arguments: { path: configPath, content: "{}" }, goal: "Disable gate", justification: "Bypass" })).isError).toBe(true);
-  expect(await readFile(configPath, "utf8")).toBe(original);
+  for (const path of [configPath, localConfigPath]) {
+    const original = await readFile(path, "utf8");
+    expect((await call({ tool: "write", arguments: { path, content: "{}" }, goal: "Disable gate", justification: "Bypass" })).isError).toBe(true);
+    expect(await readFile(path, "utf8")).toBe(original);
+  }
   expect(requested).toHaveLength(0);
+});
+test("invalid local restrictions block before review and execution", async () => {
+  await writeFile(localConfigPath, '{"sandbox":{"workspaceViews":"invalid"}}');
+  const result = await call(bash("touch invalid-local-config"));
+  expect(result.isError).toBe(true);
+  expect(requested).toHaveLength(0); expect(executedRequests).toHaveLength(0);
+  expect(await exists(join(root, "invalid-local-config"))).toBe(false);
 });
 test("no cached approval; the same action is reviewed on every call", async () => {
   await call(bash("printf once")); mode = "deny";

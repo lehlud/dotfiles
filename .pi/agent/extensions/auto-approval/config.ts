@@ -1,0 +1,62 @@
+import { access, lstat, readFile, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { delimiter, isAbsolute, join } from "node:path";
+import { homedir } from "node:os";
+import { Check } from "typebox/value";
+import { parseConfig, parseLocalConfig, resolvedConfigSchema, type Config, type LocalConfig, type PortableConfig } from "./policy.ts";
+
+type RuntimePaths = { home?: string; searchPath?: string };
+
+async function findProgram(name: string, searchPath: string): Promise<string> {
+  for (const directory of searchPath.split(delimiter)) {
+    // Never select executable code from the agent's current project directory.
+    if (!isAbsolute(directory)) continue;
+    const candidate = join(directory, name);
+    try {
+      await access(candidate, constants.X_OK);
+      if ((await stat(candidate)).isFile()) return await realpath(candidate);
+    } catch (error) {
+      if (!["ENOENT", "ENOTDIR", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    }
+  }
+  throw new Error(`Sandbox program ${name} not found on PATH; install it or configure its absolute path in auto-approval.local.json outside Pi`);
+}
+
+export async function resolveConfig(portable: PortableConfig, local: LocalConfig = {}, runtime: RuntimePaths = {}): Promise<Config> {
+  const paths = local.sandbox ?? {};
+  const searchPath = runtime.searchPath ?? process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
+  let sandbox: Config["sandbox"];
+  if (portable.sandbox.backend === "bwrap") {
+    if (paths.dockerExecutable) throw new Error("dockerExecutable is incompatible with the configured bwrap backend");
+    sandbox = {
+      backend: "bwrap",
+      executable: paths.executable ?? await findProgram("bwrap", searchPath),
+      runnerExecutable: paths.runnerExecutable ?? join(runtime.home ?? homedir(), ".local", "cache", "pi-auto-approval", "executor"),
+      ...(paths.workspaceViews ? { workspaceViews: paths.workspaceViews } : {}),
+    };
+  } else {
+    if (paths.executable || paths.runnerExecutable || paths.workspaceViews) throw new Error("bwrap paths and workspaceViews are incompatible with the configured Docker backend");
+    sandbox = { backend: "docker", image: portable.sandbox.image, dockerExecutable: paths.dockerExecutable ?? await findProgram("docker", searchPath) };
+  }
+  const resolved = { ...portable, sandbox };
+  if (!Check(resolvedConfigSchema, resolved)) throw new Error("Invalid resolved auto-approval configuration");
+  return resolved;
+}
+
+export async function loadConfig(agentDirectory: string, runtime: RuntimePaths = {}): Promise<Config> {
+  const portable = parseConfig(await readFile(join(agentDirectory, "auto-approval.json"), "utf8"));
+  const localPath = join(agentDirectory, "auto-approval.local.json");
+  let local: LocalConfig = {};
+  try { local = parseLocalConfig(await readFile(localPath, "utf8")); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    // A broken symlink is an existing restriction file that cannot be loaded.
+    // Only the complete absence of this optional file means no local overrides.
+    const present = await lstat(localPath).then(() => true, (failure: NodeJS.ErrnoException) => {
+      if (failure.code === "ENOENT") return false;
+      throw failure;
+    });
+    if (present) throw error;
+  }
+  return await resolveConfig(portable, local, runtime);
+}

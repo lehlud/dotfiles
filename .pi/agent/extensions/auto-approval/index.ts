@@ -1,4 +1,4 @@
-import { readFile, realpath } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { resolve, join, dirname, basename } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,8 @@ import { Check } from "typebox/value";
 import { detectWorkspace, executeIsolated, validateWorkspace } from "./isolation.ts";
 import { reviewSummary, startReviewDisplay, showDecision } from "./display.ts";
 import { createApprovalRenderers } from "./renderers.ts";
-import { buildReview, constrainReviewPayload, parseConfig, parseVerdict, REVIEW_SYSTEM, sandboxRequestSchema, textContent, withWatchdog, type Request } from "./policy.ts";
+import { buildReview, constrainReviewPayload, parseVerdict, REVIEW_SYSTEM, sandboxRequestSchema, textContent, withWatchdog, type Request } from "./policy.ts";
+import { loadConfig } from "./config.ts";
 
 const TOOL_NAME = "approved_action";
 const factories = {
@@ -25,6 +26,7 @@ const factories = {
 type ToolName = keyof typeof factories;
 const toolNames = Object.keys(factories) as ToolName[];
 const configPath = join(getAgentDir(), "auto-approval.json");
+const localConfigPath = join(getAgentDir(), "auto-approval.local.json");
 const sourceDir = dirname(fileURLToPath(import.meta.url));
 const definitions = Object.fromEntries(toolNames.map((name) => [name, factories[name](process.cwd())])) as Record<ToolName, ToolDefinition<any, any>>;
 const parameters = Type.Union(toolNames.map((name) => Type.Object({
@@ -77,7 +79,7 @@ export default function autoApproval(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     lock(ctx);
     try {
-      const config = parseConfig(await readFile(configPath, "utf8"));
+      const config = await loadConfig(getAgentDir());
       ctx.ui.setStatus("auto-approval", `approval: ${config.provider}/${config.model} (${config.thinking})`);
     } catch {
       ctx.ui.setStatus("auto-approval", "approval: LOCKED (invalid/missing config)");
@@ -87,7 +89,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     lock(ctx);
     return { message: {
       customType: "auto-approval-policy", display: false,
-      content: `Auto-Approval and its isolated executor are mandatory. No host operations are permitted. Actions run in an ephemeral sandbox, offline by default, with only authorized mounts writable. When the real user task requires access beyond the defaults, request it in approved_action.sandbox: paths with read/write access, network host, literal environment, executableSearchPaths or limits. Explain necessity; the reviewer evaluates the complete action and expansion together. Permissions expire at the end of that action. Never change the operator configuration or bypass isolation. Pi code, credentials, container sockets, and host process namespace are protected. If isolation or workspace authorization fails, tell the user the exact config path and required operator change; NEVER use a local fallback. The workspace is detected automatically from the current directory or project Git root; a Git root at or above the home directory is ignored. The config is ~/.pi/agent/auto-approval.json; /auto-approval shows its path and detected workspace. Use ONLY approved_action for every operation, including reads and file mutations. Supply the exact tool arguments, your current goal, and why the action is necessary now. An independent reviewer checks actual recent user prompts against the action. Rejections return their reason. Resolve the concern or ask the user; never retry through another tool, nested agent, shell escape, modified gate, or background process. There is no agent-accessible disable or manual bypass.`,
+      content: `Auto-Approval and its isolated executor are mandatory. No host operations are permitted. Actions run in an ephemeral sandbox, offline by default, with only authorized mounts writable. When the real user task requires access beyond the defaults, request it in approved_action.sandbox: paths with read/write access, network host, literal environment, executableSearchPaths or limits. Explain necessity; the reviewer evaluates the complete action and expansion together. Permissions expire at the end of that action. Never change the operator configuration or bypass isolation. Pi code, credentials, container sockets, and host process namespace are protected. If isolation or workspace authorization fails, tell the user the exact config path and required operator change; NEVER use a local fallback. The workspace is detected automatically from the current directory or project Git root; a Git root at or above the home directory is ignored. The shared config is ~/.pi/agent/auto-approval.json; optional device paths and restricted home workspaceViews belong in ~/.pi/agent/auto-approval.local.json. /auto-approval shows both paths and the detected workspace. Use ONLY approved_action for every operation, including reads and file mutations. Supply the exact tool arguments, your current goal, and why the action is necessary now. An independent reviewer checks actual recent user prompts against the action. Rejections return their reason. Resolve the concern or ask the user; never retry through another tool, nested agent, shell escape, modified gate, or background process. There is no agent-accessible disable or manual bypass.`,
     } };
   });
   pi.on("tool_call", async (event) => {
@@ -101,9 +103,9 @@ export default function autoApproval(pi: ExtensionAPI) {
     description: "Show mandatory approval configuration (edit auto-approval.json to change the reviewer)",
     handler: async (_args, ctx) => {
       try {
-        const config = parseConfig(await readFile(configPath, "utf8"));
-        ctx.ui.notify(`Auto-Approval ON\nReviewer: ${config.provider}/${config.model} (${config.thinking})\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nChanges take effect on the next action. No bypass/off command.`, "info");
-      } catch (error) { ctx.ui.notify(`Auto-Approval LOCKED: ${String(error)}\nConfig: ${configPath}`, "error"); }
+        const config = await loadConfig(getAgentDir());
+        ctx.ui.notify(`Auto-Approval ON\nReviewer: ${config.provider}/${config.model} (${config.thinking})\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nLocal paths/views (optional): ${localConfigPath}\nChanges take effect on the next action. No bypass/off command.`, "info");
+      } catch (error) { ctx.ui.notify(`Auto-Approval LOCKED: ${String(error)}\nConfig: ${configPath}\nLocal paths/views (optional): ${localConfigPath}`, "error"); }
     },
   });
   pi.registerTool({
@@ -135,7 +137,7 @@ export default function autoApproval(pi: ExtensionAPI) {
           const request = structuredClone(raw) as Request;
           const validRequest: boolean = Check(parameters, request);
           if (!validRequest || !request.goal.trim() || !request.justification.trim()) throw new Error("Invalid action, goal, or justification");
-          const config = parseConfig(await readFile(configPath, "utf8"));
+          const config = await loadConfig(getAgentDir());
           reviewer = `${config.provider}/${config.model} (${config.thinking})`;
           const name = request.tool as ToolName;
           // Private built-in definitions: never resolve a same-name extension/MCP

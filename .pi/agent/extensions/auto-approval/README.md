@@ -6,16 +6,15 @@ Jede Agent-Aktion wird von einem unabhängigen Modell geprüft. Genehmigte Aktio
 
 Nach Änderungen an der Erweiterung Pi neu starten. `/auto-approval` zeigt Reviewer, Sandbox-Backend, Arbeitsverzeichnis, erkannten Workspace und den vollständigen Konfigurationspfad.
 
-Die lokale Konfiguration liegt normalerweise unter `~/.pi/agent/auto-approval.json`. Bei einem anderen `PI_CODING_AGENT_DIR` liegt sie in diesem Agent-Verzeichnis. Sie wird bei jeder Aktion neu gelesen und bleibt außerhalb des öffentlichen Dotfiles-Repositories.
+`~/.pi/agent/auto-approval.json` wird im öffentlichen Dotfiles-Repository synchronisiert. Sie enthält Modell, Prüfeinstellungen und Sandbox-Backend, aber keine Gerätepfade oder Workspace-Freigaben. Optionale lokale Pfade und Freigaben stehen in `auto-approval.local.json`; diese Datei bleibt von Git ausgeschlossen. Bei einem anderen `PI_CODING_AGENT_DIR` liegen beide Dateien dort. Sie werden bei jeder Aktion neu gelesen.
 
 ## Automatische Workspace-Erkennung
 
 - Ein eigenes Projekt-Repository verwendet seinen Git-Root als Workspace. Die Aktion läuft weiterhin im ursprünglichen Arbeitsverzeichnis.
 - Ohne eigenes Repository wird das aktuelle Verzeichnis verwendet.
 - Ein Git-Root am Home-Verzeichnis oder darüber wird ignoriert. Ein uninitialisiertes Projekt unter dem Home-Verzeichnis erhält deshalb keine Freigabe für alle Dotfiles.
-- `workspaceRoots` ist für die Erkennung nicht erforderlich; auch ein alter leerer Eintrag sperrt die automatische Erkennung nicht.
 
-Ein direkt im Home-Verzeichnis gestartetes Pi verwendet eine eingeschränkte `workspaceViews`-Ansicht. In der lokalen Einrichtung sind darin einzelne öffentliche, versionierte Dotfile-Dateien aufgeführt. Unversionierte Dateien, Zugangsdaten und der aktive Approval-Code werden nicht eingebunden. Diese Ansicht erlaubt Änderungen an den eingebundenen Dateien, aber keine neuen Dateien in den schreibgeschützten Elternverzeichnissen. Für normale Projektarbeit Pi im jeweiligen Projektordner starten.
+Ein direkt im Home-Verzeichnis gestartetes Pi benötigt eine eingeschränkte `sandbox.workspaceViews`-Ansicht in `auto-approval.local.json`. In der lokalen Einrichtung sind darin einzelne öffentliche, versionierte Dotfile-Dateien aufgeführt. Unversionierte Dateien, Zugangsdaten und der aktive Approval-Code werden nicht eingebunden. Diese Ansicht erlaubt Änderungen an den eingebundenen Dateien, aber keine neuen Dateien in den schreibgeschützten Elternverzeichnissen. Für normale Projektarbeit ist keine lokale Freigabeliste erforderlich.
 
 Workspaces innerhalb der aktiven Pi-Installation, Approval-Konfiguration oder bekannten Credential-Verzeichnisse bleiben gesperrt. Geschützte Dateien innerhalb eines sonst zulässigen bwrap-Workspaces werden ausgeblendet. Hardlinks sind erlaubt, wenn sämtliche Links desselben Inodes innerhalb der eingebundenen, ungeschützten Pfade liegen. So funktionieren beispielsweise Cargo-Build-Artefakte zwischen `release` und `release/deps`. Links nach außen, in ausgeblendete Verzeichnisse und Unix-Sockets werden zurückgewiesen. Dangling Symlinks aus Build-Caches sperren den Workspace nicht; fehlende Ziele werden nicht eingebunden.
 
@@ -68,7 +67,7 @@ mkdir -p ~/.local/cache/pi-auto-approval
 bun build --compile runner.ts --outfile ~/.local/cache/pi-auto-approval/executor
 ```
 
-`auto-approval.json` verwendet absolute Pfade. Eine Konfiguration für normale Projektverzeichnisse sieht zum Beispiel so aus:
+Eine portable `auto-approval.json` sieht so aus:
 
 ```json
 {
@@ -78,24 +77,22 @@ bun build --compile runner.ts --outfile ~/.local/cache/pi-auto-approval/executor
   "recentUserPrompts": 6,
   "requestTimeoutMs": 120000,
   "sandbox": {
-    "backend": "bwrap",
-    "executable": "/usr/bin/bwrap",
-    "runnerExecutable": "/absolute/path/to/.local/cache/pi-auto-approval/executor"
+    "backend": "bwrap"
   }
 }
 ```
 
-Für eine eingeschränkte Ansicht kann `sandbox.workspaceViews` Einträge der Form `{"root":"/absolute/workspace","paths":["/absolute/workspace/public-file"]}` enthalten. Nur diese Pfade werden eingebunden. Keine Credential-Dateien oder ganze private Home-Verzeichnisse hinzufügen.
+Bubblewrap wird über absolute Verzeichnisse im `PATH` gesucht; der Executor liegt standardmäßig unter `~/.local/cache/pi-auto-approval/executor`. Abweichende absolute Pfade können als `sandbox.executable` und `sandbox.runnerExecutable` in `auto-approval.local.json` stehen. Dort kann auch `sandbox.workspaceViews` Einträge der Form `{"root":"/absolute/workspace","paths":["/absolute/workspace/public-file"]}` enthalten. Nur diese Pfade werden eingebunden. Keine Credential-Dateien oder ganzen privaten Home-Verzeichnisse hinzufügen.
 
 Der Executor wird schreibgeschützt eingebunden. Die Sandbox erhält eine leere Umgebung, ein temporäres Home, eigene Prozess-, Netzwerk-, IPC- und weitere Namespaces sowie keine Linux-Capabilities. Ohne genehmigte Erweiterung sind die Netzwerkschnittstellen des Hosts nicht erreichbar. Die Prozessnamespace bleibt isoliert. Nur die ausgewählten Workspace-Mounts können auf dem Host verändert werden. Temporäre Dateien bleiben in der Sandbox.
 
 Ein Abbruch beendet den Sandbox-Prozess; Kindprozesse dürfen nach der Aktion nicht weiterlaufen. Ausgabemenge und Laufzeit sind begrenzt. Die Docker-spezifischen Speicher-, CPU- und PID-Grenzen gelten für das Docker-Backend; das bwrap-Backend richtet keine entsprechenden cgroup-Grenzen ein.
 
-Nach Änderungen an `runner.ts` oder dessen Dependencies den Executor erneut außerhalb von Pi bauen. Die Auswahl des Prüfmodells lässt sich über die lokale JSON-Konfiguration ändern. Änderungen am Erweiterungscode erfordern einen Neustart von Pi.
+Nach Änderungen an `runner.ts` oder dessen Dependencies den Executor erneut außerhalb von Pi bauen. Die Auswahl des Prüfmodells lässt sich über `auto-approval.json` ändern. Änderungen am Erweiterungscode erfordern einen Neustart von Pi.
 
 ## Docker-Kompatibilität
 
-Das frühere Docker-Backend bleibt verfügbar. Dazu enthält `sandbox` weiterhin `dockerExecutable`, einen unveränderlichen `image`-Digest und optional `"backend":"docker"`. Automatische Workspace-Erkennung gilt auch dort. Das Docker-Backend erlaubt keinen Workspace, der geschützte Pi- oder Credential-Verzeichnisse enthält.
+Das frühere Docker-Backend bleibt verfügbar. Dazu enthält die synchronisierte Konfiguration `sandbox.backend: "docker"` und einen unveränderlichen `sandbox.image`-Digest. Docker wird über `PATH` gefunden; ein abweichender absoluter `sandbox.dockerExecutable`-Pfad gehört in `auto-approval.local.json`. Automatische Workspace-Erkennung gilt auch dort. Das Docker-Backend erlaubt keinen Workspace, der geschützte Pi- oder Credential-Verzeichnisse enthält.
 
 Das Backend wird explizit gewählt. Wenn er nicht startet, wird keine Aktion auf dem Host ausgeführt und kein anderer Backend automatisch ausprobiert.
 

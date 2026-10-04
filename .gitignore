@@ -95,7 +95,7 @@
 !/.emacs.d/config.org
 !/.emacs.d/themes/
 
-# Pi: track portable templates and custom resources; keep live settings private.
+# Pi: track portable configuration and resources; keep device settings private.
 !/.pi/
 /.pi/*
 !/.pi/agent/
@@ -104,6 +104,7 @@
 !/.pi/agent/keybindings.json
 !/.pi/agent/models.example.json
 !/.pi/agent/mcp.example.json
+!/.pi/agent/auto-approval.json
 !/.pi/agent/AGENTS.override.md
 !/.pi/agent/AGENTS.md
 !/.pi/agent/AGENTS.MD

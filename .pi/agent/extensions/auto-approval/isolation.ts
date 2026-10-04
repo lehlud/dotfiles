@@ -53,9 +53,9 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
       }
       bindings = [...new Set(bindings)].sort((a, b) => a.length - b.length)
         .filter((path, index, all) => !all.slice(0, index).some((parent) => within(parent, path)));
-      if (!bindings.length) throw new Error(`Directory ${workspace} is outside the operator-configured workspace view; edit sandbox.workspaceViews in ~/.pi/agent/auto-approval.json outside Pi.`);
+      if (!bindings.length) throw new Error(`Directory ${workspace} is outside the operator-configured workspace view; edit sandbox.workspaceViews in ~/.pi/agent/auto-approval.local.json outside Pi.`);
     } else if (workspace === await realpath(homedir())) {
-      throw new Error("The home directory needs a restricted workspaceViews entry containing public files; edit ~/.pi/agent/auto-approval.json outside Pi. Project workspaces are detected automatically.");
+      throw new Error("The home directory needs a restricted workspaceViews entry containing public files; edit ~/.pi/agent/auto-approval.local.json outside Pi. Project workspaces are detected automatically.");
     }
   } else if (protectedRoots.some((path) => within(workspace, path))) {
     throw new Error("Workspace overlaps Pi, its gate, or protected configuration");
