@@ -13,7 +13,7 @@ import { Check } from "typebox/value";
 import { detectWorkspace, executeIsolated, validateWorkspace } from "./isolation.ts";
 import { reviewSummary, startReviewDisplay, showDecision } from "./display.ts";
 import { createApprovalRenderers } from "./renderers.ts";
-import { buildReview, parseConfig, parseVerdict, REVIEW_SYSTEM, sandboxRequestSchema, textContent, withWatchdog, type Request } from "./policy.ts";
+import { buildReview, constrainReviewPayload, parseConfig, parseVerdict, REVIEW_SYSTEM, sandboxRequestSchema, textContent, withWatchdog, type Request } from "./policy.ts";
 
 const TOOL_NAME = "approved_action";
 const factories = {
@@ -166,6 +166,7 @@ export default function autoApproval(pi: ExtensionAPI) {
             }, {
               reasoning: config.thinking === "off" ? undefined : config.thinking,
               signal: reviewSignal, maxTokens: 4096, cacheRetention: "short", sessionId: review.requestId,
+              onPayload: (payload, providerModel) => constrainReviewPayload(payload, providerModel, review.requestId),
             });
             return await stream.result();
           }, config.requestTimeoutMs, signal);

@@ -62,7 +62,7 @@ beforeEach(async () => {
     ui: { setStatus: (_key: string, text: string) => statuses.push(text), setWidget: (_key: string, lines: string[]) => widgets.push(lines), notify: () => {} },
     sessionManager: { getBranch: () => entries, getSessionId: () => "test-session", getSessionFile: () => undefined },
     modelRegistry: {
-      find: (provider: string, id: string) => ({ provider, id, reasoning: true, thinkingLevelMap: { medium: "medium", low: "low" } }),
+      find: (provider: string, id: string) => ({ provider, id, api: "openai-responses", reasoning: true, thinkingLevelMap: { medium: "medium", low: "low" } }),
       hasConfiguredAuth: () => true,
       streamSimple: (model: any, context: any, options: any) => {
         const data = JSON.parse(context.messages[0].content);
@@ -117,6 +117,8 @@ test("approved action executes exactly its reviewed command and reports reviewer
   expect(requested[0].model.id).toBe("gpt-6-luna");
   expect(requested[0].options.reasoning).toBe("medium");
   expect(requested[0].context.tools).toBeUndefined();
+  const payload = requested[0].options.onPayload({ input: "review-context" }, requested[0].model);
+  expect(payload.text.format.schema.properties.requestId.enum).toEqual([requested[0].data.requestId]);
   expect(result.usage).toEqual(usage);
   expect(entries.at(-1).data.decision).toBe("approve");
 });

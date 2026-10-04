@@ -53,7 +53,7 @@ Beispiel für einen notwendigen externen Read:
 
 Die Erweiterung erscheint sichtbar neben der normalen Tool-Anzeige und wird mit ihrem aufgelösten Plan protokolliert. Bestehende Schreibrechte werden durch zusätzliche Read-Mounts nicht automatisch erweitert. Hardlinks zwischen einem schreibbaren und einem nur lesbaren Mount werden zurückgewiesen. Die aktive Approval-Installation, ihre Konfiguration, bekannte Credential-Verzeichnisse und das gesamte Home bleiben geschützt. Der Executor und die unabhängige Prüfung können durch keinen Antrag abgeschaltet werden.
 
-Um bestehenden Programmcode beurteilen zu können, erhält der Reviewer Text-Ergebnisse vorher genehmigter Reads aus demselben Session-Zweig. Dafür müssen Tool-Ergebnis und Approval-Protokoll zusammenpassen. Dateiinhalte gelten als untrusted Evidenz, nicht als Nutzeranweisung. Große Ergebnisse werden nicht still gekürzt: Nicht eingebundene Code-Evidenz wird ausdrücklich benannt, damit gezielte kleinere Reads möglich sind.
+Um bestehenden Programmcode beurteilen zu können, erhält der Reviewer Text-Ergebnisse vorher genehmigter Aktionen aus demselben Session-Zweig. Dazu gehören Reads, Dateisuche und Shell-Ausgaben, etwa von `cat`, `sed`, `git diff` oder Projekttests. Dafür müssen Tool-Ergebnis und Approval-Protokoll samt Request-ID und Fingerprint zusammenpassen. Dateiinhalte und Ausgaben sind Belege für die Prüfung, keine Nutzeranweisungen. Berücksichtigt werden höchstens acht aktuelle Ergebnisse. Ergebnisse, die das Kontextbudget überschreiten, werden vollständig ausgelassen und ausdrücklich benannt.
 
 ## bwrap einrichten
 
@@ -91,7 +91,7 @@ Der Executor wird schreibgeschützt eingebunden. Die Sandbox erhält eine leere 
 
 Ein Abbruch beendet den Sandbox-Prozess; Kindprozesse dürfen nach der Aktion nicht weiterlaufen. Ausgabemenge und Laufzeit sind begrenzt. Die Docker-spezifischen Speicher-, CPU- und PID-Grenzen gelten für das Docker-Backend; das bwrap-Backend richtet keine entsprechenden cgroup-Grenzen ein.
 
-Nach Änderungen an `runner.ts` oder dessen Dependencies den Executor erneut außerhalb von Pi bauen. Änderungen am Reviewer erfordern nur eine Änderung der lokalen JSON-Konfiguration.
+Nach Änderungen an `runner.ts` oder dessen Dependencies den Executor erneut außerhalb von Pi bauen. Die Auswahl des Prüfmodells lässt sich über die lokale JSON-Konfiguration ändern. Änderungen am Erweiterungscode erfordern einen Neustart von Pi.
 
 ## Docker-Kompatibilität
 
@@ -104,6 +104,10 @@ Das Backend wird explizit gewählt. Wenn er nicht startet, wird keine Aktion auf
 Das Hauptmodell verwendet ausschließlich `approved_action` mit `tool`, den unveränderten Pi-`arguments`, `goal` und `justification`. Unterstützt werden `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find` und `ls`.
 
 Der Reviewer erhält tatsächliche Nutzerprompts des aktiven Session-Zweigs, die genaue Aktion, Ziel, Begründung, Arbeitsverzeichnis, geschützte Pfade und frühere Ablehnungen. Er erhält keine eigenen Tools. Ein gültiges Urteil gilt nur für die konkrete Anfrage. Prüfung und Ausführung sind serialisiert; Freigaben werden nicht wiederverwendet.
+
+Die Prüfung bewertet Berechtigung und Sicherheitsrisiken. Eine gewünschte Quelltextänderung erlaubt normalerweise auch passende Tests, Dokumentation und lokale Prüfläufe. Für begrenzte Edits oder vollständig sichtbare Python-/Shell-Änderungen müssen nicht erst sämtliche betroffenen Dateien vollständig gelesen werden. Mögliche Programmierfehler, falsche Testannahmen oder eine bevorzugte Arbeitsreihenfolge sind allein kein Ablehnungsgrund. Zusätzliche Informationen sind erforderlich, wenn ein konkretes Risiko ohne sie nicht beurteilt werden kann. Secret-Zugriffe, sachfremde Änderungen, unbegründetes großflächiges Löschen und Eingriffe in die Approval-Sperre bleiben untersagt.
+
+Bei OpenAI Responses und Chat Completions erzwingt ein JSON-Schema die drei Urteilsfelder und die Request-ID der aktuellen Anfrage. Andere Provider verwenden weiterhin das streng geprüfte JSON-Textformat. Ungültiges JSON, falsche Felder, eine fremde Request-ID und eine leere Begründung erzeugen unterscheidbare Fehlermeldungen und sperren die Ausführung.
 
 Urteil, Begründung, Request-ID, Fingerprint, Prüfdauer, Backend und erkannter Workspace werden als Session-Eintrag protokolliert. Fehler bei Authentifizierung, Prüfung oder Protokollierung sperren die Aktion vor der Ausführung. Ein Fehler während einer bereits gestarteten Aktion kann trotzdem Nebenwirkungen im Workspace hinterlassen.
 
