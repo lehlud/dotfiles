@@ -25,6 +25,36 @@ Workspaces innerhalb der aktiven Pi-Installation, Approval-Konfiguration oder be
 
 Die Edit-Vorschau liest vor der Freigabe keine Dateien vom Host. Der Diff wird nach der genehmigten Ausführung angezeigt und bleibt beim Aufklappen sowie beim Wiederherstellen einer Session erhalten. Abgelehnte Aktionen und Ausführungsfehler werden als solche angezeigt.
 
+## Sandbox-Erweiterung beantragen
+
+Benötigt eine Nutzeraufgabe mehr Zugriff, ergänzt das Hauptmodell den konkreten `approved_action`-Aufruf um `sandbox`. Der Reviewer prüft die gesamte Aktion samt Erweiterung anhand der tatsächlichen Nutzeranfrage. Eine offensichtliche Notwendigkeit muss nicht erst durch eine weitere Chat-Bestätigung autorisiert werden. Die Freigabe gilt ausschließlich für diese Ausführung; beim nächsten Aufruf gelten wieder die Standardrechte.
+
+Unterstützte Dimensionen:
+
+- `paths`: vorhandene absolute Datei- oder Verzeichnispfade mit `access: "read"` oder `"write"`. Symlinks werden vor der Prüfung aufgelöst; der Reviewer sieht die tatsächlichen Mounts.
+- `network`: `"none"` oder `"host"`. Host-Netzwerkzugriff umfasst auch lokale Dienste. Der konkrete Befehl und mögliche Datenübertragungen werden mitgeprüft.
+- `environment`: explizite Literal-Werte. Es werden keine Host-Umgebungsvariablen oder Secrets automatisch übernommen.
+- `executableSearchPaths`: zusätzliche absolute Tool-Verzeichnisse, die schreibgeschützt eingebunden und dem Suchpfad hinzugefügt werden.
+- `limits`: `executionTimeoutMs`, `maxOutputBytes` und `tmpBytes`; beim Docker-Backend zusätzlich `memoryMiB`, `cpus` und `pids`. Native bwrap-cgroup-Limits sind nicht implementiert und werden mit einer konkreten Fehlermeldung zurückgewiesen.
+
+Beispiel für einen notwendigen externen Read:
+
+```json
+{
+  "tool": "read",
+  "arguments": {"path": "/absolute/shared/example.ts"},
+  "goal": "Die vom Nutzer angegebene gemeinsame Vorlage prüfen",
+  "justification": "Die Vorlage liegt außerhalb des Projekts; benötigt wird ausschließlich Lesezugriff auf diese Datei.",
+  "sandbox": {
+    "paths": [{"path": "/absolute/shared/example.ts", "access": "read"}]
+  }
+}
+```
+
+Die Erweiterung erscheint sichtbar neben der normalen Tool-Anzeige und wird mit ihrem aufgelösten Plan protokolliert. Bestehende Schreibrechte werden durch zusätzliche Read-Mounts nicht automatisch erweitert. Hardlinks zwischen einem schreibbaren und einem nur lesbaren Mount werden zurückgewiesen. Die aktive Approval-Installation, ihre Konfiguration, bekannte Credential-Verzeichnisse und das gesamte Home bleiben geschützt. Der Executor und die unabhängige Prüfung können durch keinen Antrag abgeschaltet werden.
+
+Um bestehenden Programmcode beurteilen zu können, erhält der Reviewer Text-Ergebnisse vorher genehmigter Reads aus demselben Session-Zweig. Dafür müssen Tool-Ergebnis und Approval-Protokoll zusammenpassen. Dateiinhalte gelten als untrusted Evidenz, nicht als Nutzeranweisung. Große Ergebnisse werden nicht still gekürzt: Nicht eingebundene Code-Evidenz wird ausdrücklich benannt, damit gezielte kleinere Reads möglich sind.
+
 ## bwrap einrichten
 
 Linux benötigt Bubblewrap, Git und Bun zum Bauen des eigenständigen Executors. Die Runtime benötigt anschließend Bubblewrap und die Systemprogramme unter `/usr`.
@@ -57,7 +87,7 @@ bun build --compile runner.ts --outfile ~/.local/cache/pi-auto-approval/executor
 
 Für eine eingeschränkte Ansicht kann `sandbox.workspaceViews` Einträge der Form `{"root":"/absolute/workspace","paths":["/absolute/workspace/public-file"]}` enthalten. Nur diese Pfade werden eingebunden. Keine Credential-Dateien oder ganze private Home-Verzeichnisse hinzufügen.
 
-Der Executor wird schreibgeschützt eingebunden. Die Sandbox erhält eine leere Umgebung, ein temporäres Home, eigene Prozess-, Netzwerk-, IPC- und weitere Namespaces sowie keine Linux-Capabilities. Die Netzwerkschnittstellen und laufenden Prozesse des Hosts sind nicht erreichbar. Nur die ausgewählten Workspace-Mounts können auf dem Host verändert werden. Temporäre Dateien bleiben in der Sandbox.
+Der Executor wird schreibgeschützt eingebunden. Die Sandbox erhält eine leere Umgebung, ein temporäres Home, eigene Prozess-, Netzwerk-, IPC- und weitere Namespaces sowie keine Linux-Capabilities. Ohne genehmigte Erweiterung sind die Netzwerkschnittstellen des Hosts nicht erreichbar. Die Prozessnamespace bleibt isoliert. Nur die ausgewählten Workspace-Mounts können auf dem Host verändert werden. Temporäre Dateien bleiben in der Sandbox.
 
 Ein Abbruch beendet den Sandbox-Prozess; Kindprozesse dürfen nach der Aktion nicht weiterlaufen. Ausgabemenge und Laufzeit sind begrenzt. Die Docker-spezifischen Speicher-, CPU- und PID-Grenzen gelten für das Docker-Backend; das bwrap-Backend richtet keine entsprechenden cgroup-Grenzen ein.
 
@@ -77,7 +107,7 @@ Der Reviewer erhält tatsächliche Nutzerprompts des aktiven Session-Zweigs, die
 
 Urteil, Begründung, Request-ID, Fingerprint, Prüfdauer, Backend und erkannter Workspace werden als Session-Eintrag protokolliert. Fehler bei Authentifizierung, Prüfung oder Protokollierung sperren die Aktion vor der Ausführung. Ein Fehler während einer bereits gestarteten Aktion kann trotzdem Nebenwirkungen im Workspace hinterlassen.
 
-Der Betreiber kann die Konfiguration außerhalb der Agent-Tools ändern. Das Agent-Modell kann weder die Prüfung abschalten noch seine Workspace-Ansicht erweitern. Die Sandbox schützt den laufenden Executor; sie verhindert nicht, dass der Betreiber später bewusst veränderten Projektcode auf dem Host startet.
+Der Betreiber kann die Konfiguration außerhalb der Agent-Tools ändern. Das Agent-Modell kann die Prüfung nicht abschalten. Eine zusätzliche Workspace-Ansicht benötigt eine eigene Genehmigung für die konkrete Aktion. Die Sandbox schützt den laufenden Executor; sie verhindert nicht, dass der Betreiber später bewusst veränderten Projektcode auf dem Host startet.
 
 ## Entwicklung und Tests
 

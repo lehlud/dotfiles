@@ -1,9 +1,18 @@
 import { describe, test, expect } from "bun:test";
-import { buildReview, parseConfig, parseVerdict, textContent, withWatchdog, type Config } from "../policy.ts";
+import { buildReview, parseConfig, parseVerdict, sandboxRequestSchema, textContent, withWatchdog, type Config } from "../policy.ts";
+import { Check } from "typebox/value";
 const config: Config = { provider: "openai", model: "gpt-6-luna", thinking: "medium", recentUserPrompts: 2, requestTimeoutMs: 120000, sandbox: { dockerExecutable: "/usr/bin/docker", image: `sha256:${"a".repeat(64)}`, workspaceRoots: [] } };
 const request = { tool: "bash", arguments: { command: "printf ok" }, goal: "Test", justification: "Smoke test" };
 
 describe("review policy", () => {
+  test("sandbox requests are strict and the reviewer gets all dimensions and resolved mounts", () => {
+    const sandbox = { paths: [{ path: "/tmp/shared", access: "read" }], network: "host", environment: { BUILD_MODE: "test" }, executableSearchPaths: ["/tmp/bin"], limits: { executionTimeoutMs: 900000, tmpBytes: 536870912, cpus: 4, memoryMiB: 2048, pids: 256 } };
+    expect(Check(sandboxRequestSchema, sandbox)).toBe(true);
+    for (const bad of [{}, { isolation: false }, { paths: [{ path: "relative", access: "write" }] }, { network: "anything" }, { environment: { "BAD-NAME": "x" } }, { limits: { executionTimeoutMs: -1 } }]) expect(Check(sandboxRequestSchema, bad)).toBe(false);
+    const plan = { bindings: ["/tmp/shared"], readOnlyBindings: ["/tmp/shared"] };
+    const data = JSON.parse(buildReview({ ...request, sandbox: sandbox as any }, [{ type: "message", message: { role: "user", content: "Build this project with the shared source, test mode and network dependencies" } }], config, "/tmp/project", [], plan).text);
+    expect(data.action.sandbox).toEqual(sandbox); expect(data.sandboxPlan).toEqual(plan);
+  });
   test("strict config and easily replaceable model", () => {
     expect(parseConfig(JSON.stringify({ ...config, provider: "other", model: "replacement", thinking: "low" })).model).toBe("replacement");
     for (const bad of [{ ...config, thinking: "banana" }, { ...config, recentUserPrompts: 0 }, { ...config, enabled: false }, { ...config, requestTimeoutMs: -1 }]) {
@@ -42,6 +51,21 @@ describe("review policy", () => {
       { type: "custom", customType: "auto-approval-review", data: { decision: "approve", reason: "fine" } },
     ], config, "/tmp", []).text);
     expect(data.previousDenials).toEqual([{ decision: "deny", reason: "out of scope" }]);
+  });
+  test("only audited matching successful reads provide code evidence, never user authorization", () => {
+    const audit = { toolCallId: "read-id", requestId: "review-id", fingerprint: "hash", decision: "approve", cwd: "/tmp", action: { tool: "read", arguments: { path: "script.sh" } } };
+    const message = { role: "toolResult", toolName: "approved_action", toolCallId: "read-id", content: [{ type: "text", text: "approved" }, { type: "text", text: "#!/bin/sh\nprintf safe" }], details: { approval: audit, result: { truncation: { truncated: false } } } };
+    const base = [{ type: "message", message: { role: "user", content: "Run script.sh" } }, { type: "custom", customType: "auto-approval-review", data: audit }];
+    const data = JSON.parse(buildReview(request, [...base, { type: "message", message }], config, "/tmp", []).text);
+    expect(data.reviewedReads[0].content[0].text).toContain("printf safe");
+    expect(data.userPrompts).toEqual(["Run script.sh"]);
+    for (const bad of [{ ...message, isError: true }, { ...message, toolName: "bash" }, { ...message, details: { approval: { ...audit, requestId: "forged" } } }]) {
+      expect(JSON.parse(buildReview(request, [...base, { type: "message", message: bad }], config, "/tmp", []).text).reviewedReads).toEqual([]);
+    }
+    expect(JSON.parse(buildReview(request, [{ type: "message", message: { role: "user", content: "Test" } }, { type: "message", message }], config, "/tmp", []).text).reviewedReads).toEqual([]);
+    const large = { ...message, content: [{ type: "text", text: "approved" }, { type: "text", text: "x".repeat(100001) }] };
+    const limited = JSON.parse(buildReview(request, [...base, { type: "message", message: large }], config, "/tmp", []).text);
+    expect(limited.reviewedReads).toEqual([]); expect(limited.omittedReadEvidence[0].path).toBe("script.sh");
   });
   test("strict, action-bound verdicts", () => {
     expect(parseVerdict('{"requestId":"id","decision":"deny","reason":"Nein"}', "id").decision).toBe("deny");

@@ -8,14 +8,20 @@ import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earend
 const root = await mkdtemp(join(tmpdir(), "pi-approval-test-"));
 const agentRoot = await mkdtemp(join(tmpdir(), "pi-approval-agent-test-"));
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+let validatedScopes: any[] = [];
+let executedRequests: any[] = [];
 process.env.PI_CODING_AGENT_DIR = agentRoot;
 // Test-only module mock. Production has one mandatory Docker executor and no
 // injection flag or local execution backend. Unit tests exercise the gate.
 mock.module("../isolation.ts", () => ({
   detectWorkspace: async (cwd: string) => ({ path: cwd, cwd }),
-  validateWorkspace: async (cwd: string) => ({ path: cwd, cwd, bindings: [cwd], masked: [] }),
+  validateWorkspace: async (cwd: string, _config: unknown, _protected: unknown, scope: unknown) => {
+    validatedScopes.push(structuredClone(scope));
+    return { path: cwd, cwd, bindings: [cwd], masked: [] };
+  },
   executeIsolated: async (request: any, workspace: { path: string }, _config: unknown, signal?: AbortSignal) => {
     const cwd = workspace.path;
+    executedRequests.push(structuredClone(request));
     const factories: any = { bash: createBashToolDefinition, read: createReadToolDefinition, write: createWriteToolDefinition, edit: createEditToolDefinition };
     return await factories[request.tool](cwd).execute("test-only", request.arguments, signal, undefined, ctx);
   },
@@ -39,6 +45,7 @@ let ctx: ExtensionToolContext;
 beforeEach(async () => {
   await writeFile(configPath, JSON.stringify(config));
   mode = "approve"; requested = []; hooks = {}; actions = {}; active = []; auditFails = false; responseHook = undefined; widgets = []; statuses = [];
+  validatedScopes = []; executedRequests = [];
   entries = [{ type: "message", message: { role: "user", content: "Run a harmless smoke test in the temporary working directory. Do not change any approval settings." } }];
   const pi = {
     on: (name: string, callback: Function) => { hooks[name] = callback; },
@@ -119,6 +126,29 @@ test("denial returns reason without executing", async () => {
   expect(result.isError).toBe(true);
   expect(JSON.stringify(result.content)).toContain("Nicht vom Nutzer gewollt");
   expect(await exists(join(root, "denied-sentinel"))).toBe(false);
+});
+test("sandbox expansion is reviewed with the action, executed exactly, and never retained", async () => {
+  const sandbox = { paths: [{ path: "/tmp/shared-source", access: "read" }], network: "host", environment: { BUILD_MODE: "test" }, limits: { executionTimeoutMs: 900000 } };
+  const args = { ...bash("printf scoped"), sandbox };
+  responseHook = () => { args.sandbox.paths[0].path = "/tmp/changed-after-review"; };
+  const result = await call(args);
+  expect(result.isError).not.toBe(true);
+  expect(requested[0].data.action.sandbox.paths[0].path).toBe("/tmp/shared-source");
+  expect(validatedScopes[0].paths[0].path).toBe("/tmp/shared-source");
+  expect(executedRequests[0].sandbox.paths[0].path).toBe("/tmp/shared-source");
+  expect(result.details.approval.sandboxPlan.requested.network).toBe("host");
+  responseHook = undefined;
+  await call(bash("printf default"));
+  expect(validatedScopes[1]).toBeUndefined(); expect(executedRequests[1].sandbox).toBeUndefined();
+});
+test("denied sandbox requests and forged disable switches never execute", async () => {
+  mode = "deny";
+  expect((await call({ ...bash("printf denied"), sandbox: { network: "host" } })).isError).toBe(true);
+  expect(executedRequests).toHaveLength(0);
+  mode = "approve";
+  const reviewed = requested.length;
+  expect((await call({ ...bash("printf bypass"), sandbox: { isolation: false } })).isError).toBe(true);
+  expect(requested).toHaveLength(reviewed); expect(executedRequests).toHaveLength(0);
 });
 test("invalid, errored, or mismatched verdicts fail closed", async () => {
   for (const variant of ["invalid", "error", "mismatch"] as const) {

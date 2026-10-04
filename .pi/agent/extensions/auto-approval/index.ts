@@ -13,7 +13,7 @@ import { Check } from "typebox/value";
 import { detectWorkspace, executeIsolated, validateWorkspace } from "./isolation.ts";
 import { reviewSummary, startReviewDisplay, showDecision } from "./display.ts";
 import { createApprovalRenderers } from "./renderers.ts";
-import { buildReview, parseConfig, parseVerdict, REVIEW_SYSTEM, textContent, withWatchdog, type Request } from "./policy.ts";
+import { buildReview, parseConfig, parseVerdict, REVIEW_SYSTEM, sandboxRequestSchema, textContent, withWatchdog, type Request } from "./policy.ts";
 
 const TOOL_NAME = "approved_action";
 const factories = {
@@ -32,6 +32,7 @@ const parameters = Type.Union(toolNames.map((name) => Type.Object({
   arguments: definitions[name].parameters,
   goal: Type.String({ minLength: 1, maxLength: 4000, description: "Current concrete goal, tied to the real user's request." }),
   justification: Type.String({ minLength: 1, maxLength: 4000, description: "Why this exact action is needed now; explain side effects and scope." }),
+  sandbox: Type.Optional(sandboxRequestSchema),
 }, { additionalProperties: false })));
 
 // Resolve symlinks even for not-yet-created paths. Unexpected filesystem errors
@@ -86,7 +87,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     lock(ctx);
     return { message: {
       customType: "auto-approval-policy", display: false,
-      content: `Auto-Approval and its isolated executor are mandatory. No host operations are permitted. Actions run in an ephemeral offline sandbox with only the current workspace mounts writable. Pi code, credentials, container sockets, and host process namespace are protected. If isolation or workspace authorization fails, tell the user the exact config path and required operator change; NEVER use a local fallback. The workspace is detected automatically from the current directory or project Git root; a Git root at or above the home directory is ignored. The config is ~/.pi/agent/auto-approval.json; /auto-approval shows its path and detected workspace. Use ONLY approved_action for every operation, including reads and file mutations. Supply the exact tool arguments, your current goal, and why the action is necessary now. An independent reviewer checks actual recent user prompts against the action. Rejections return their reason. Resolve the concern or ask the user; never retry through another tool, nested agent, shell escape, modified gate, or background process. There is no agent-accessible disable or manual bypass.`,
+      content: `Auto-Approval and its isolated executor are mandatory. No host operations are permitted. Actions run in an ephemeral sandbox, offline by default, with only authorized mounts writable. When the real user task requires access beyond the defaults, request it in approved_action.sandbox: paths with read/write access, network host, literal environment, executableSearchPaths or limits. Explain necessity; the reviewer evaluates the complete action and expansion together. Permissions expire at the end of that action. Never change the operator configuration or bypass isolation. Pi code, credentials, container sockets, and host process namespace are protected. If isolation or workspace authorization fails, tell the user the exact config path and required operator change; NEVER use a local fallback. The workspace is detected automatically from the current directory or project Git root; a Git root at or above the home directory is ignored. The config is ~/.pi/agent/auto-approval.json; /auto-approval shows its path and detected workspace. Use ONLY approved_action for every operation, including reads and file mutations. Supply the exact tool arguments, your current goal, and why the action is necessary now. An independent reviewer checks actual recent user prompts against the action. Rejections return their reason. Resolve the concern or ask the user; never retry through another tool, nested agent, shell escape, modified gate, or background process. There is no agent-accessible disable or manual bypass.`,
     } };
   });
   pi.on("tool_call", async (event) => {
@@ -107,7 +108,7 @@ export default function autoApproval(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: TOOL_NAME, label: "Reviewed action", exposure: "model-only", executionMode: "sequential",
-    description: "Submit one exact built-in operation for independent approval and, only if approved, immediate execution. No blanket approvals. Every operation needs goal and justification. Rejections and technical failures execute nothing and return an error with a reason. arguments follows the selected tool's schema.",
+    description: "Submit one exact built-in operation for independent approval and, only if approved, immediate execution. Optional sandbox requests additional paths/read-write rights, network, literal environment variables, executable search paths or limits for this action only; explain necessity in justification. The reviewer checks every expansion against the real user request. No blanket approvals. Every operation needs goal and justification. arguments follows the selected tool's schema.",
     promptSnippet: "Request independent approval and execution of one operation",
     parameters,
     ...createApprovalRenderers(definitions),
@@ -146,9 +147,10 @@ export default function autoApproval(pi: ExtensionAPI) {
             const roots = await protectedRoots;
             if (roots.some((p) => path === p || path.startsWith(`${p}/`))) throw new Error("The agent cannot modify Pi installation, approval code, configuration, or credentials");
           }
-          const workspace = await validateWorkspace(ctx.cwd, config.sandbox, protectedPaths);
-          const review = buildReview(request, ctx.sessionManager.getBranch(), config, ctx.cwd, protectedPaths);
-          audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", requestId: review.requestId, fingerprint: review.fingerprint };
+          const workspace = await validateWorkspace(ctx.cwd, config.sandbox, protectedPaths, request.sandbox);
+          const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
+          const review = buildReview(request, ctx.sessionManager.getBranch(), config, ctx.cwd, protectedPaths, sandboxPlan);
+          audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
           const model = ctx.modelRegistry.find(config.provider, config.model);
           if (!model) throw new Error(`Reviewer model not found: ${config.provider}/${config.model}`);
           if (!ctx.modelRegistry.hasConfiguredAuth(model)) throw new Error("Reviewer authentication is unavailable");

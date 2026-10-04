@@ -98,3 +98,12 @@ test("executor errors remain visible and do not enter native success rendering",
   component.updateResult({ content: [{ type: "text", text: "Approved action failed: missing file" }], details: { approval: { decision: "approve" }, executionError: "missing file" }, isError: true });
   expect(display(component)).toContain("Approved action failed: missing file");
 });
+test("sandbox requests are visible alongside the native tool without disclosing environment values", () => {
+  const component = new ToolExecutionComponent("approved_action", "scope", {
+    tool: "read", arguments: { path: "/shared/example.ts" }, sandbox: { paths: [{ path: "/shared", access: "read" }], network: "host", environment: { MODE: "private-test-value" }, limits: { executionTimeoutMs: 900000 } },
+  }, undefined, renderers, ui, cwd);
+  expect(display(component)).toContain("Sandbox request");
+  expect(display(component)).toContain("read: /shared"); expect(display(component)).toContain("network: host");
+  expect(display(component)).toContain("environment: MODE"); expect(display(component)).not.toContain("private-test-value");
+  expect(display(component)).toContain("read /shared/example.ts");
+});

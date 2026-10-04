@@ -5,9 +5,9 @@ import { randomUUID } from "node:crypto";
 import { getuid, getgid } from "node:process";
 import { homedir } from "node:os";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import type { Config, Request } from "./policy.ts";
+import type { Config, Request, SandboxRequest } from "./policy.ts";
 export type SandboxConfig = Config["sandbox"];
-export type Workspace = { path: string; cwd: string; bindings: string[]; masked: { path: string; directory: boolean }[] };
+export type Workspace = { path: string; cwd: string; bindings: string[]; readOnlyBindings?: string[]; searchPaths?: string[]; masked: { path: string; directory: boolean }[] };
 const within = (root: string, path: string) => {
   const rel = relative(root, path);
   return rel === "" || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel));
@@ -34,7 +34,7 @@ export async function detectWorkspace(cwd: string, home = homedir()): Promise<{ 
 }
 
 /** Starting Pi selects the workspace; operator-configured views constrain home. */
-export async function validateWorkspace(cwd: string, config: SandboxConfig, protectedPaths: readonly string[]): Promise<Workspace> {
+export async function validateWorkspace(cwd: string, config: SandboxConfig, protectedPaths: readonly string[], request?: SandboxRequest): Promise<Workspace> {
   const detected = await detectWorkspace(cwd);
   const workspace = detected.path;
   const root = workspace;
@@ -60,6 +60,31 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
   } else if (protectedRoots.some((path) => within(workspace, path))) {
     throw new Error("Workspace overlaps Pi, its gate, or protected configuration");
   }
+  if (config.backend === "bwrap" && request?.limits && [request.limits.memoryMiB, request.limits.cpus, request.limits.pids].some((value) => value !== undefined)) {
+    throw new Error("Memory, CPU and PID cgroup limits require the Docker backend; bwrap supports executionTimeoutMs, maxOutputBytes and tmpBytes.");
+  }
+  const modes = new Map(bindings.map((path) => [path, "write" as "read" | "write"]));
+  const home = await realpath(homedir());
+  const searchPaths: string[] = [];
+  const extra = [...(request?.paths ?? []), ...(request?.executableSearchPaths ?? []).map((path) => ({ path, access: "read" as const }))];
+  for (const entry of extra) {
+    const path = await realpath(entry.path);
+    const stat = await lstat(path);
+    if (!stat.isFile() && !stat.isDirectory()) throw new Error(`Additional access needs an existing regular file or directory: ${entry.path}`);
+    if (/[\n\r,]/.test(path) || within(path, home)) throw new Error("Additional access cannot expose the whole home directory or its ancestors");
+    if (["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/tmp"].includes(path) || ["/proc", "/dev", "/executor", "/tmp/home"].some((root) => within(root, path))) throw new Error("Additional access overlaps sandbox runtime infrastructure");
+    if (protectedRoots.some((root) => within(root, path) || within(path, root))) throw new Error(`Additional access overlaps protected Pi or credential storage: ${entry.path}`);
+    if (request?.executableSearchPaths?.includes(entry.path)) {
+      if (!stat.isDirectory()) throw new Error("Executable search paths must be directories");
+      searchPaths.push(path);
+      // A search path never silently downgrades an explicitly writable mount.
+      if (modes.has(path)) continue;
+    }
+    modes.set(path, entry.access);
+  }
+  bindings = [...modes.keys()].sort((a, b) => a.length - b.length);
+  const readOnlyBindings = bindings.filter((path) => modes.get(path) === "read");
+  const writable = (path: string) => modes.get(bindings.filter((root) => within(root, path)).at(-1)!) === "write";
   const masked: Workspace["masked"] = [];
   for (const binding of bindings) {
     if (/[\n\r,]/.test(binding)) throw new Error("Workspace path contains unsafe mount characters");
@@ -72,7 +97,7 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
   const hidden = (path: string) => masked.some((entry) => within(entry.path, path));
   // Rust/Cargo and other build tools use hardlinks between output and deps.
   // The inode is writable only when every directory entry is exposed here.
-  const hardlinks = new Map<string, { path: string; expected: number; seen: number }>();
+  const hardlinks = new Map<string, { path: string; expected: number; seen: number; write: boolean; read: boolean }>();
   const walk = async (path: string): Promise<void> => {
     if (hidden(path)) return;
     const stat = await lstat(path);
@@ -94,24 +119,31 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
       if (entry) {
         if (entry.expected !== stat.nlink) throw new Error(`Workspace hardlink changed during validation: ${path}`);
         entry.seen++;
-      } else hardlinks.set(key, { path, expected: stat.nlink, seen: 1 });
+        entry.write ||= writable(path); entry.read ||= !writable(path);
+      } else hardlinks.set(key, { path, expected: stat.nlink, seen: 1, write: writable(path), read: !writable(path) });
     }
   };
-  for (const path of bindings) await walk(path);
+  // Nested mounts must not cause the same inode entry to be counted twice.
+  for (const path of bindings.filter((path, index) => !bindings.slice(0, index).some((parent) => within(parent, path)))) await walk(path);
   for (const entry of hardlinks.values()) {
     if (entry.seen !== entry.expected) throw new Error(`Workspace hardlink has aliases outside its exposed boundary: ${entry.path}`);
+    if (entry.write && entry.read) throw new Error(`Writable hardlink would modify a read-only grant: ${entry.path}`);
   }
-  return { ...detected, bindings, masked };
+  return { ...detected, bindings, readOnlyBindings, searchPaths, masked };
 }
 
-export function sandboxArguments(workspace: Workspace, config: SandboxConfig, name: string) {
+export function sandboxArguments(workspace: Workspace, config: SandboxConfig, name: string, request?: SandboxRequest) {
+  const limits = request?.limits;
+  const environment = { ...(workspace.searchPaths?.length ? { PATH: [...workspace.searchPaths, "/usr/bin", "/bin"].join(":") } : {}), ...request?.environment };
+  if (Object.keys(environment).some((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) || Object.values(environment).some((value) => value.includes("\0"))) throw new Error("Invalid sandbox environment");
   if (config.backend !== "bwrap") return ["run", "--rm", "--interactive", "--name", name,
-    "--pull", "never", "--network", "none", "--read-only", "--cap-drop", "ALL",
+    "--pull", "never", "--network", request?.network ?? "none", "--read-only", "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges", "--ipc", "none", "--cgroupns", "private",
-    "--pids-limit", "128", "--memory", "1g", "--cpus", "2",
-    "--user", `${getuid?.() ?? 501}:${getgid?.() ?? 20}`, "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m,mode=1777",
+    "--pids-limit", String(limits?.pids ?? 128), "--memory", `${limits?.memoryMiB ?? 1024}m`, "--cpus", String(limits?.cpus ?? 2),
+    "--user", `${getuid?.() ?? 501}:${getgid?.() ?? 20}`, "--tmpfs", `/tmp:rw,nosuid,nodev,size=${limits?.tmpBytes ?? 268435456},mode=1777`,
     "--env", "HOME=/tmp/home", "--env", "PI_CODING_AGENT_DIR=/tmp/pi",
-    "--mount", `type=bind,src=${workspace.path},dst=${workspace.path},bind-recursive=disabled`,
+    ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
+    ...workspace.bindings.flatMap((path) => ["--mount", `type=bind,src=${path},dst=${path},bind-recursive=disabled${workspace.readOnlyBindings?.includes(path) ? ",readonly" : ""}`]),
     "--workdir", workspace.cwd, "--entrypoint", "/usr/local/bin/bun", config.image,
     "/executor/runner.ts"];
   const args = ["--unshare-all", "--unshare-user", "--disable-userns", "--die-with-parent", "--new-session",
@@ -119,12 +151,14 @@ export function sandboxArguments(workspace: Workspace, config: SandboxConfig, na
     "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin",
     "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
     "--ro-bind-try", "/etc/ld.so.cache", "/etc/ld.so.cache", "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
-    "--proc", "/proc", "--dev", "/dev", "--size", "268435456", "--tmpfs", "/tmp", "--dir", "/tmp/home",
+    "--proc", "/proc", "--dev", "/dev", "--size", String(limits?.tmpBytes ?? 268435456), "--tmpfs", "/tmp", "--dir", "/tmp/home",
     "--ro-bind", config.runnerExecutable, "/executor/runner",
     "--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp/home",
     "--setenv", "PI_CODING_AGENT_DIR", "/tmp/pi", "--setenv", "LANG", "C.UTF-8"];
+  if (request?.network === "host") args.push("--share-net");
+  for (const [key, value] of Object.entries(environment)) args.push("--setenv", key, value);
   if (!workspace.bindings.includes(workspace.path)) args.push("--size", "16777216", "--tmpfs", workspace.path);
-  for (const path of workspace.bindings) args.push("--bind", path, path);
+  for (const path of workspace.bindings) args.push(workspace.readOnlyBindings?.includes(path) ? "--ro-bind" : "--bind", path, path);
   for (const entry of workspace.masked) {
     if (entry.directory) args.push("--perms", "000", "--tmpfs", entry.path, "--remount-ro", entry.path);
     else args.push("--ro-bind", "/dev/null", entry.path);
@@ -141,7 +175,7 @@ export async function executeIsolated(request: Request, workspace: Workspace, co
   const name = `pi-approved-${randomUUID()}`;
   const native = config.backend === "bwrap";
   const executable = native ? config.executable : config.dockerExecutable;
-  const child = spawn(executable, sandboxArguments(workspace, config, name), { stdio: ["pipe", "pipe", "pipe"], detached: native });
+  const child = spawn(executable, sandboxArguments(workspace, config, name, request.sandbox), { stdio: ["pipe", "pipe", "pipe"], detached: native });
   let stdout = "", stderr = "";
   let failure: Error | undefined;
   let cleanup: Promise<void> | undefined;
@@ -157,12 +191,12 @@ export async function executeIsolated(request: Request, workspace: Workspace, co
   const stop = (reason: string) => { failure ??= new Error(reason); void remove(); child.kill("SIGTERM"); };
   const abort = () => stop("Isolated execution cancelled");
   signal?.addEventListener("abort", abort, { once: true });
-  const watchdog = setTimeout(() => stop("Isolated executor exceeded the technical execution limit"), 600000);
+  const watchdog = setTimeout(() => stop("Isolated executor exceeded the technical execution limit"), request.sandbox?.limits?.executionTimeoutMs ?? 600000);
   try {
     const exited = new Promise<number | null>((done, reject) => { child.once("error", reject); child.once("close", done); });
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
-      if (Buffer.byteLength(stdout) > 16 * 1024 * 1024) stop("Executor output limit exceeded");
+      if (Buffer.byteLength(stdout) > (request.sandbox?.limits?.maxOutputBytes ?? 16 * 1024 * 1024)) stop("Executor output limit exceeded");
     });
     child.stderr.on("data", (chunk) => { if (stderr.length < 20000) stderr += chunk.toString(); });
     child.stdin.on("error", () => {});

@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, link, access } from "
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { detectWorkspace, validateWorkspace, sandboxArguments, executeIsolated, type SandboxConfig } from "../isolation.ts";
+import type { Request } from "../policy.ts";
 
 const fixture = await mkdtemp(join(tmpdir(), "pi-isolation-test-"));
 const home = join(fixture, "home");
@@ -48,9 +49,60 @@ beforeAll(async () => {
 });
 const action = (tool: string, args: Record<string, unknown>) => ({ tool, arguments: args, goal: "Sandbox integration test", justification: "Verify containment in a temporary test fixture" });
 const run = async (tool: string, args: Record<string, unknown>, signal?: AbortSignal) => executeIsolated(action(tool, args), await validateWorkspace(project, native, []), native, signal);
+const scoped = async (request: Request) => executeIsolated(request, await validateWorkspace(project, native, [], request.sandbox), native);
 
 nativeTest("empty legacy workspaceRoots do not disable automatic detection", async () => {
   expect((await validateWorkspace(project, { ...native, workspaceRoots: [] }, [])).path).toBe(project);
+});
+nativeTest("additional mounts enforce read/write rights and disappear on the next action", async () => {
+  const shared = join(fixture, "shared-input.txt"); await writeFile(shared, "shared-source");
+  const read: Request = { ...action("bash", { command: `test -r '${shared}' && test ! -w '${shared}' && cat '${shared}'` }), sandbox: { paths: [{ path: shared, access: "read" }] } };
+  expect(JSON.stringify((await scoped(read)).content)).toContain("shared-source");
+  await expect(scoped({ ...action("write", { path: shared, content: "forbidden" }), sandbox: read.sandbox })).rejects.toThrow();
+  expect(await readFile(shared, "utf8")).toBe("shared-source");
+  await scoped({ ...action("write", { path: shared, content: "approved-change" }), sandbox: { paths: [{ path: shared, access: "write" }] } });
+  expect(await readFile(shared, "utf8")).toBe("approved-change");
+  expect(JSON.stringify((await run("bash", { command: `test ! -e '${shared}' && printf expired` })).content)).toContain("expired");
+});
+nativeTest("reviewed network and literal environment overrides expire after execution", async () => {
+  const hostNet = await import("node:fs/promises").then((fs) => fs.readlink("/proc/self/ns/net"));
+  const request: Request = { ...action("bash", { command: 'readlink /proc/self/ns/net; printf "%s" "$PI_TEST_REVIEWED_VALUE"' }), sandbox: { network: "host", environment: { PI_TEST_REVIEWED_VALUE: "literal $(not-executed) value" } } };
+  const text = JSON.stringify((await scoped(request)).content);
+  expect(text).toContain(hostNet); expect(text).toContain("literal $(not-executed) value");
+  const later = JSON.stringify((await run("bash", { command: 'readlink /proc/self/ns/net; test -z "${PI_TEST_REVIEWED_VALUE+x}" && printf default-env' })).content);
+  expect(later).not.toContain(hostNet); expect(later).toContain("default-env");
+});
+nativeTest("reviewed executable search paths mount tools read-only without exposing their parent", async () => {
+  const tools = join(fixture, "test-bin"); await mkdir(tools);
+  await writeFile(join(tools, "approval-test-tool"), '#!/bin/sh\nprintf runtime-tool', { mode: 0o755 });
+  const output = await scoped({ ...action("bash", { command: `approval-test-tool; test ! -w '${tools}/approval-test-tool'; test ! -e '${fixture}/shared-input.txt'` }), sandbox: { executableSearchPaths: [tools] } });
+  expect(JSON.stringify(output.content)).toContain("runtime-tool");
+});
+nativeTest("execution, output and temporary storage limits are actually applied", async () => {
+  const tmp = await scoped({ ...action("bash", { command: "df -B1 --output=size /tmp | tail -1" }), sandbox: { limits: { tmpBytes: 4194304 } } });
+  expect(JSON.stringify(tmp.content)).toContain("4194304");
+  await expect(scoped({ ...action("bash", { command: "sleep 5" }), sandbox: { limits: { executionTimeoutMs: 1000 } } })).rejects.toThrow("technical execution limit");
+  await expect(scoped({ ...action("bash", { command: "printf '%05000d' 0" }), sandbox: { limits: { maxOutputBytes: 2048 } } })).rejects.toThrow("output limit");
+});
+nativeTest("expansions cannot expose protected storage or writable aliases of read-only inputs", async () => {
+  const privateDir = join(fixture, "private-approval"); await mkdir(privateDir);
+  const request = { paths: [{ path: privateDir, access: "read" as const }] };
+  await expect(validateWorkspace(project, native, [privateDir], request)).rejects.toThrow("protected");
+  await expect(validateWorkspace(project, native, [], { paths: [{ path: process.env.HOME!, access: "read" }] })).rejects.toThrow("whole home");
+  await expect(validateWorkspace(project, native, [], { limits: { memoryMiB: 2048 } })).rejects.toThrow("Docker backend");
+  const writable = join(project, "write-alias.txt"); await writeFile(writable, "unchanged");
+  const readonly = join(fixture, "read-alias.txt"); await link(writable, readonly);
+  try {
+    await expect(validateWorkspace(project, native, [], { paths: [{ path: readonly, access: "read" }] })).rejects.toThrow("read-only grant");
+  } finally { await rm(writable); await rm(readonly); }
+});
+test("Docker sandbox arguments apply reviewed resource, environment, mount and network changes", () => {
+  const c: SandboxConfig = { backend: "docker", dockerExecutable: "/usr/bin/docker", image: `sha256:${"a".repeat(64)}` };
+  const args = sandboxArguments({ path: "/project", cwd: "/project/src", bindings: ["/project", "/shared"], readOnlyBindings: ["/shared"], masked: [] }, c, "test", { network: "host", environment: { MODE: "test" }, limits: { memoryMiB: 2048, cpus: 4, pids: 256, tmpBytes: 536870912 } });
+  expect(args[args.indexOf("--network") + 1]).toBe("host");
+  expect(args[args.indexOf("--memory") + 1]).toBe("2048m");
+  expect(args[args.indexOf("--cpus") + 1]).toBe("4"); expect(args[args.indexOf("--pids-limit") + 1]).toBe("256");
+  expect(args).toContain("MODE=test"); expect(args).toContain("type=bind,src=/shared,dst=/shared,bind-recursive=disabled,readonly");
 });
 nativeTest("real isolated writes, reads, edits, and ls persist only in the project", async () => {
   await run("write", { path: "allowed.txt", content: "before" });

@@ -9,6 +9,7 @@ type RenderState = {
   call?: Component;
   result?: Component;
   wrapper: Container;
+  callWrapper?: Container;
 };
 
 /** Display the built-in tool, without giving its renderer unreviewed host IO. */
@@ -37,6 +38,21 @@ export function createApprovalRenderers(tools: Record<string, NativeTool>): Pick
       const tool = definition(name);
       state.call = tool?.renderCall?.(args?.arguments ?? {}, theme, nativeContext(context, state, state.call))
         ?? new Text(theme.fg("toolTitle", theme.bold(name || "approved_action")), 0, 0);
+      if (args?.sandbox) {
+        const changes = args.sandbox;
+        const labels = [
+          ...(changes.paths ?? []).map((entry: any) => `${entry.access}: ${entry.path}`),
+          ...(changes.network ? [`network: ${changes.network}`] : []),
+          ...(changes.environment ? [`environment: ${Object.keys(changes.environment).join(", ")}`] : []),
+          ...(changes.executableSearchPaths ?? []).map((path: string) => `PATH: ${path}`),
+          ...Object.entries(changes.limits ?? {}).map(([key, value]) => `${key}: ${value}`),
+        ];
+        state.callWrapper ??= new Container();
+        state.callWrapper.clear();
+        state.callWrapper.addChild(new Text(theme.fg("warning", `Sandbox request · ${labels.join(" · ")}`), 0, 0));
+        state.callWrapper.addChild(state.call);
+        return state.callWrapper;
+      }
       return state.call;
     },
     renderResult(result, options, theme, context) {
