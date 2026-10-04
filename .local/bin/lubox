@@ -10,6 +10,7 @@ import errno
 import fcntl
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import pathlib
@@ -35,7 +36,7 @@ import urllib.parse
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-VERSION = "0.1.9"
+VERSION = "0.1.10"
 DEFAULT_IMAGE = "docker.io/library/fedora:latest"
 LABEL_PREFIX = "dev.lubox"
 CONTAINER_CONFIG_PATH = "/run/lubox/hostexec.json"
@@ -50,7 +51,7 @@ HOSTEXEC_MAX_PORT = 65535
 CONTROL_MAX = 1024 * 1024
 FRAME_MAX = 64 * 1024 * 1024
 KEEPALIVE_COMMAND = 'trap "exit 0" TERM INT; while :; do sleep 86400 & wait $!; done'
-FORWARDABLE_LUBOX_COMMANDS = {"doctor", "list", "create", "destroy", "start", "stop", "enter", "exec", "code-server", "enable", "socket-proxy"}
+FORWARDABLE_LUBOX_COMMANDS = {"doctor", "list", "create", "destroy", "start", "stop", "enter", "exec", "code-server", "enable", "socket-proxy", "reconfigure"}
 GPG_SOCKET_BASENAMES = {
     "agent-socket": "S.gpg-agent",
     "agent-extra-socket": "S.gpg-agent.extra",
@@ -1360,7 +1361,7 @@ RUN chmod 0755 /usr/local/bin/lubox /usr/local/bin/xdg-open \
       export DEBIAN_FRONTEND=noninteractive; \
       apt-get update; \
       if command -v unminimize >/dev/null 2>&1; then yes | unminimize || true; fi; \
-      apt-get install -y --no-install-recommends python3 sudo ca-certificates passwd coreutils procps hostname locales openssh-client git ncurses-bin debianutils grep net-tools vim-tiny nano man-db manpages manpages-dev less findutils sed gawk diffutils patch tar gzip bzip2 xz-utils zip unzip file curl wget rsync iproute2 iputils-ping libcap2-bin dnsutils lsof psmisc util-linux $shell_pkg; \
+      apt-get install -y --no-install-recommends bubblewrap python3 sudo ca-certificates passwd coreutils procps hostname locales openssh-client git ncurses-bin debianutils grep net-tools vim-tiny nano man-db manpages manpages-dev less findutils sed gawk diffutils patch tar gzip bzip2 xz-utils zip unzip file curl wget rsync iproute2 iputils-ping libcap2-bin dnsutils lsof psmisc util-linux $shell_pkg; \
       if [ -x /usr/bin/man.REAL ] && grep -q 'This system has been minimized' /usr/bin/man 2>/dev/null; then dpkg-divert --quiet --remove /usr/bin/man || true; mv -f /usr/bin/man.REAL /usr/bin/man; fi; \
       mandb -q || true; \
       for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf; do apt-get install -y --no-install-recommends "$p" || true; done; \
@@ -1368,35 +1369,35 @@ RUN chmod 0755 /usr/local/bin/lubox /usr/local/bin/xdg-open \
     elif command -v dnf >/dev/null 2>&1; then \
       sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf /etc/yum.conf 2>/dev/null || true; \
       dnf install -y "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" "https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm"; \
-      dnf install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux jq tree tmux htop strace make bash-completion ripgrep fd-find fzf man-pages-posix $shell_pkg; \
+      dnf install -y bubblewrap python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux jq tree tmux htop strace make bash-completion ripgrep fd-find fzf man-pages-posix $shell_pkg; \
       dnf clean all; \
     elif command -v microdnf >/dev/null 2>&1; then \
       sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf /etc/yum.conf 2>/dev/null || true; \
-      microdnf install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
+      microdnf install -y bubblewrap python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
       for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf man-pages-posix; do microdnf install -y "$p" || true; done; \
       microdnf clean all; \
     elif command -v yum >/dev/null 2>&1; then \
       sed -i '/^tsflags=nodocs/d' /etc/dnf/dnf.conf /etc/yum.conf 2>/dev/null || true; \
-      yum install -y python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
+      yum install -y bubblewrap python3 sudo ca-certificates shadow-utils coreutils procps-ng hostname glibc-langpack-en openssh-clients git ncurses which grep net-tools vim-minimal nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute iputils libcap bind-utils lsof psmisc util-linux $shell_pkg; \
       for p in jq tree tmux htop strace make bash-completion ripgrep fd-find fzf man-pages-posix; do yum install -y "$p" || true; done; \
       yum clean all; \
     elif command -v apk >/dev/null 2>&1; then \
-      apk add --no-cache python3 sudo ca-certificates shadow coreutils procps hostname libc-utils openssh-client git ncurses which grep net-tools vim nano mandoc man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap bind-tools lsof psmisc util-linux $shell_pkg; \
+      apk add --no-cache bubblewrap python3 sudo ca-certificates shadow coreutils procps hostname libc-utils openssh-client git ncurses which grep net-tools vim nano mandoc man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap bind-tools lsof psmisc util-linux $shell_pkg; \
       for p in musl-locales musl-locales-lang jq tree tmux htop strace make bash-completion ripgrep fd fzf less-doc mandoc-apropos; do apk add --no-cache "$p" || true; done; \
     elif command -v pacman >/dev/null 2>&1; then \
-      pacman -Syu --noconfirm python sudo ca-certificates shadow coreutils procps-ng inetutils openssh git ncurses which grep net-tools vim nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap bind lsof psmisc util-linux $shell_pkg; \
+      pacman -Syu --noconfirm bubblewrap python sudo ca-certificates shadow coreutils procps-ng inetutils openssh git ncurses which grep net-tools vim nano man-db man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap bind lsof psmisc util-linux $shell_pkg; \
       for p in jq tree tmux htop strace make bash-completion ripgrep fd fzf; do pacman -S --noconfirm "$p" || true; done; \
       pacman -Scc --noconfirm || true; \
     elif command -v zypper >/dev/null 2>&1; then \
       zypper --non-interactive refresh; \
-      zypper --non-interactive install -y python3 sudo ca-certificates shadow coreutils procps hostname glibc-locale openssh git ncurses-utils which grep net-tools vim nano man man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap-progs bind-utils lsof psmisc util-linux $shell_pkg; \
+      zypper --non-interactive install -y bubblewrap python3 sudo ca-certificates shadow coreutils procps hostname glibc-locale openssh git ncurses-utils which grep net-tools vim nano man man-pages less findutils sed gawk diffutils patch tar gzip bzip2 xz zip unzip file curl wget rsync iproute2 iputils libcap-progs bind-utils lsof psmisc util-linux $shell_pkg; \
       for p in jq tree tmux htop strace make bash-completion ripgrep fd fzf; do zypper --non-interactive install -y "$p" || true; done; \
       zypper clean -a || true; \
     else \
       echo 'lubox: unsupported image: no apt-get/dnf/microdnf/yum/apk/pacman/zypper found' >&2; \
       exit 70; \
     fi \
- && for cmd in ssh git clear which grep netstat vi nano man less curl wget rsync tar gzip xz unzip file find sed awk diff patch lsof ip ping; do \
+ && for cmd in bwrap ssh git clear which grep netstat vi nano man less curl wget rsync tar gzip xz unzip file find sed awk diff patch lsof ip ping; do \
       command -v "$cmd" >/dev/null 2>&1 || {{ echo "lubox: required CLI command missing after install: $cmd" >&2; exit 78; }}; \
     done \
  && if command -v ping >/dev/null 2>&1; then \
@@ -1494,6 +1495,71 @@ class SocketForwardPlan:
     groups: Tuple[SocketForwardGroup, ...]
 
 
+BWRAP_PROFILE_SHA256 = "896bef499d0251ad753116a1fad04b5b049a4c86bdc7c0f4f49c8edf1cd9735a"
+
+
+def bwrap_container_config(info: Dict[str, Any], image: str, profile: Dict[str, Any]) -> Dict[str, Any]:
+    """Preserve inspect configuration, changing only the bwrap prerequisites."""
+    config = json.loads(json.dumps(info.get("Config") or {}))
+    host = json.loads(json.dumps(info.get("HostConfig") or {}))
+    if host.get("Privileged") or any(cap in ("SYS_ADMIN", "CAP_SYS_ADMIN") for cap in (host.get("CapAdd") or [])):
+        die("lubox: bwrap migration refuses privileged/CAP_SYS_ADMIN containers")
+    config["Image"] = image
+    config["Labels"] = config.get("Labels") or {}
+    config["Labels"][f"{LABEL_PREFIX}.bwrap"] = "true"
+    host["SecurityOpt"] = [opt for opt in host.get("SecurityOpt") or [] if not opt.startswith("seccomp=")]
+    host["SecurityOpt"].append("seccomp=" + json.dumps(profile, separators=(",", ":")))
+    # Locked child mounts below the parent /proc (including readonly binds)
+    # prevent an unprivileged child PID namespace from mounting its own procfs.
+    # This is an explicit --bwrap opt-in; keep every non-/proc restriction.
+    if not isinstance(host.get("MaskedPaths"), list) or not isinstance(host.get("ReadonlyPaths"), list):
+        die("lubox: inspect did not expose system path restrictions; refusing to guess")
+    host["MaskedPaths"] = [path for path in host["MaskedPaths"] if path != "/proc" and not path.startswith("/proc/")]
+    host["ReadonlyPaths"] = [path for path in host["ReadonlyPaths"] if path != "/proc" and not path.startswith("/proc/")]
+    config["HostConfig"] = host
+    networks = {}
+    for name, endpoint in (info.get("NetworkSettings", {}).get("Networks") or {}).items():
+        selected = {key: endpoint[key] for key in ("IPAMConfig", "Links", "Aliases", "DriverOpts") if endpoint.get(key)}
+        if selected:
+            networks[name] = selected
+    if networks:
+        config["NetworkingConfig"] = {"EndpointsConfig": networks}
+    return config
+
+
+class DockerAPI:
+    """Local Unix-socket API for fields unavailable through `docker create`."""
+    def __init__(self, engine: Engine):
+        if engine.name != "docker":
+            die("lubox: --bwrap currently supports Docker only")
+        endpoint = os.environ.get("DOCKER_HOST") if not os.environ.get("DOCKER_CONTEXT") else None
+        if not endpoint:
+            endpoint = _decode_output(engine.run(["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]).stdout).strip()
+        parsed = urllib.parse.urlparse(endpoint)
+        if parsed.scheme != "unix" or not parsed.path:
+            die("lubox: bwrap configuration requires a local Docker Unix socket")
+        self.socket_path = urllib.parse.unquote(parsed.path)
+
+    def create(self, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        connection = http.client.HTTPConnection("localhost", timeout=60)
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(60)
+        try:
+            sock.connect(self.socket_path)
+            connection.sock = sock
+            connection.request("POST", "/containers/create?name=" + urllib.parse.quote(name, safe=""),
+                               body=json.dumps(config), headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            data = json.loads(response.read())
+            if response.status != 201 or not isinstance(data, dict) or not data.get("Id"):
+                message = data.get("message", data) if isinstance(data, dict) else data
+                die(f"lubox: Docker create failed ({response.status}): {str(message)[:500]}")
+            return data
+        finally:
+            connection.close()
+            sock.close()
+
+
 class ContainerManager:
     def __init__(self, engine: Engine, ident: HostIdentity, paths: LuboxPaths):
         self.engine = engine
@@ -1501,8 +1567,12 @@ class ContainerManager:
         self.paths = paths
         self._locale_cache: Dict[str, List[str]] = {}
 
-    def create(self, name: str, base_image: str, no_host_exec: bool, rebuild: bool) -> None:
+    def create(self, name: str, base_image: str, no_host_exec: bool, rebuild: bool, bwrap: bool = False) -> None:
         validate_box_name(name)
+        if bwrap:
+            self.require_bwrap_profile()
+            if rebuild:
+                die("lubox: --bwrap --rebuild is refused; use reconfigure NAME --bwrap on a stopped container to preserve its filesystem")
         cname = container_name(name)
         progress = Progress(f"lubox create {name}", 6)
         try:
@@ -1528,8 +1598,15 @@ class ContainerManager:
             shell_path = self.image_shell_path(tag, progress)
 
             progress.begin("create container")
-            args = self.create_args(name, tag, base_image, host_exec, mount_dir, shell_path)
+            args = self.create_args(name, tag, base_image, host_exec, mount_dir, shell_path, bwrap=bwrap)
             self.engine.run_progress(args, progress)
+            if bwrap:
+                # Docker CLI cannot set MaskedPaths/ReadonlyPaths separately.
+                # Replace only this never-started template through the local API.
+                info = self.engine.inspect_container(cname, required=True)
+                if not info or self.running_from_info(info) or info.get("State", {}).get("Status") != "created":
+                    die("lubox: refusing to replace a running or previously used create template")
+                self.replace_for_bwrap(name, info, tag, keep_backup=False)
             progress.finish(f"created {cname}")
             print(f"created {cname}")
         except LuboxError:
@@ -1560,6 +1637,7 @@ class ContainerManager:
         host_exec: bool,
         mount_dir: pathlib.Path,
         shell_path: str,
+        bwrap: bool = False,
     ) -> List[str]:
         cname = container_name(name)
         sockets = self.socket_forward_plan(host_exec)
@@ -1567,6 +1645,9 @@ class ContainerManager:
             self.seed_socket_forward_config(name, mount_dir, sockets.groups, sockets.gpg_home)
         self.warn_unforwarded_sockets(host_exec, sockets)
         args = ["create", "--name", cname, "--hostname", socket.gethostname(), "--cap-add", "NET_RAW"]
+        if bwrap:
+            profile = self.require_bwrap_profile()
+            args += ["--security-opt", f"seccomp={profile}", "--label", f"{LABEL_PREFIX}.bwrap=true"]
         args += self.key_value_args("--label", self.create_labels(name, base_image, host_exec, sockets))
         args += self.env_args(self.create_env(name, cname, shell_path, host_exec, sockets))
         if is_linux():
@@ -1576,6 +1657,65 @@ class ContainerManager:
         args += self.create_engine_identity_args(host_exec)
         args += [tag, "/bin/sh", "-lc", KEEPALIVE_COMMAND]
         return args
+
+    def require_bwrap_profile(self) -> pathlib.Path:
+        if self.engine.name != "docker":
+            die("lubox: --bwrap currently supports Docker only")
+        profile = pathlib.Path(__file__).resolve().parent.parent / "share" / "lubox" / "seccomp" / "bwrap.json"
+        try:
+            data = profile.read_bytes()
+        except OSError as exc:
+            die(f"lubox: bwrap seccomp profile unavailable: {profile}: {exc}")
+        if hashlib.sha256(data).hexdigest() != BWRAP_PROFILE_SHA256:
+            die(f"lubox: bwrap seccomp profile checksum mismatch: {profile}")
+        return profile
+
+    def replace_for_bwrap(self, name: str, info: Dict[str, Any], image: str, *, keep_backup: bool) -> str:
+        if self.running_from_info(info):
+            die("lubox: refusing bwrap reconfiguration of a RUNNING container; stop it from the host after saving your sessions")
+        profile = load_json_file(self.require_bwrap_profile())
+        config = bwrap_container_config(info, image, profile)
+        api = DockerAPI(self.engine)  # Resolve connection before renaming anything.
+        cname = container_name(name)
+        backup = f"{cname}-before-bwrap-{secrets.token_hex(4)}"
+        if self.engine.is_running(cname):
+            die("lubox: container became running; refusing to reconfigure")
+        self.engine.run(["rename", cname, backup])
+        try:
+            api.create(cname, config)
+        except Exception:
+            # Do not destroy an ambiguous API result or a container started by
+            # somebody else. Preserve the original under its backup name.
+            if self.engine.inspect_container(cname, required=False) is None:
+                self.engine.run(["rename", backup, cname])
+            else:
+                eprint(f"lubox: original preserved as {backup}; inspect the new container before rollback")
+            raise
+        if not keep_backup:
+            self.engine.run(["rm", backup])  # Only the never-started create template.
+        return backup
+
+    def reconfigure_bwrap(self, name: str) -> None:
+        validate_box_name(name)
+        self.require_bwrap_profile()
+        info = self.require_container(name)
+        if self.running_from_info(info):
+            die("lubox: refusing bwrap reconfiguration of a RUNNING container. Save your sessions, then run `lubox stop NAME` and `lubox reconfigure NAME --bwrap` from the macOS/host terminal. No container was stopped or changed.")
+        bwrap_container_config(info, str(info.get("Image") or ""), load_json_file(self.require_bwrap_profile()))
+        cname = container_name(name)
+        nonce = secrets.token_hex(4)
+        snapshot = f"lubox/{name}:before-bwrap-{nonce}"
+        # The container is already stopped: no process is paused or killed, and
+        # its complete writable layer (including installed packages) is retained.
+        self.engine.run(["commit", "--pause=false", cname, snapshot])
+        self.engine.run(["run", "--rm", "--network=none", "--user", f"{self.ident.uid}:{self.ident.gid}",
+                         "--entrypoint", "/bin/sh", snapshot, "-c", "test -x /usr/bin/bwrap"])
+        backup = self.replace_for_bwrap(name, info, snapshot, keep_backup=True)
+        print(f"lubox: original stopped container retained as {backup}")
+        print(f"lubox: writable filesystem snapshot retained as {snapshot}")
+        self.start(name, announce=False)
+        self.engine.run(["exec", cname, "/usr/bin/bwrap", "--unshare-all", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--new-session", "--", "/bin/true"])
+        print(f"lubox: enabled and verified bubblewrap in {cname}; only /proc submount restrictions relaxed, no extra capabilities")
 
     def socket_forward_plan(self, host_exec: bool) -> SocketForwardPlan:
         ssh_sock = current_ssh_auth_sock()
@@ -5208,6 +5348,12 @@ destroy keeps lubox/NAME:latest by default; destroy --force also removes it.
     add_engine(p)
     p.add_argument("--no-host-exec", action="store_true", help="disable host-exec bridge")
     p.add_argument("--rebuild", action="store_true", help="recreate existing container and rebuild image")
+    p.add_argument("--bwrap", action="store_true", help="allow unprivileged bubblewrap via a narrow seccomp profile (Docker only)")
+
+    p = sub.add_parser("reconfigure", help="migrate a stopped container without losing its writable filesystem")
+    add_engine(p)
+    p.add_argument("name", metavar="NAME")
+    p.add_argument("--bwrap", action="store_true", required=True, help="enable bubblewrap; refuses running containers and keeps a rollback backup")
 
     p = sub.add_parser("destroy", help="stop and remove container; --force also removes image")
     add_engine(p)
@@ -5342,7 +5488,10 @@ def dispatch(args: argparse.Namespace) -> int:
         manager.print_list()
         return 0
     if args.command == "create":
-        manager.create(args.name, args.image, args.no_host_exec, args.rebuild)
+        manager.create(args.name, args.image, args.no_host_exec, args.rebuild, bwrap=args.bwrap)
+        return 0
+    if args.command == "reconfigure":
+        manager.reconfigure_bwrap(args.name)
         return 0
     if args.command == "destroy":
         manager.destroy(args.name, args.force)

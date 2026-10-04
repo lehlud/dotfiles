@@ -45,8 +45,28 @@ _pi_download() {
 
 _pi_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/pi")"
 
-if auto_update_ensure_tar_app pi "$_pi_cache_dir" pi pi/pi 3 _pi_download https://github.com/earendil-works/pi; then
-    exec "$_pi_cache_dir/pi/pi" "$@"
+# Mandatory approval: only the trusted gate may load executable extensions.
+# Model actions run in its isolated executor, never in this host shell.
+for _arg in "$@"; do
+    case "$_arg" in
+        -e|--extension|--extension=*|-a|--approve|--tools|--tools=*|-t|--exclude-tools|--exclude-tools=*|-xt)
+            printf 'pi: this option conflicts with mandatory Auto-Approval: %s\n' "$_arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+_gate="$HOME/.pi/agent/extensions/auto-approval/index.ts"
+if [ ! -r "$_gate" ]; then
+    printf 'pi: mandatory approval gate is missing; startup blocked\n' >&2
+    exit 1
 fi
 
+# Do not silently replace Pi or the gate via the launcher's periodic updater.
+# Installation/upgrades are explicit operator actions outside agent tools.
+if [ -x "$_pi_cache_dir/pi/pi" ]; then
+    exec "$_pi_cache_dir/pi/pi" --no-extensions --extension "$_gate" --no-approve --tools approved_action "$@"
+fi
+
+printf 'pi: native Pi executable is missing; install it explicitly before starting\n' >&2
 exit 1
