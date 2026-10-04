@@ -91,15 +91,15 @@
 !/.emacs.d/config.org
 !/.emacs.d/themes/
 
-# Pi: track configuration and custom resources; ignore other runtime data.
+# Pi: track portable templates and custom resources; keep live settings private.
 !/.pi/
 /.pi/*
 !/.pi/agent/
 /.pi/agent/*
-!/.pi/agent/settings.json
+!/.pi/agent/settings.example.json
 !/.pi/agent/keybindings.json
-!/.pi/agent/models.json
-!/.pi/agent/mcp.json
+!/.pi/agent/models.example.json
+!/.pi/agent/mcp.example.json
 !/.pi/agent/AGENTS.override.md
 !/.pi/agent/AGENTS.md
 !/.pi/agent/AGENTS.MD
