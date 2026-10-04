@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+
+_helper="${AUTO_UPDATE_APP_HELPER:-$HOME/.local/bin/auto-update-app.bash}"
+if [ ! -r "$_helper" ]; then
+    printf 'pi install failed: missing helper: %s\n' "$_helper" >&2
+    exit 1
+fi
+source "$_helper"
+
+_pi_download() {
+    local os
+    local arch
+    local release
+
+    case "$(auto_update_platform_os)" in
+        linux | darwin)
+            os="$(auto_update_platform_os)"
+            ;;
+        *)
+            printf 'pi install failed: unsupported system: %s\n' "$(uname -s)" >&2
+            return 2
+            ;;
+    esac
+
+    case "$(auto_update_platform_arch)" in
+        x86_64)
+            arch=x64
+            ;;
+        aarch64)
+            arch=arm64
+            ;;
+        *)
+            printf 'pi install failed: unsupported cpu arch: %s\n' "$(uname -m)" >&2
+            return 2
+            ;;
+    esac
+
+    release="$(auto_update_latest_release_tag earendil-works/pi)" || return 1
+
+    AUTO_UPDATE_URL="https://github.com/earendil-works/pi/releases/download/$release/pi-$os-$arch.tar.gz"
+    AUTO_UPDATE_SOURCE_REL=pi
+    AUTO_UPDATE_SOURCE_BIN_REL=pi/pi
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_pi_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/pi")"
+
+if auto_update_ensure_tar_app pi "$_pi_cache_dir" pi pi/pi 3 _pi_download https://github.com/earendil-works/pi; then
+    exec "$_pi_cache_dir/pi/pi" "$@"
+fi
+
+exit 1
