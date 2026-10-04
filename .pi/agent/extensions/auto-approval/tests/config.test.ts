@@ -34,7 +34,7 @@ test("normal project configuration loads without a local file or persistent chan
 });
 
 test("local paths and restricted views merge without changing shared settings and reload per action", async () => {
-  const localPath = join(directory, "auto-approval.local.json");
+  const localPath = join(directory, "auto-approval.device.json");
   const sandbox = { executable: "/custom/bwrap", runnerExecutable: "/custom/runner", workspaceViews: [{ root: directory, paths: [join(directory, "public-file")] }] };
   await writeFile(localPath, JSON.stringify({ sandbox }));
   const config = await loadConfig(directory, { searchPath: "" });
@@ -46,7 +46,7 @@ test("local paths and restricted views merge without changing shared settings an
 });
 
 test("malformed local files and filesystem errors fail closed instead of dropping restrictions", async () => {
-  const localPath = join(directory, "auto-approval.local.json");
+  const localPath = join(directory, "auto-approval.device.json");
   for (const contents of ["not-json", '{"sandbox":{"workspaceViews":"invalid"}}', '{"enabled":false}']) {
     await writeFile(localPath, contents);
     await expect(loadConfig(directory, { searchPath: bin })).rejects.toThrow();
@@ -62,6 +62,17 @@ test("local schema accepts only absolute device paths and views, never reviewer 
   for (const invalid of [{ model: "other" }, { enabled: false }, { sandbox: { backend: "docker" } }, { sandbox: { executable: "bwrap" } }, { sandbox: { runnerExecutable: "~/runner" } }, { sandbox: { workspaceRoots: ["/"] } }, { sandbox: { workspaceViews: [{ root: "/home", paths: ["relative"] }] } }, { apiKey: "not-a-real-key" }]) {
     expect(() => parseLocalConfig(JSON.stringify(invalid))).toThrow();
   }
+});
+
+test("previous filename preserves restrictions until the device configuration is renamed", async () => {
+  const legacyPath = join(directory, "auto-approval.local.json");
+  const local = { sandbox: { executable: "/custom/bwrap", runnerExecutable: "/custom/runner", workspaceViews: [{ root: directory, paths: [join(directory, "public-file")] }] } };
+  await writeFile(legacyPath, JSON.stringify(local));
+  expect((await loadConfig(directory, { searchPath: "" })).sandbox).toEqual({ backend: "bwrap", ...local.sandbox });
+  await writeFile(legacyPath, '{"sandbox":{"workspaceViews":"invalid"}}');
+  await expect(loadConfig(directory, { searchPath: bin })).rejects.toThrow();
+  await writeFile(join(directory, "auto-approval.device.json"), JSON.stringify(local));
+  expect((await loadConfig(directory, { searchPath: "" })).sandbox).toEqual({ backend: "bwrap", ...local.sandbox });
 });
 
 test("Docker resolves its program on each device and requires the shared immutable image", async () => {

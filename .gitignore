@@ -105,6 +105,7 @@
 !/.pi/agent/models.example.json
 !/.pi/agent/mcp.example.json
 !/.pi/agent/auto-approval.json
+/.pi/agent/auto-approval.device.json
 !/.pi/agent/AGENTS.override.md
 !/.pi/agent/AGENTS.md
 !/.pi/agent/AGENTS.MD

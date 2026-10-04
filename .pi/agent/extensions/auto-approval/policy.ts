@@ -81,7 +81,7 @@ export function parseConfig(text: string): PortableConfig {
 }
 export function parseLocalConfig(text: string): LocalConfig {
   const value: unknown = JSON.parse(text);
-  if (!Check(localConfigSchema, value)) throw new Error("Invalid auto-approval.local.json configuration");
+  if (!Check(localConfigSchema, value)) throw new Error("Invalid auto-approval.device.json configuration");
   return value;
 }
 

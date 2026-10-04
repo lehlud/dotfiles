@@ -19,7 +19,7 @@ async function findProgram(name: string, searchPath: string): Promise<string> {
       if (!["ENOENT", "ENOTDIR", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
     }
   }
-  throw new Error(`Sandbox program ${name} not found on PATH; install it or configure its absolute path in auto-approval.local.json outside Pi`);
+  throw new Error(`Sandbox program ${name} not found on PATH; install it or configure its absolute path in auto-approval.device.json outside Pi`);
 }
 
 export async function resolveConfig(portable: PortableConfig, local: LocalConfig = {}, runtime: RuntimePaths = {}): Promise<Config> {
@@ -43,11 +43,8 @@ export async function resolveConfig(portable: PortableConfig, local: LocalConfig
   return resolved;
 }
 
-export async function loadConfig(agentDirectory: string, runtime: RuntimePaths = {}): Promise<Config> {
-  const portable = parseConfig(await readFile(join(agentDirectory, "auto-approval.json"), "utf8"));
-  const localPath = join(agentDirectory, "auto-approval.local.json");
-  let local: LocalConfig = {};
-  try { local = parseLocalConfig(await readFile(localPath, "utf8")); }
+async function readDeviceConfig(localPath: string): Promise<LocalConfig | undefined> {
+  try { return parseLocalConfig(await readFile(localPath, "utf8")); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     // A broken symlink is an existing restriction file that cannot be loaded.
@@ -57,6 +54,14 @@ export async function loadConfig(agentDirectory: string, runtime: RuntimePaths =
       throw failure;
     });
     if (present) throw error;
+    return undefined;
   }
+}
+
+export async function loadConfig(agentDirectory: string, runtime: RuntimePaths = {}): Promise<Config> {
+  const portable = parseConfig(await readFile(join(agentDirectory, "auto-approval.json"), "utf8"));
+  // Preserve restrictions on devices that still have the previous filename.
+  const local = await readDeviceConfig(join(agentDirectory, "auto-approval.device.json"))
+    ?? await readDeviceConfig(join(agentDirectory, "auto-approval.local.json")) ?? {};
   return await resolveConfig(portable, local, runtime);
 }

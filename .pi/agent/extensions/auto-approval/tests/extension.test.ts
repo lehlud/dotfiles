@@ -28,7 +28,7 @@ mock.module("../isolation.ts", () => ({
 }));
 const { default: extension } = await import("../index.ts");
 const configPath = join(agentRoot, "auto-approval.json");
-const localConfigPath = join(agentRoot, "auto-approval.local.json");
+const localConfigPath = join(agentRoot, "auto-approval.device.json");
 const config = { provider: "openai", model: "gpt-6-luna", thinking: "medium", recentUserPrompts: 6, requestTimeoutMs: 120000, sandbox: { backend: "docker", image: `sha256:${"a".repeat(64)}` } };
 const usage = { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 20, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 let mode: "approve" | "deny" | "invalid" | "error" | "mismatch" = "approve";
