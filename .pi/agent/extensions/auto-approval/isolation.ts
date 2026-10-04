@@ -1,0 +1,161 @@
+import { spawn } from "node:child_process";
+import { lstat, readdir, realpath } from "node:fs/promises";
+import { resolve, join, relative, isAbsolute } from "node:path";
+import { randomUUID } from "node:crypto";
+import { getuid, getgid } from "node:process";
+import { homedir } from "node:os";
+import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
+import type { Config, Request } from "./policy.ts";
+export type SandboxConfig = Config["sandbox"];
+export type Workspace = { path: string; cwd: string; bindings: string[]; masked: { path: string; directory: boolean }[] };
+const within = (root: string, path: string) => {
+  const rel = relative(root, path);
+  return rel === "" || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel));
+};
+const backendPaths = (config: SandboxConfig) => config.backend === "bwrap"
+  ? [config.executable, config.runnerExecutable] : [config.dockerExecutable];
+
+/** A home-level dotfiles repository must never enlarge an unrelated directory. */
+export async function detectWorkspace(cwd: string, home = homedir()): Promise<{ path: string; cwd: string }> {
+  const current = await realpath(cwd);
+  const homePath = await realpath(home).catch(() => resolve(home));
+  const git = spawn("/usr/bin/git", ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", current, "rev-parse", "--show-toplevel"], {
+    stdio: ["ignore", "pipe", "ignore"],
+    env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+  });
+  let output = "";
+  git.stdout.on("data", (chunk) => { if (output.length < 65536) output += chunk.toString(); });
+  const code = await new Promise<number | null>((done) => { git.once("error", () => done(null)); git.once("close", done); });
+  if (code === 0) {
+    const root = await realpath(output.trim()).catch(() => undefined);
+    if (root && within(root, current) && !within(root, homePath)) return { path: root, cwd: current };
+  }
+  return { path: current, cwd: current };
+}
+
+/** Starting Pi selects the workspace; operator-configured views constrain home. */
+export async function validateWorkspace(cwd: string, config: SandboxConfig, protectedPaths: readonly string[]): Promise<Workspace> {
+  const detected = await detectWorkspace(cwd);
+  const workspace = detected.path;
+  const root = workspace;
+  const protectedRoots = await Promise.all([...protectedPaths, ...backendPaths(config)].map((path) => realpath(path).catch(() => resolve(path))));
+  if (protectedRoots.some((path) => within(path, workspace))) throw new Error("Workspace is inside protected Pi, approval, or credential storage; choose a separate project directory");
+  let bindings = [workspace];
+  if (config.backend === "bwrap") {
+    const view = config.workspaceViews?.find((entry) => resolve(entry.root) === root);
+    if (view) {
+      bindings = [];
+      for (const path of view.paths) {
+        const canonical = await realpath(path);
+        if (!within(root, canonical)) throw new Error(`Configured workspace view escapes its authorized root: ${path}`);
+        if (within(canonical, workspace)) bindings.push(workspace);
+        else if (within(workspace, canonical)) bindings.push(canonical);
+      }
+      bindings = [...new Set(bindings)].sort((a, b) => a.length - b.length)
+        .filter((path, index, all) => !all.slice(0, index).some((parent) => within(parent, path)));
+      if (!bindings.length) throw new Error(`Directory ${workspace} is outside the operator-configured workspace view; edit sandbox.workspaceViews in ~/.pi/agent/auto-approval.json outside Pi.`);
+    } else if (workspace === await realpath(homedir())) {
+      throw new Error("The home directory needs a restricted workspaceViews entry containing public files; edit ~/.pi/agent/auto-approval.json outside Pi. Project workspaces are detected automatically.");
+    }
+  } else if (protectedRoots.some((path) => within(workspace, path))) {
+    throw new Error("Workspace overlaps Pi, its gate, or protected configuration");
+  }
+  const masked: Workspace["masked"] = [];
+  for (const binding of bindings) {
+    if (/[\n\r,]/.test(binding)) throw new Error("Workspace path contains unsafe mount characters");
+    if (protectedRoots.some((path) => within(path, binding))) throw new Error(`Workspace view includes protected storage: ${binding}`);
+    for (const path of protectedRoots.filter((path) => within(binding, path))) {
+      const stat = await lstat(path).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
+      if (stat) masked.push({ path, directory: stat.isDirectory() });
+    }
+  }
+  const hidden = (path: string) => masked.some((entry) => within(entry.path, path));
+  const walk = async (path: string): Promise<void> => {
+    if (hidden(path)) return;
+    const stat = await lstat(path);
+    if (stat.isSymbolicLink()) {
+      const target = await realpath(path);
+      if (hidden(target) || !bindings.some((binding) => within(binding, target))) throw new Error(`Workspace symlink escapes its exposed boundary: ${path}`);
+    } else if (stat.isDirectory()) {
+      for (const name of await readdir(path)) await walk(join(path, name));
+    } else if (!stat.isFile() || stat.nlink !== 1) throw new Error(`Workspace contains a special file or hardlink: ${path}`);
+  };
+  for (const path of bindings) await walk(path);
+  return { ...detected, bindings, masked };
+}
+
+export function sandboxArguments(workspace: Workspace, config: SandboxConfig, name: string) {
+  if (config.backend !== "bwrap") return ["run", "--rm", "--interactive", "--name", name,
+    "--pull", "never", "--network", "none", "--read-only", "--cap-drop", "ALL",
+    "--security-opt", "no-new-privileges", "--ipc", "none", "--cgroupns", "private",
+    "--pids-limit", "128", "--memory", "1g", "--cpus", "2",
+    "--user", `${getuid?.() ?? 501}:${getgid?.() ?? 20}`, "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m,mode=1777",
+    "--env", "HOME=/tmp/home", "--env", "PI_CODING_AGENT_DIR=/tmp/pi",
+    "--mount", `type=bind,src=${workspace.path},dst=${workspace.path},bind-recursive=disabled`,
+    "--workdir", workspace.cwd, "--entrypoint", "/usr/local/bin/bun", config.image,
+    "/executor/runner.ts"];
+  const args = ["--unshare-all", "--unshare-user", "--disable-userns", "--die-with-parent", "--new-session",
+    "--cap-drop", "ALL", "--ro-bind", "/usr", "/usr",
+    "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin",
+    "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
+    "--ro-bind-try", "/etc/ld.so.cache", "/etc/ld.so.cache", "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
+    "--proc", "/proc", "--dev", "/dev", "--size", "268435456", "--tmpfs", "/tmp", "--dir", "/tmp/home",
+    "--ro-bind", config.runnerExecutable, "/executor/runner",
+    "--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp/home",
+    "--setenv", "PI_CODING_AGENT_DIR", "/tmp/pi", "--setenv", "LANG", "C.UTF-8"];
+  if (!workspace.bindings.includes(workspace.path)) args.push("--size", "16777216", "--tmpfs", workspace.path);
+  for (const path of workspace.bindings) args.push("--bind", path, path);
+  for (const entry of workspace.masked) {
+    if (entry.directory) args.push("--perms", "000", "--tmpfs", entry.path, "--remount-ro", entry.path);
+    else args.push("--ro-bind", "/dev/null", entry.path);
+  }
+  // Projected parent directories are ephemeral and read-only. Only mounts persist.
+  if (!workspace.bindings.includes(workspace.path)) args.push("--remount-ro", workspace.path);
+  args.push("--chdir", workspace.cwd, "/executor/runner");
+  return args;
+}
+
+/** Both backends are mandatory isolation. A launch failure never executes on the host. */
+export async function executeIsolated(request: Request, workspace: Workspace, config: SandboxConfig, signal?: AbortSignal): Promise<AgentToolResult<any>> {
+  signal?.throwIfAborted();
+  const name = `pi-approved-${randomUUID()}`;
+  const native = config.backend === "bwrap";
+  const executable = native ? config.executable : config.dockerExecutable;
+  const child = spawn(executable, sandboxArguments(workspace, config, name), { stdio: ["pipe", "pipe", "pipe"], detached: native });
+  let stdout = "", stderr = "";
+  let failure: Error | undefined;
+  let cleanup: Promise<void> | undefined;
+  const remove = () => {
+    if (!cleanup) cleanup = native ? Promise.resolve().then(() => {
+      if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } }
+    }) : new Promise<void>((done) => {
+      const rm = spawn(executable, ["rm", "--force", name], { stdio: "ignore" });
+      rm.once("error", () => done()); rm.once("close", () => done());
+    });
+    return cleanup;
+  };
+  const stop = (reason: string) => { failure ??= new Error(reason); void remove(); child.kill("SIGTERM"); };
+  const abort = () => stop("Isolated execution cancelled");
+  signal?.addEventListener("abort", abort, { once: true });
+  const watchdog = setTimeout(() => stop("Isolated executor exceeded the technical execution limit"), 600000);
+  try {
+    const exited = new Promise<number | null>((done, reject) => { child.once("error", reject); child.once("close", done); });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (Buffer.byteLength(stdout) > 16 * 1024 * 1024) stop("Executor output limit exceeded");
+    });
+    child.stderr.on("data", (chunk) => { if (stderr.length < 20000) stderr += chunk.toString(); });
+    child.stdin.on("error", () => {});
+    if (signal?.aborted) abort(); else child.stdin.end(JSON.stringify(request));
+    const code = await exited;
+    if (failure) throw failure;
+    if (code !== 0) throw new Error(`Mandatory ${native ? "bwrap" : "Docker"} sandbox failed (${code}); no local fallback. ${stderr.trim()}`);
+    const result: unknown = JSON.parse(stdout);
+    if (!result || typeof result !== "object" || !Array.isArray((result as any).content)) throw new Error("Invalid executor result");
+    return result as AgentToolResult<any>;
+  } finally {
+    clearTimeout(watchdog);
+    signal?.removeEventListener("abort", abort);
+    await remove();
+  }
+}

@@ -1,0 +1,237 @@
+import { test, expect, beforeEach, afterAll, mock } from "bun:test";
+import { createBashToolDefinition, createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition } from "@earendil-works/pi-coding-agent";
+import { mkdtemp, writeFile, readFile, rm, access, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+
+const root = await mkdtemp(join(tmpdir(), "pi-approval-test-"));
+const agentRoot = await mkdtemp(join(tmpdir(), "pi-approval-agent-test-"));
+const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+process.env.PI_CODING_AGENT_DIR = agentRoot;
+// Test-only module mock. Production has one mandatory Docker executor and no
+// injection flag or local execution backend. Unit tests exercise the gate.
+mock.module("../isolation.ts", () => ({
+  detectWorkspace: async (cwd: string) => ({ path: cwd, cwd }),
+  validateWorkspace: async (cwd: string) => ({ path: cwd, cwd, bindings: [cwd], masked: [] }),
+  executeIsolated: async (request: any, workspace: { path: string }, _config: unknown, signal?: AbortSignal) => {
+    const cwd = workspace.path;
+    const factories: any = { bash: createBashToolDefinition, read: createReadToolDefinition, write: createWriteToolDefinition, edit: createEditToolDefinition };
+    return await factories[request.tool](cwd).execute("test-only", request.arguments, signal, undefined, ctx);
+  },
+}));
+const { default: extension } = await import("../index.ts");
+const configPath = join(agentRoot, "auto-approval.json");
+const config = { provider: "openai", model: "gpt-6-luna", thinking: "medium", recentUserPrompts: 6, requestTimeoutMs: 120000, sandbox: { dockerExecutable: "/usr/bin/docker", image: `sha256:${"a".repeat(64)}`, workspaceRoots: [root] } };
+const usage = { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 20, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+let mode: "approve" | "deny" | "invalid" | "error" | "mismatch" = "approve";
+let requested: any[];
+let hooks: Record<string, Function>;
+let actions: Record<string, ToolDefinition<any, any>>;
+let entries: any[];
+let active: string[];
+let auditFails: boolean;
+let responseHook: (() => void) | undefined;
+let widgets: string[][];
+let statuses: string[];
+let ctx: ExtensionToolContext;
+
+beforeEach(async () => {
+  await writeFile(configPath, JSON.stringify(config));
+  mode = "approve"; requested = []; hooks = {}; actions = {}; active = []; auditFails = false; responseHook = undefined; widgets = []; statuses = [];
+  entries = [{ type: "message", message: { role: "user", content: "Run a harmless smoke test in the temporary working directory. Do not change any approval settings." } }];
+  const pi = {
+    on: (name: string, callback: Function) => { hooks[name] = callback; },
+    registerTool: (tool: ToolDefinition<any, any>) => { actions[tool.name] = tool; },
+    registerCommand: () => {},
+    setActiveTools: (names: string[]) => { active = names; },
+    appendEntry: (customType: string, data: unknown) => {
+      if (auditFails) throw new Error("Audit unavailable");
+      entries.push({ type: "custom", customType, data });
+    },
+  } as unknown as ExtensionAPI;
+  ctx = {
+    cwd: root,
+    ui: { setStatus: (_key: string, text: string) => statuses.push(text), setWidget: (_key: string, lines: string[]) => widgets.push(lines), notify: () => {} },
+    sessionManager: { getBranch: () => entries, getSessionId: () => "test-session", getSessionFile: () => undefined },
+    modelRegistry: {
+      find: (provider: string, id: string) => ({ provider, id, reasoning: true, thinkingLevelMap: { medium: "medium", low: "low" } }),
+      hasConfiguredAuth: () => true,
+      streamSimple: (model: any, context: any, options: any) => {
+        const data = JSON.parse(context.messages[0].content);
+        requested.push({ model, context, options, data });
+        return { result: async () => {
+          responseHook?.();
+          return {
+            stopReason: mode === "error" ? "error" : "stop", usage,
+            content: [{ type: "text", text: mode === "invalid" ? "not JSON" : JSON.stringify({
+              requestId: mode === "mismatch" ? "another-action" : data.requestId,
+              decision: mode === "deny" ? "deny" : "approve", reason: mode === "deny" ? "Nicht vom Nutzer gewollt" : "Passt zur Aufgabe",
+            }) }],
+          };
+        } };
+      },
+    },
+  } as unknown as ExtensionToolContext;
+  extension(pi);
+});
+afterAll(async () => {
+  if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  await rm(root, { recursive: true, force: true });
+  await rm(agentRoot, { recursive: true, force: true });
+});
+const call = (args: any, signal?: AbortSignal) => actions.approved_action.execute("call", args, signal, undefined, ctx);
+const bash = (command: string) => ({ tool: "bash", arguments: { command }, goal: "Smoke test", justification: "Harmless isolated test" });
+const exists = async (path: string) => { try { await access(path); return true; } catch { return false; } };
+
+test("only approved_action is active on session start and before each run", async () => {
+  await hooks.session_start({}, ctx); expect(active).toEqual(["approved_action"]);
+  await hooks.before_agent_start({}, ctx); expect(active).toEqual(["approved_action"]);
+  expect(actions.approved_action.exposure).toBe("model-only");
+});
+test("every direct, unknown, nested, MCP, and codemode route is blocked", async () => {
+  for (const toolName of ["bash", "powershell", "read", "edit", "write", "codemode", "tool_search", "mcp_exec", "subagent", "arbitrary"]) {
+    expect((await hooks.tool_call({ toolName }, ctx)).block).toBe(true);
+  }
+  expect((await hooks.tool_call({ toolName: "approved_action", parentToolCallId: "parent" }, ctx)).block).toBe(true);
+  expect(await hooks.tool_call({ toolName: "approved_action" }, ctx)).toBeUndefined();
+});
+test("user !/!! and RPC shell interception never executes", async () => {
+  const result = await hooks.user_bash({ command: "touch bypass" }, ctx);
+  expect(result.result.exitCode).toBe(1);
+  expect(await exists(join(root, "bypass"))).toBe(false);
+});
+test("approved action executes exactly its reviewed command and reports reviewer usage", async () => {
+  const result = await call(bash("printf approval-ok"));
+  expect(result.isError, JSON.stringify(result)).not.toBe(true);
+  expect(JSON.stringify(result.content)).toContain("approval-ok");
+  expect(requested[0].data.action.arguments.command).toBe("printf approval-ok");
+  expect(requested[0].model.id).toBe("gpt-6-luna");
+  expect(requested[0].options.reasoning).toBe("medium");
+  expect(requested[0].context.tools).toBeUndefined();
+  expect(result.usage).toEqual(usage);
+  expect(entries.at(-1).data.decision).toBe("approve");
+});
+test("denial returns reason without executing", async () => {
+  mode = "deny";
+  const result = await call(bash("touch denied-sentinel"));
+  expect(result.isError).toBe(true);
+  expect(JSON.stringify(result.content)).toContain("Nicht vom Nutzer gewollt");
+  expect(await exists(join(root, "denied-sentinel"))).toBe(false);
+});
+test("invalid, errored, or mismatched verdicts fail closed", async () => {
+  for (const variant of ["invalid", "error", "mismatch"] as const) {
+    mode = variant;
+    const result = await call(bash(`touch ${variant}-sentinel`));
+    expect(result.isError).toBe(true);
+    expect(await exists(join(root, `${variant}-sentinel`))).toBe(false);
+  }
+});
+test("missing and invalid config fail closed without reviewer or execution", async () => {
+  await rm(configPath);
+  expect((await call(bash("touch missing-config"))).isError).toBe(true);
+  await writeFile(configPath, '{"enabled":false}');
+  expect((await call(bash("touch invalid-config"))).isError).toBe(true);
+  expect(requested).toHaveLength(0);
+  expect(await exists(join(root, "missing-config"))).toBe(false);
+  expect(await exists(join(root, "invalid-config"))).toBe(false);
+});
+test("config is hot-read; reviewer is replaceable without a restart", async () => {
+  await writeFile(configPath, JSON.stringify({ ...config, provider: "replacement-provider", model: "replacement-model", thinking: "low" }));
+  expect((await call(bash("printf switched"))).isError).not.toBe(true);
+  expect(requested[0].model.id).toBe("replacement-model");
+  expect(requested[0].model.provider).toBe("replacement-provider");
+  expect(requested[0].options.reasoning).toBe("low");
+});
+test("unknown tools and blank goals cannot enter execution", async () => {
+  for (const invalid of [{ ...bash("true"), tool: "subagent" }, { ...bash("true"), goal: " " }, { ...bash("true"), justification: "" }, { ...bash("true"), arguments: {} }]) {
+    expect((await call(invalid)).isError).toBe(true);
+  }
+  expect(requested).toHaveLength(0);
+});
+test("file mutations are reviewed too", async () => {
+  mode = "deny";
+  const result = await call({ tool: "write", arguments: { path: "denied.txt", content: "bad" }, goal: "Test", justification: "Test" });
+  expect(result.isError).toBe(true);
+  expect(await exists(join(root, "denied.txt"))).toBe(false);
+  expect(requested).toHaveLength(1);
+  expect(requested[0].data.action.tool).toBe("write");
+});
+test("direct attempts to modify approval configuration cannot even ask for approval", async () => {
+  const original = await readFile(configPath, "utf8");
+  expect((await call({ tool: "write", arguments: { path: configPath, content: "{}" }, goal: "Disable gate", justification: "Bypass" })).isError).toBe(true);
+  expect(await readFile(configPath, "utf8")).toBe(original);
+  expect(requested).toHaveLength(0);
+});
+test("no cached approval; the same action is reviewed on every call", async () => {
+  await call(bash("printf once")); mode = "deny";
+  expect((await call(bash("printf once"))).isError).toBe(true);
+  expect(requested).toHaveLength(2);
+  expect(requested[0].data.requestId).not.toBe(requested[1].data.requestId);
+});
+test("cancellation after review still prevents execution", async () => {
+  const controller = new AbortController();
+  responseHook = () => controller.abort();
+  expect((await call(bash("touch cancelled"), controller.signal)).isError).toBe(true);
+  expect(await exists(join(root, "cancelled"))).toBe(false);
+});
+test("audit failure prevents even approved execution", async () => {
+  auditFails = true;
+  expect((await call(bash("touch unaudited"))).isError).toBe(true);
+  expect(await exists(join(root, "unaudited"))).toBe(false);
+});
+test("missing reviewer and missing auth fail closed", async () => {
+  ctx.modelRegistry.find = () => undefined;
+  expect((await call(bash("touch missing-model"))).isError).toBe(true);
+  ctx.modelRegistry.find = (() => ({ id: "test", reasoning: true })) as any;
+  ctx.modelRegistry.hasConfiguredAuth = () => false;
+  expect((await call(bash("touch missing-auth"))).isError).toBe(true);
+  expect(requested).toHaveLength(0);
+});
+test("review plus execution is serialized for concurrent calls", async () => {
+  const results = await Promise.all([call(bash("printf first >> order.txt")), call(bash("printf second >> order.txt"))]);
+  expect(results.every((r) => !r.isError), JSON.stringify(results)).toBe(true);
+  expect(await readFile(join(root, "order.txt"), "utf8")).toBe("firstsecond");
+  expect(requested).toHaveLength(2);
+});
+
+test("symlink aliases cannot write approval configuration", async () => {
+  const alias = join(root, "config-alias.json");
+  await symlink(configPath, alias);
+  const result = await call({ tool: "write", arguments: { path: alias, content: "{}" }, goal: "Disable", justification: "Bypass via alias" });
+  expect(result.isError).toBe(true);
+  expect(requested).toHaveLength(0);
+  expect(JSON.parse(await readFile(configPath, "utf8")).model).toBe("gpt-6-luna");
+});
+
+test("approved writes and edits are independently reviewed", async () => {
+  const base = { goal: "Smoke test", justification: "Create a temporary test file" };
+  expect((await call({ ...base, tool: "write", arguments: { path: "allowed.txt", content: "before" } })).isError).not.toBe(true);
+  expect((await call({ ...base, tool: "edit", arguments: { path: "allowed.txt", edits: [{ oldText: "before", newText: "after" }] } })).isError).not.toBe(true);
+  expect(await readFile(join(root, "allowed.txt"), "utf8")).toBe("after");
+  expect(requested.map((r) => r.data.action.tool)).toEqual(["write", "edit"]);
+});
+
+test("reviewed argument snapshot cannot be mutated during review", async () => {
+  const args = bash("printf original-snapshot");
+  responseHook = () => { args.arguments.command = "touch mutated-command"; };
+  const result = await call(args);
+  expect(JSON.stringify(result.content)).toContain("original-snapshot");
+  expect(await exists(join(root, "mutated-command"))).toBe(false);
+});
+
+test("approval and denial reasons, durations, and reviewer are visible and persisted", async () => {
+  const approval = await call(bash("printf transparent"));
+  expect(JSON.stringify(approval.content)).toContain("Passt zur Aufgabe");
+  expect(widgets.at(-1)?.join("\n")).toContain("Passt zur Aufgabe");
+  expect(statuses.some((s) => s.includes("⠋") && s.includes("gpt-6-luna"))).toBe(true);
+  expect(typeof approval.details.approval.reviewDurationMs).toBe("number");
+  mode = "deny";
+  const denial = await call(bash("printf denied"));
+  expect(JSON.stringify(denial.content)).toContain("Nicht vom Nutzer gewollt");
+  expect(widgets.at(-1)?.join("\n")).toContain("Nicht vom Nutzer gewollt");
+  expect(typeof denial.details.reviewDurationMs).toBe("number");
+  expect(requested[0].context.systemPrompt).toContain("LAST actual user prompt");
+  expect(requested[0].context.systemPrompt).toContain("ONE short sentence");
+});

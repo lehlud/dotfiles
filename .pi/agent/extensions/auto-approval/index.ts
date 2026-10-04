@@ -1,0 +1,210 @@
+import { readFile, realpath } from "node:fs/promises";
+import { resolve, join, dirname, basename } from "node:path";
+import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+import {
+  createBashToolDefinition, createPowerShellToolDefinition, createReadToolDefinition,
+  createWriteToolDefinition, createEditToolDefinition, createGrepToolDefinition,
+  createFindToolDefinition, createLsToolDefinition, getAgentDir,
+  type ExtensionAPI, type ExtensionContext, type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { Check } from "typebox/value";
+import { detectWorkspace, executeIsolated, validateWorkspace } from "./isolation.ts";
+import { reviewSummary, startReviewDisplay, showDecision } from "./display.ts";
+import { buildReview, parseConfig, parseVerdict, REVIEW_SYSTEM, textContent, withWatchdog, type Request } from "./policy.ts";
+
+const TOOL_NAME = "approved_action";
+const factories = {
+  read: createReadToolDefinition, bash: createBashToolDefinition,
+  powershell: createPowerShellToolDefinition, edit: createEditToolDefinition,
+  write: createWriteToolDefinition, grep: createGrepToolDefinition,
+  find: createFindToolDefinition, ls: createLsToolDefinition,
+};
+type ToolName = keyof typeof factories;
+const toolNames = Object.keys(factories) as ToolName[];
+const configPath = join(getAgentDir(), "auto-approval.json");
+const sourceDir = dirname(fileURLToPath(import.meta.url));
+const definitions = Object.fromEntries(toolNames.map((name) => [name, factories[name](process.cwd())])) as Record<ToolName, ToolDefinition<any, any>>;
+const parameters = Type.Union(toolNames.map((name) => Type.Object({
+  tool: Type.Literal(name),
+  arguments: definitions[name].parameters,
+  goal: Type.String({ minLength: 1, maxLength: 4000, description: "Current concrete goal, tied to the real user's request." }),
+  justification: Type.String({ minLength: 1, maxLength: 4000, description: "Why this exact action is needed now; explain side effects and scope." }),
+}, { additionalProperties: false })));
+
+// Resolve symlinks even for not-yet-created paths. Unexpected filesystem errors
+// fail closed rather than letting a textual path check authorize an alias.
+async function canonicalPath(path: string): Promise<string> {
+  try { return await realpath(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const parent = dirname(path);
+    if (parent === path) throw error;
+    return join(await canonicalPath(parent), basename(path));
+  }
+}
+
+const LOCK_MESSAGE = "Auto-Approval: direct and alternative tools are blocked. Use approved_action with the exact action, goal, and justification. A denied action must not be bypassed.";
+
+export default function autoApproval(pi: ExtensionAPI) {
+  // Serialize review AND execution, not just the model requests. No shared approval
+  // flag, reusable token, bypass environment variable, or agent-callable off switch.
+  let queue: Promise<unknown> = Promise.resolve();
+  const activeDisplays = new Set<() => number>();
+  pi.on("session_shutdown", async () => {
+    for (const stop of activeDisplays) stop();
+    activeDisplays.clear();
+  });
+  const protectedPaths = [
+    sourceDir, getAgentDir(), join(homedir(), ".docker"), join(homedir(), ".ssh"), join(homedir(), ".aws"),
+    join(homedir(), ".gnupg"), join(homedir(), ".codex"), join(homedir(), ".claude"),
+    join(homedir(), ".local", "cache", "pi"),
+    join(homedir(), ".local", "bin", "pi"),
+    join(homedir(), ".local", "bin", "auto-update-app.bash"),
+    process.execPath,
+  ];
+  const protectedRoots = Promise.all(protectedPaths.map(canonicalPath));
+  // Catch now to avoid an unhandled rejection; awaiting below still fails closed.
+  void protectedRoots.catch(() => {});
+
+  function lock(ctx: ExtensionContext) {
+    pi.setActiveTools([TOOL_NAME]);
+    ctx.ui.setStatus("auto-approval", "approval: on");
+  }
+  pi.on("session_start", async (_event, ctx) => {
+    lock(ctx);
+    try {
+      const config = parseConfig(await readFile(configPath, "utf8"));
+      ctx.ui.setStatus("auto-approval", `approval: ${config.provider}/${config.model} (${config.thinking})`);
+    } catch {
+      ctx.ui.setStatus("auto-approval", "approval: LOCKED (invalid/missing config)");
+    }
+  });
+  pi.on("before_agent_start", async (_event, ctx) => {
+    lock(ctx);
+    return { message: {
+      customType: "auto-approval-policy", display: false,
+      content: `Auto-Approval and its isolated executor are mandatory. No host operations are permitted. Actions run in an ephemeral offline sandbox with only the current workspace mounts writable. Pi code, credentials, container sockets, and host process namespace are protected. If isolation or workspace authorization fails, tell the user the exact config path and required operator change; NEVER use a local fallback. The workspace is detected automatically from the current directory or project Git root; a Git root at or above the home directory is ignored. The config is ~/.pi/agent/auto-approval.json; /auto-approval shows its path and detected workspace. Use ONLY approved_action for every operation, including reads and file mutations. Supply the exact tool arguments, your current goal, and why the action is necessary now. An independent reviewer checks actual recent user prompts against the action. Rejections return their reason. Resolve the concern or ask the user; never retry through another tool, nested agent, shell escape, modified gate, or background process. There is no agent-accessible disable or manual bypass.`,
+    } };
+  });
+  pi.on("tool_call", async (event) => {
+    if (event.toolName !== TOOL_NAME || event.parentToolCallId) return { block: true, reason: LOCK_MESSAGE };
+  });
+  pi.on("user_bash", async () => ({ result: {
+    output: "Auto-Approval: !/!! and direct user/RPC shell execution are blocked. Ask the agent to submit a justified approved_action instead.",
+    exitCode: 1, cancelled: false, truncated: false,
+  } }));
+  pi.registerCommand("auto-approval", {
+    description: "Show mandatory approval configuration (edit auto-approval.json to change the reviewer)",
+    handler: async (_args, ctx) => {
+      try {
+        const config = parseConfig(await readFile(configPath, "utf8"));
+        ctx.ui.notify(`Auto-Approval ON\nReviewer: ${config.provider}/${config.model} (${config.thinking})\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nChanges take effect on the next action. No bypass/off command.`, "info");
+      } catch (error) { ctx.ui.notify(`Auto-Approval LOCKED: ${String(error)}\nConfig: ${configPath}`, "error"); }
+    },
+  });
+  pi.registerTool({
+    name: TOOL_NAME, label: "Reviewed action", exposure: "model-only", executionMode: "sequential",
+    description: "Submit one exact built-in operation for independent approval and, only if approved, immediate execution. No blanket approvals. Every operation needs goal and justification. Rejections and technical failures execute nothing and return an error with a reason. arguments follows the selected tool's schema.",
+    promptSnippet: "Request independent approval and execution of one operation",
+    parameters,
+    async execute(id, raw, signal, onUpdate, ctx) {
+      const run = async () => {
+        let usage;
+        let executionStarted = false;
+        let stopDisplay: (() => number) | undefined;
+        let reviewDurationMs = 0;
+        let reviewer = "—";
+        let decisionSummary = "";
+        const finishDisplay = () => {
+          if (stopDisplay) {
+            reviewDurationMs = stopDisplay();
+            activeDisplays.delete(stopDisplay);
+            stopDisplay = undefined;
+          }
+        };
+        let audit: Record<string, unknown> = { toolCallId: id, decision: "deny" };
+        try {
+          signal?.throwIfAborted();
+          // Snapshot and validate inside execute as well as at Pi's tool boundary.
+          // Other event handlers cannot mutate arguments after they were reviewed.
+          const request = structuredClone(raw) as Request;
+          const validRequest: boolean = Check(parameters, request);
+          if (!validRequest || !request.goal.trim() || !request.justification.trim()) throw new Error("Invalid action, goal, or justification");
+          const config = parseConfig(await readFile(configPath, "utf8"));
+          reviewer = `${config.provider}/${config.model} (${config.thinking})`;
+          const name = request.tool as ToolName;
+          // Private built-in definitions: never resolve a same-name extension/MCP
+          // override, never expose ctx.executeTool(), and never use commandPrefix.
+          const tool = factories[name](ctx.cwd) as ToolDefinition<any, any>;
+          if (!Check(tool.parameters, request.arguments)) throw new Error("Invalid underlying tool arguments");
+          if (name === "write" || name === "edit") {
+            const path = await canonicalPath(resolve(ctx.cwd, String(request.arguments.path)));
+            const roots = await protectedRoots;
+            if (roots.some((p) => path === p || path.startsWith(`${p}/`))) throw new Error("The agent cannot modify Pi installation, approval code, configuration, or credentials");
+          }
+          const workspace = await validateWorkspace(ctx.cwd, config.sandbox, protectedPaths);
+          const review = buildReview(request, ctx.sessionManager.getBranch(), config, ctx.cwd, protectedPaths);
+          audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", requestId: review.requestId, fingerprint: review.fingerprint };
+          const model = ctx.modelRegistry.find(config.provider, config.model);
+          if (!model) throw new Error(`Reviewer model not found: ${config.provider}/${config.model}`);
+          if (!ctx.modelRegistry.hasConfiguredAuth(model)) throw new Error("Reviewer authentication is unavailable");
+          if (config.thinking !== "off" && (!model.reasoning || (model.thinkingLevelMap && model.thinkingLevelMap[config.thinking] === undefined))) throw new Error("Reviewer does not support the configured thinking level");
+          stopDisplay = startReviewDisplay(ctx, reviewer, name).stop;
+          activeDisplays.add(stopDisplay);
+          onUpdate?.({ content: [{ type: "text", text: `⠋ Auto-Approval · ${reviewer} · ${name}` }], details: { phase: "reviewing", reviewer } });
+          const response = await withWatchdog(async (reviewSignal) => {
+            const stream = ctx.modelRegistry.streamSimple(model, {
+              systemPrompt: REVIEW_SYSTEM,
+              messages: [{ role: "user", content: review.text, timestamp: Date.now() }],
+              // No tools: the reviewer can decide, never execute or delegate.
+            }, {
+              reasoning: config.thinking === "off" ? undefined : config.thinking,
+              signal: reviewSignal, maxTokens: 4096, cacheRetention: "short", sessionId: review.requestId,
+            });
+            return await stream.result();
+          }, config.requestTimeoutMs, signal);
+          finishDisplay();
+          usage = response.usage;
+          if (response.stopReason !== "stop") throw new Error(`Reviewer did not finish successfully (${response.stopReason})`);
+          const verdict = parseVerdict(textContent(response.content), review.requestId);
+          signal?.throwIfAborted();
+          audit = { ...audit, ...verdict, reviewDurationMs };
+          decisionSummary = reviewSummary(verdict.decision === "approve", verdict.reason, reviewDurationMs, reviewer);
+          // Record the exact decision before execution; audit failure blocks execution.
+          pi.appendEntry("auto-approval-review", audit);
+          showDecision(ctx, decisionSummary);
+          onUpdate?.({ content: [{ type: "text", text: decisionSummary }], details: audit });
+          if (verdict.decision === "deny") return {
+            content: [{ type: "text" as const, text: decisionSummary }],
+            details: audit, usage, isError: true,
+          };
+          ctx.ui.setStatus("auto-approval", `approved: ${name}`);
+          executionStarted = true;
+          const result = await executeIsolated(request, workspace, config.sandbox, signal);
+          return { ...result, content: [{ type: "text" as const, text: decisionSummary }, ...result.content], details: { approval: audit, result: result.details }, usage };
+        } catch (error) {
+          finishDisplay();
+          const reason = error instanceof Error ? error.message : String(error);
+          if (executionStarted) {
+            const failure = { approval: audit, executionError: reason };
+            try { pi.appendEntry("auto-approval-execution-error", failure); } catch { /* report the execution failure anyway */ }
+            return { content: [{ type: "text" as const, text: `${decisionSummary}\nApproved action failed; it may have had side effects: ${reason}` }], details: failure, usage, isError: true };
+          }
+          audit = { ...audit, decision: "deny", reason, reviewDurationMs, technicalFailure: true };
+          decisionSummary = reviewSummary(false, `Blocked; nothing executed: ${reason}`, reviewDurationMs, reviewer);
+          showDecision(ctx, decisionSummary);
+          try { pi.appendEntry("auto-approval-review", audit); } catch { /* still fail closed */ }
+          return { content: [{ type: "text" as const, text: decisionSummary }], details: audit, usage, isError: true };
+        } finally {
+          finishDisplay();
+          ctx.ui.setStatus("auto-approval", "approval: on");
+        }
+      };
+      const result = queue.then(run, run);
+      queue = result.then(() => undefined, () => undefined);
+      return await result;
+    },
+  });
+}

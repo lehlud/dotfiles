@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!package.json
+!runner.ts
+!node_modules
+!node_modules/**
