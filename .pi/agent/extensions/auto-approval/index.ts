@@ -12,6 +12,7 @@ import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { detectWorkspace, executeIsolated, validateWorkspace } from "./isolation.ts";
 import { reviewSummary, startReviewDisplay, showDecision } from "./display.ts";
+import { createApprovalRenderers } from "./renderers.ts";
 import { buildReview, parseConfig, parseVerdict, REVIEW_SYSTEM, textContent, withWatchdog, type Request } from "./policy.ts";
 
 const TOOL_NAME = "approved_action";
@@ -109,6 +110,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     description: "Submit one exact built-in operation for independent approval and, only if approved, immediate execution. No blanket approvals. Every operation needs goal and justification. Rejections and technical failures execute nothing and return an error with a reason. arguments follows the selected tool's schema.",
     promptSnippet: "Request independent approval and execution of one operation",
     parameters,
+    ...createApprovalRenderers(definitions),
     async execute(id, raw, signal, onUpdate, ctx) {
       const run = async () => {
         let usage;

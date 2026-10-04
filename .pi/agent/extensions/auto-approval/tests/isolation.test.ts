@@ -72,6 +72,22 @@ nativeTest("host secrets, environment, namespaces, and runner writes stay isolat
     expect(text).not.toContain(hostNetLink); expect(text).not.toContain(hostPidLink);
   } finally { delete process.env.PI_TEST_HOST_SECRET; }
 });
+nativeTest("project-internal build hardlinks permit reads and edits", async () => {
+  const artifact = join(project, "parser.wasm");
+  const deps = join(project, "deps"); await mkdir(deps);
+  const alias = join(deps, "parser.wasm");
+  await writeFile(artifact, "build-output"); await link(artifact, alias);
+  try {
+    expect(JSON.stringify((await run("ls", { path: ".", limit: 100 })).content)).toContain("parser.wasm");
+    expect(JSON.stringify((await run("read", { path: "parser.wasm" })).content)).toContain("build-output");
+    await run("edit", { path: "parser.wasm", edits: [{ oldText: "build-output", newText: "updated-output" }] });
+    expect(await readFile(alias, "utf8")).toBe("updated-output");
+    // A file-only view does not expose the second link, so must not be writable.
+    const projection = { ...native, backend: "bwrap", workspaceViews: [{ root: project, paths: [artifact] }] } as SandboxConfig;
+    await expect(validateWorkspace(project, projection, [])).rejects.toThrow("hardlink has aliases outside");
+    await expect(validateWorkspace(project, native, [deps])).rejects.toThrow("hardlink has aliases outside");
+  } finally { await rm(artifact); await rm(deps, { recursive: true }); }
+});
 nativeTest("escaping symlinks and host hardlinks are rejected before execution", async () => {
   const outside = join(fixture, "outside.txt"); await writeFile(outside, "private");
   const alias = join(project, "escape"); await symlink(outside, alias);
@@ -79,6 +95,16 @@ nativeTest("escaping symlinks and host hardlinks are rejected before execution",
   await rm(alias); await link(outside, alias);
   await expect(validateWorkspace(project, native, [])).rejects.toThrow("hardlink");
   await rm(alias);
+});
+nativeTest("dangling build-cache symlinks do not block unrelated project actions", async () => {
+  const broken = join(project, "stale-cache-link");
+  await symlink(join(project, "removed-cache-result.json"), broken);
+  try {
+    // Pi's normal ls omits dangling symlink entries; the operation must still run.
+    await run("ls", { path: ".", limit: 100 });
+    await run("write", { path: "unrelated.txt", content: "still usable" });
+    expect(await readFile(join(project, "unrelated.txt"), "utf8")).toBe("still usable");
+  } finally { await rm(broken, { force: true }); await rm(join(project, "unrelated.txt"), { force: true }); }
 });
 nativeTest("protected descendants are masked instead of exposing credentials", async () => {
   const hidden = join(project, "private"); await mkdir(hidden); await writeFile(join(hidden, "token"), "private");

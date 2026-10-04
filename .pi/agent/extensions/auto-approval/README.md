@@ -17,7 +17,13 @@ Die lokale Konfiguration liegt normalerweise unter `~/.pi/agent/auto-approval.js
 
 Ein direkt im Home-Verzeichnis gestartetes Pi verwendet eine eingeschränkte `workspaceViews`-Ansicht. In der lokalen Einrichtung sind darin einzelne öffentliche, versionierte Dotfile-Dateien aufgeführt. Unversionierte Dateien, Zugangsdaten und der aktive Approval-Code werden nicht eingebunden. Diese Ansicht erlaubt Änderungen an den eingebundenen Dateien, aber keine neuen Dateien in den schreibgeschützten Elternverzeichnissen. Für normale Projektarbeit Pi im jeweiligen Projektordner starten.
 
-Workspaces innerhalb der aktiven Pi-Installation, Approval-Konfiguration oder bekannten Credential-Verzeichnisse bleiben gesperrt. Geschützte Dateien innerhalb eines sonst zulässigen bwrap-Workspaces werden ausgeblendet. Verbindungen über externe Symlinks, Hardlinks und Unix-Sockets werden vor der Ausführung zurückgewiesen.
+Workspaces innerhalb der aktiven Pi-Installation, Approval-Konfiguration oder bekannten Credential-Verzeichnisse bleiben gesperrt. Geschützte Dateien innerhalb eines sonst zulässigen bwrap-Workspaces werden ausgeblendet. Hardlinks sind erlaubt, wenn sämtliche Links desselben Inodes innerhalb der eingebundenen, ungeschützten Pfade liegen. So funktionieren beispielsweise Cargo-Build-Artefakte zwischen `release` und `release/deps`. Links nach außen, in ausgeblendete Verzeichnisse und Unix-Sockets werden zurückgewiesen. Dangling Symlinks aus Build-Caches sperren den Workspace nicht; fehlende Ziele werden nicht eingebunden.
+
+## Tool-Anzeige
+
+`approved_action` verwendet die originalen Pi-Renderer des gewählten Tools. Reads behalten ihre aufklappbare Ausgabe, Syntaxhervorhebung und Hinweise auf gekürzte Inhalte. Edits zeigen den Standard-Diff mit Zeilennummern aus dem tatsächlichen Sandbox-Ergebnis. Writes, Bash und die übrigen Tools behalten ebenfalls ihre normale Darstellung. Die Approval-Entscheidung erscheint als eigener Hinweis.
+
+Die Edit-Vorschau liest vor der Freigabe keine Dateien vom Host. Der Diff wird nach der genehmigten Ausführung angezeigt und bleibt beim Aufklappen sowie beim Wiederherstellen einer Session erhalten. Abgelehnte Aktionen und Ausführungsfehler werden als solche angezeigt.
 
 ## bwrap einrichten
 

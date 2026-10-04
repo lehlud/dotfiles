@@ -70,17 +70,37 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
     }
   }
   const hidden = (path: string) => masked.some((entry) => within(entry.path, path));
+  // Rust/Cargo and other build tools use hardlinks between output and deps.
+  // The inode is writable only when every directory entry is exposed here.
+  const hardlinks = new Map<string, { path: string; expected: number; seen: number }>();
   const walk = async (path: string): Promise<void> => {
     if (hidden(path)) return;
     const stat = await lstat(path);
     if (stat.isSymbolicLink()) {
-      const target = await realpath(path);
+      // Build caches commonly leave dangling links. They expose no target;
+      // the isolated filesystem also cannot resolve missing host paths.
+      const target = await realpath(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT" || error.code === "ENOTDIR") return undefined;
+        throw error;
+      });
+      if (!target) return;
       if (hidden(target) || !bindings.some((binding) => within(binding, target))) throw new Error(`Workspace symlink escapes its exposed boundary: ${path}`);
     } else if (stat.isDirectory()) {
       for (const name of await readdir(path)) await walk(join(path, name));
-    } else if (!stat.isFile() || stat.nlink !== 1) throw new Error(`Workspace contains a special file or hardlink: ${path}`);
+    } else if (!stat.isFile()) throw new Error(`Workspace contains a special file: ${path}`);
+    else if (stat.nlink > 1) {
+      const key = `${stat.dev}:${stat.ino}`;
+      const entry = hardlinks.get(key);
+      if (entry) {
+        if (entry.expected !== stat.nlink) throw new Error(`Workspace hardlink changed during validation: ${path}`);
+        entry.seen++;
+      } else hardlinks.set(key, { path, expected: stat.nlink, seen: 1 });
+    }
   };
   for (const path of bindings) await walk(path);
+  for (const entry of hardlinks.values()) {
+    if (entry.seen !== entry.expected) throw new Error(`Workspace hardlink has aliases outside its exposed boundary: ${entry.path}`);
+  }
   return { ...detected, bindings, masked };
 }
 
