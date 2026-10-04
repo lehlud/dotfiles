@@ -4,7 +4,7 @@ Jede Agent-Aktion wird von einem unabhängigen Modell geprüft. Genehmigte Aktio
 
 ## Start und Status
 
-`~/.local/bin/pi` lädt ausschließlich diese Erweiterung und aktiviert `approved_action` als einziges Agent-Tool. Nach Änderungen an der Erweiterung Pi neu starten. `/auto-approval` zeigt Reviewer, Sandbox-Backend, Arbeitsverzeichnis, erkannten Workspace und den vollständigen Konfigurationspfad.
+Nach Änderungen an der Erweiterung Pi neu starten. `/auto-approval` zeigt Reviewer, Sandbox-Backend, Arbeitsverzeichnis, erkannten Workspace und den vollständigen Konfigurationspfad.
 
 Die lokale Konfiguration liegt normalerweise unter `~/.pi/agent/auto-approval.json`. Bei einem anderen `PI_CODING_AGENT_DIR` liegt sie in diesem Agent-Verzeichnis. Sie wird bei jeder Aktion neu gelesen und bleibt außerhalb des öffentlichen Dotfiles-Repositories.
 
