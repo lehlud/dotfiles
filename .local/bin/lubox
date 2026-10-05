@@ -1570,8 +1570,11 @@ class ContainerManager:
     def create(self, name: str, base_image: str, no_host_exec: bool, rebuild: bool, bwrap: bool = False) -> None:
         validate_box_name(name)
         if bwrap:
-            self.require_bwrap_profile()
+            if self.engine.name == "docker":
+                self.require_bwrap_profile()
             if rebuild:
+                if self.engine.name == "podman":
+                    die("lubox: --bwrap --rebuild is refused; create a new box with a different name to preserve the existing container")
                 die("lubox: --bwrap --rebuild is refused; use reconfigure NAME --bwrap on a stopped container to preserve its filesystem")
         cname = container_name(name)
         progress = Progress(f"lubox create {name}", 6)
@@ -1600,7 +1603,7 @@ class ContainerManager:
             progress.begin("create container")
             args = self.create_args(name, tag, base_image, host_exec, mount_dir, shell_path, bwrap=bwrap)
             self.engine.run_progress(args, progress)
-            if bwrap:
+            if bwrap and self.engine.name == "docker":
                 # Docker CLI cannot set MaskedPaths/ReadonlyPaths separately.
                 # Replace only this never-started template through the local API.
                 info = self.engine.inspect_container(cname, required=True)
@@ -1644,10 +1647,21 @@ class ContainerManager:
         if host_exec and not is_linux():
             self.seed_socket_forward_config(name, mount_dir, sockets.groups, sockets.gpg_home)
         self.warn_unforwarded_sockets(host_exec, sockets)
-        args = ["create", "--name", cname, "--hostname", socket.gethostname(), "--cap-add", "NET_RAW"]
+        args = ["create", "--name", cname, "--hostname", socket.gethostname()]
+        # Podman gives explicitly added capabilities to non-root users too.
+        # Unprivileged bwrap refuses to run with these inherited capabilities.
+        if self.engine.name != "podman" or not bwrap:
+            args += ["--cap-add", "NET_RAW"]
         if bwrap:
-            profile = self.require_bwrap_profile()
-            args += ["--security-opt", f"seccomp={profile}", "--label", f"{LABEL_PREFIX}.bwrap=true"]
+            if self.engine.name == "podman":
+                # Podman's default seccomp policy permits nested user namespaces.
+                # Remove locked /proc child mounts so bwrap can mount procfs in
+                # its own PID namespace; retain all other system path restrictions.
+                args += ["--security-opt", "unmask=/proc:/proc/*"]
+            else:
+                profile = self.require_bwrap_profile()
+                args += ["--security-opt", f"seccomp={profile}"]
+            args += ["--label", f"{LABEL_PREFIX}.bwrap=true"]
         args += self.key_value_args("--label", self.create_labels(name, base_image, host_exec, sockets))
         args += self.env_args(self.create_env(name, cname, shell_path, host_exec, sockets))
         if is_linux():
@@ -1660,7 +1674,7 @@ class ContainerManager:
 
     def require_bwrap_profile(self) -> pathlib.Path:
         if self.engine.name != "docker":
-            die("lubox: --bwrap currently supports Docker only")
+            die("lubox: reconfigure --bwrap currently supports Docker only; use create NAME --bwrap with Podman")
         profile = pathlib.Path(__file__).resolve().parent.parent / "share" / "lubox" / "seccomp" / "bwrap.json"
         try:
             data = profile.read_bytes()
@@ -5348,12 +5362,12 @@ destroy keeps lubox/NAME:latest by default; destroy --force also removes it.
     add_engine(p)
     p.add_argument("--no-host-exec", action="store_true", help="disable host-exec bridge")
     p.add_argument("--rebuild", action="store_true", help="recreate existing container and rebuild image")
-    p.add_argument("--bwrap", action="store_true", help="allow unprivileged bubblewrap via a narrow seccomp profile (Docker only)")
+    p.add_argument("--bwrap", action="store_true", help="allow unprivileged bubblewrap (Podman: relax /proc restrictions; Docker: also use a narrow seccomp profile)")
 
     p = sub.add_parser("reconfigure", help="migrate a stopped container without losing its writable filesystem")
     add_engine(p)
     p.add_argument("name", metavar="NAME")
-    p.add_argument("--bwrap", action="store_true", required=True, help="enable bubblewrap; refuses running containers and keeps a rollback backup")
+    p.add_argument("--bwrap", action="store_true", required=True, help="enable bubblewrap (Docker only); refuses running containers and keeps a rollback backup")
 
     p = sub.add_parser("destroy", help="stop and remove container; --force also removes image")
     add_engine(p)
