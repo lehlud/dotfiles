@@ -1,8 +1,8 @@
 import { describe, test, expect } from "bun:test";
-import { buildReview, constrainReviewPayload, parseConfig, parseVerdict, sandboxRequestSchema, textContent, withWatchdog, type Config } from "../policy.ts";
+import { buildReview, constrainReviewPayload, parseConfig, parseVerdict, sandboxRequestSchema, textContent, withWatchdog, type Config, type PortableConfig } from "../policy.ts";
 import { Check } from "typebox/value";
-const portable = { provider: "openai", model: "gpt-6-luna", thinking: "medium", recentUserPrompts: 2, requestTimeoutMs: 120000, sandbox: { backend: "bwrap" } };
-const config: Config = { ...portable, thinking: "medium", sandbox: { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/executor/runner" } };
+const portable: PortableConfig = { reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }], recentUserPrompts: 2, requestTimeoutMs: 120000, sandbox: { backend: "bwrap" } };
+const config: Config = { ...portable, sandbox: { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/executor/runner" } };
 const request = { tool: "bash", arguments: { command: "printf ok" }, goal: "Test", justification: "Smoke test" };
 
 describe("review policy", () => {
@@ -15,8 +15,8 @@ describe("review policy", () => {
     expect(data.action.sandbox).toEqual(sandbox); expect(data.sandboxPlan).toEqual(plan);
   });
   test("strict config and easily replaceable model", () => {
-    expect(parseConfig(JSON.stringify({ ...portable, provider: "other", model: "replacement", thinking: "low" })).model).toBe("replacement");
-    for (const bad of [{ ...portable, thinking: "banana" }, { ...portable, recentUserPrompts: 0 }, { ...portable, enabled: false }, { ...portable, requestTimeoutMs: -1 }]) {
+    expect(parseConfig(JSON.stringify({ ...portable, reviewers: [{ provider: "other", model: "replacement", thinking: "low" }] })).reviewers[0].model).toBe("replacement");
+    for (const bad of [{ ...portable, reviewers: [{ ...portable.reviewers[0], thinking: "banana" }] }, { ...portable, recentUserPrompts: 0 }, { ...portable, enabled: false }, { ...portable, requestTimeoutMs: -1 }]) {
       expect(() => parseConfig(JSON.stringify(bad))).toThrow();
     }
   });
@@ -25,6 +25,14 @@ describe("review policy", () => {
     for (const extra of [{ executable: "/usr/bin/bwrap" }, { runnerExecutable: "/executor/runner" }, { workspaceViews: [] }, { workspaceRoots: [] }, { hostFallback: true }, { token: "secret" }]) {
       expect(() => parseConfig(JSON.stringify({ ...portable, sandbox: { ...portable.sandbox, ...extra } }))).toThrow();
     }
+  });
+  test("reviewer priority requires a nonempty bounded list of explicit complete entries", () => {
+    const secondary = { provider: "openrouter", model: "openai/gpt-6-luna", thinking: "medium" };
+    expect(parseConfig(JSON.stringify({ ...portable, reviewers: [...portable.reviewers, secondary] })).reviewers.map((entry) => entry.provider)).toEqual(["openai", "openrouter"]);
+    for (const reviewers of [[], Array(9).fill(secondary), [secondary, secondary], [{ model: "gpt-6-luna", thinking: "medium" }], [{ ...secondary, token: "secret" }]]) {
+      expect(() => parseConfig(JSON.stringify({ ...portable, reviewers }))).toThrow();
+    }
+    expect(() => parseConfig(JSON.stringify({ ...portable, provider: "openai" }))).toThrow();
   });
   test("uses only actual raw recent user prompts from the supplied branch", () => {
     const review = buildReview(request, [

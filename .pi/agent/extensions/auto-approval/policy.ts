@@ -21,10 +21,14 @@ export const sandboxRequestSchema = Type.Object({
 }, { additionalProperties: false, minProperties: 1 });
 export type SandboxRequest = Static<typeof sandboxRequestSchema>;
 
-const reviewerProperties = {
-  provider: Type.String({ minLength: 1 }),
-  model: Type.String({ minLength: 1 }),
+export const reviewerSchema = Type.Object({
+  provider: Type.String({ minLength: 1, maxLength: 200 }),
+  model: Type.String({ minLength: 1, maxLength: 200 }),
   thinking: Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")]),
+}, { additionalProperties: false });
+export type Reviewer = Static<typeof reviewerSchema>;
+const reviewerProperties = {
+  reviewers: Type.Array(reviewerSchema, { minItems: 1, maxItems: 8, uniqueItems: true }),
   recentUserPrompts: Type.Integer({ minimum: 1, maximum: 20 }),
   // A transport watchdog, NOT the intended duration of an ordinary review.
   requestTimeoutMs: Type.Integer({ minimum: 1000, maximum: 600000 }),

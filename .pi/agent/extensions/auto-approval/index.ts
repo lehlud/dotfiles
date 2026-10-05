@@ -13,8 +13,9 @@ import { Check } from "typebox/value";
 import { detectWorkspace, executeIsolated, validateWorkspace } from "./isolation.ts";
 import { reviewSummary, startReviewDisplay, showDecision } from "./display.ts";
 import { createApprovalRenderers } from "./renderers.ts";
-import { buildReview, constrainReviewPayload, parseVerdict, REVIEW_SYSTEM, sandboxRequestSchema, textContent, withWatchdog, type Request } from "./policy.ts";
+import { buildReview, sandboxRequestSchema, type Request } from "./policy.ts";
 import { loadConfig } from "./config.ts";
+import { reviewWithFallback, reviewerLabel, ReviewChainError } from "./reviews.ts";
 
 const TOOL_NAME = "approved_action";
 const factories = {
@@ -80,7 +81,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     lock(ctx);
     try {
       const config = await loadConfig(getAgentDir());
-      ctx.ui.setStatus("auto-approval", `approval: ${config.provider}/${config.model} (${config.thinking})`);
+      ctx.ui.setStatus("auto-approval", `approval: ${config.reviewers.map(reviewerLabel).join(" → ")}`);
     } catch {
       ctx.ui.setStatus("auto-approval", "approval: LOCKED (invalid/missing config)");
     }
@@ -104,7 +105,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       try {
         const config = await loadConfig(getAgentDir());
-        ctx.ui.notify(`Auto-Approval ON\nReviewer: ${config.provider}/${config.model} (${config.thinking})\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nLocal paths/views (optional): ${localConfigPath}\nChanges take effect on the next action. No bypass/off command.`, "info");
+        ctx.ui.notify(`Auto-Approval ON\nReviewers (priority order):\n${config.reviewers.map((item, i) => `${i + 1}. ${reviewerLabel(item)}`).join("\n")}\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nLocal paths/views (optional): ${localConfigPath}\nChanges take effect on the next action. No bypass/off command.`, "info");
       } catch (error) { ctx.ui.notify(`Auto-Approval LOCKED: ${String(error)}\nConfig: ${configPath}\nLocal paths/views (optional): ${localConfigPath}`, "error"); }
     },
   });
@@ -124,7 +125,7 @@ export default function autoApproval(pi: ExtensionAPI) {
         let decisionSummary = "";
         const finishDisplay = () => {
           if (stopDisplay) {
-            reviewDurationMs = stopDisplay();
+            reviewDurationMs += stopDisplay();
             activeDisplays.delete(stopDisplay);
             stopDisplay = undefined;
           }
@@ -138,7 +139,7 @@ export default function autoApproval(pi: ExtensionAPI) {
           const validRequest: boolean = Check(parameters, request);
           if (!validRequest || !request.goal.trim() || !request.justification.trim()) throw new Error("Invalid action, goal, or justification");
           const config = await loadConfig(getAgentDir());
-          reviewer = `${config.provider}/${config.model} (${config.thinking})`;
+          reviewer = config.reviewers.map(reviewerLabel).join(" → ");
           const name = request.tool as ToolName;
           // Private built-in definitions: never resolve a same-name extension/MCP
           // override, never expose ctx.executeTool(), and never use commandPrefix.
@@ -153,31 +154,25 @@ export default function autoApproval(pi: ExtensionAPI) {
           const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
           const review = buildReview(request, ctx.sessionManager.getBranch(), config, ctx.cwd, protectedPaths, sandboxPlan);
           audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
-          const model = ctx.modelRegistry.find(config.provider, config.model);
-          if (!model) throw new Error(`Reviewer model not found: ${config.provider}/${config.model}`);
-          if (!ctx.modelRegistry.hasConfiguredAuth(model)) throw new Error(`Reviewer authentication is unavailable for ${config.provider}/${config.model}. Use /login and select ${config.provider} on this machine; credentials are private and not synced with dotfiles.`);
-          if (config.thinking !== "off" && (!model.reasoning || (model.thinkingLevelMap && model.thinkingLevelMap[config.thinking] === undefined))) throw new Error("Reviewer does not support the configured thinking level");
-          stopDisplay = startReviewDisplay(ctx, reviewer, name).stop;
-          activeDisplays.add(stopDisplay);
-          onUpdate?.({ content: [{ type: "text", text: `⠋ Auto-Approval · ${reviewer} · ${name}` }], details: { phase: "reviewing", reviewer } });
-          const response = await withWatchdog(async (reviewSignal) => {
-            const stream = ctx.modelRegistry.streamSimple(model, {
-              systemPrompt: REVIEW_SYSTEM,
-              messages: [{ role: "user", content: review.text, timestamp: Date.now() }],
-              // No tools: the reviewer can decide, never execute or delegate.
-            }, {
-              reasoning: config.thinking === "off" ? undefined : config.thinking,
-              signal: reviewSignal, maxTokens: 4096, cacheRetention: "short", sessionId: review.requestId,
-              onPayload: (payload, providerModel) => constrainReviewPayload(payload, providerModel, review.requestId),
-            });
-            return await stream.result();
-          }, config.requestTimeoutMs, signal);
-          finishDisplay();
-          usage = response.usage;
-          if (response.stopReason !== "stop") throw new Error(`Reviewer did not finish successfully (${response.stopReason})`);
-          const verdict = parseVerdict(textContent(response.content), review.requestId);
+          const checked = await reviewWithFallback(config, ctx.modelRegistry, review, {
+            start(candidate) {
+              reviewer = reviewerLabel(candidate);
+              stopDisplay = startReviewDisplay(ctx, reviewer, name).stop;
+              activeDisplays.add(stopDisplay);
+              onUpdate?.({ content: [{ type: "text", text: `⠋ Auto-Approval · ${reviewer} · ${name}` }], details: { phase: "reviewing", reviewer } });
+            },
+            finish: finishDisplay,
+            failed(attempt) {
+              pi.appendEntry("auto-approval-reviewer-failure", { toolCallId: id, requestId: review.requestId, fingerprint: review.fingerprint, attempt });
+              const text = `Reviewer unavailable · ${reviewerLabel(attempt)}\n${attempt.reason}`;
+              ctx.ui.setWidget("auto-approval", text.split("\n"));
+              onUpdate?.({ content: [{ type: "text", text }], details: { phase: "reviewing", reviewer, attempt } });
+            },
+          }, signal);
+          usage = checked.usage;
+          const verdict = checked.verdict;
           signal?.throwIfAborted();
-          audit = { ...audit, ...verdict, reviewDurationMs };
+          audit = { ...audit, ...verdict, selectedReviewer: checked.selectedReviewer, reviewAttempts: checked.attempts, reviewDurationMs };
           decisionSummary = reviewSummary(verdict.decision === "approve", verdict.reason, reviewDurationMs, reviewer);
           // Record the exact decision before execution; audit failure blocks execution.
           pi.appendEntry("auto-approval-review", audit);
@@ -193,6 +188,10 @@ export default function autoApproval(pi: ExtensionAPI) {
           return { ...result, content: [{ type: "text" as const, text: decisionSummary }, ...result.content], details: { approval: audit, result: result.details }, usage };
         } catch (error) {
           finishDisplay();
+          if (error instanceof ReviewChainError) {
+            usage = error.usage;
+            audit = { ...audit, reviewAttempts: error.attempts };
+          }
           const reason = error instanceof Error ? error.message : String(error);
           if (executionStarted) {
             const failure = { approval: audit, executionError: reason };

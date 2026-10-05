@@ -1,7 +1,8 @@
 {
-  "provider": "openai",
-  "model": "gpt-6-luna",
-  "thinking": "medium",
+  "reviewers": [
+    { "provider": "openai", "model": "gpt-6-luna", "thinking": "medium" },
+    { "provider": "openrouter", "model": "openai/gpt-6-luna", "thinking": "medium" }
+  ],
   "recentUserPrompts": 6,
   "requestTimeoutMs": 120000,
   "sandbox": {

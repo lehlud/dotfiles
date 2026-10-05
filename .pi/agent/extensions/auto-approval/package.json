@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test tests/config.test.ts tests/policy.test.ts tests/extension.test.ts tests/renderers.test.ts && bun test tests/isolation.test.ts",
+    "test": "bun test tests/config.test.ts tests/reviews.test.ts tests/policy.test.ts tests/extension.test.ts tests/renderers.test.ts && bun test tests/isolation.test.ts",
     "check": "tsc --noEmit"
   },
   "dependencies": {

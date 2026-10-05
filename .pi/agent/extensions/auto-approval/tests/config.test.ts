@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { loadConfig, resolveConfig } from "../config.ts";
 import { parseConfig, parseLocalConfig, type PortableConfig } from "../policy.ts";
 
-const portable: PortableConfig = { provider: "openai", model: "gpt-6-luna", thinking: "medium", recentUserPrompts: 6, requestTimeoutMs: 120000, sandbox: { backend: "bwrap" } };
+const portable: PortableConfig = { reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }], recentUserPrompts: 6, requestTimeoutMs: 120000, sandbox: { backend: "bwrap" } };
 let directory: string;
 let bin: string;
 beforeEach(async () => {
@@ -28,7 +28,7 @@ test("same portable config resolves against each device home without adding work
 test("normal project configuration loads without a local file or persistent changes", async () => {
   const before = await readFile(join(directory, "auto-approval.json"), "utf8");
   const config = await loadConfig(directory, { home: directory, searchPath: bin });
-  expect(config.model).toBe("gpt-6-luna");
+  expect(config.reviewers[0].model).toBe("gpt-6-luna");
   expect(await readFile(join(directory, "auto-approval.json"), "utf8")).toBe(before);
   expect((await readdir(directory)).sort()).toEqual(["auto-approval.json", "bin"]);
 });
@@ -39,7 +39,7 @@ test("local paths and restricted views merge without changing shared settings an
   await writeFile(localPath, JSON.stringify({ sandbox }));
   const config = await loadConfig(directory, { searchPath: "" });
   expect(config.sandbox).toEqual({ backend: "bwrap", ...sandbox });
-  expect(config.model).toBe(portable.model);
+  expect(config.reviewers[0].model).toBe(portable.reviewers[0].model);
   await writeFile(localPath, JSON.stringify({ sandbox: { ...sandbox, runnerExecutable: "/new/runner" } }));
   expect((await loadConfig(directory, { searchPath: "" })).sandbox).toMatchObject({ runnerExecutable: "/new/runner" });
   expect(JSON.parse(await readFile(join(directory, "auto-approval.json"), "utf8"))).toEqual(portable);

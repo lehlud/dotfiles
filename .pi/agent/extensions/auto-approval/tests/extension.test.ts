@@ -29,7 +29,7 @@ mock.module("../isolation.ts", () => ({
 const { default: extension } = await import("../index.ts");
 const configPath = join(agentRoot, "auto-approval.json");
 const localConfigPath = join(agentRoot, "auto-approval.device.json");
-const config = { provider: "openai", model: "gpt-6-luna", thinking: "medium", recentUserPrompts: 6, requestTimeoutMs: 120000, sandbox: { backend: "docker", image: `sha256:${"a".repeat(64)}` } };
+const config = { reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }], recentUserPrompts: 6, requestTimeoutMs: 120000, sandbox: { backend: "docker", image: `sha256:${"a".repeat(64)}` } };
 const usage = { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 20, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 let mode: "approve" | "deny" | "invalid" | "error" | "mismatch" = "approve";
 let requested: any[];
@@ -172,7 +172,7 @@ test("missing and invalid config fail closed without reviewer or execution", asy
   expect(await exists(join(root, "invalid-config"))).toBe(false);
 });
 test("config is hot-read; reviewer is replaceable without a restart", async () => {
-  await writeFile(configPath, JSON.stringify({ ...config, provider: "replacement-provider", model: "replacement-model", thinking: "low" }));
+  await writeFile(configPath, JSON.stringify({ ...config, reviewers: [{ provider: "replacement-provider", model: "replacement-model", thinking: "low" }] }));
   expect((await call(bash("printf switched"))).isError).not.toBe(true);
   expect(requested[0].model.id).toBe("replacement-model");
   expect(requested[0].model.provider).toBe("replacement-provider");
@@ -245,6 +245,66 @@ test("OpenRouter session cannot replace the configured direct OpenAI reviewer", 
   expect(requested[0].model.provider).toBe("openai");
   expect(requested[0].model.id).toBe("gpt-6-luna");
 });
+const fallback = { provider: "openrouter", model: "openai/gpt-6-luna", thinking: "medium" };
+const chainConfig = { ...config, reviewers: [...config.reviewers, fallback] };
+test("explicit authenticated fallback is executed once and audited with the original request", async () => {
+  await writeFile(configPath, JSON.stringify(chainConfig));
+  ctx.modelRegistry.hasConfiguredAuth = (model) => model.provider === "openrouter";
+  const result = await call(bash("printf explicit-fallback"));
+  expect(result.isError).not.toBe(true); expect(executedRequests).toHaveLength(1);
+  const audit = result.details.approval;
+  expect(audit.selectedReviewer).toEqual(fallback);
+  expect(audit.reviewAttempts.map((attempt: any) => attempt.status)).toEqual(["failed", "approve"]);
+  const failure = entries.find((entry) => entry.customType === "auto-approval-reviewer-failure");
+  expect(failure.data.requestId).toBe(audit.requestId); expect(failure.data.fingerprint).toBe(audit.fingerprint);
+  expect(requested[0].model.provider).toBe("openrouter"); expect(requested[0].model.id).toBe("openai/gpt-6-luna");
+  ctx.modelRegistry.hasConfiguredAuth = () => true;
+  await call(bash("printf back-to-priority-one"));
+  expect(requested[1].model.provider).toBe("openai");
+});
+test("technical fallback keeps an immutable action and includes billed usage from both attempts", async () => {
+  await writeFile(configPath, JSON.stringify(chainConfig));
+  const args = bash("printf immutable-fallback-action");
+  responseHook = () => {
+    mode = requested.at(-1).model.provider === "openai" ? "error" : "approve";
+    args.arguments.command = "touch mutated-fallback-action";
+  };
+  const result = await call(args);
+  expect(result.isError).not.toBe(true); expect(executedRequests).toHaveLength(1);
+  expect(requested.map((request) => request.data.action.arguments.command)).toEqual(["printf immutable-fallback-action", "printf immutable-fallback-action"]);
+  expect(requested[0].data.requestId).toBe(requested[1].data.requestId);
+  expect(result.usage?.totalTokens).toBe(40); expect(result.details.approval.selectedReviewer).toEqual(fallback);
+  expect(await exists(join(root, "mutated-fallback-action"))).toBe(false);
+});
+test("valid primary and fallback denials are final and never execute", async () => {
+  await writeFile(configPath, JSON.stringify(chainConfig)); mode = "deny";
+  expect((await call(bash("touch denied-chain"))).isError).toBe(true);
+  expect(requested).toHaveLength(1); expect(executedRequests).toHaveLength(0);
+  responseHook = () => { mode = requested.at(-1).model.provider === "openai" ? "error" : "deny"; };
+  const result = await call(bash("touch fallback-denied-chain"));
+  expect(result.isError).toBe(true); expect(result.details.selectedReviewer).toEqual(fallback);
+  expect(result.details.decision).toBe("deny"); expect(result.details.technicalFailure).toBeUndefined();
+  expect(executedRequests).toHaveLength(0);
+});
+test("invalid verdicts and cancellation never use the configured fallback", async () => {
+  await writeFile(configPath, JSON.stringify(chainConfig)); mode = "mismatch";
+  const invalid = await call(bash("touch wrong-verdict-chain"));
+  expect(invalid.isError).toBe(true); expect(requested).toHaveLength(1);
+  expect(invalid.details.reviewAttempts[0].status).toBe("invalid");
+  const controller = new AbortController(); responseHook = () => controller.abort();
+  expect((await call(bash("touch cancelled-chain"), controller.signal)).isError).toBe(true);
+  expect(requested).toHaveLength(2); expect(executedRequests).toHaveLength(0);
+});
+test("failure audit errors block the fallback and all exhausted reviewers block execution", async () => {
+  await writeFile(configPath, JSON.stringify(chainConfig));
+  ctx.modelRegistry.hasConfiguredAuth = () => false; auditFails = true;
+  expect((await call(bash("touch failed-fallback-audit"))).isError).toBe(true);
+  expect(requested).toHaveLength(0); expect(executedRequests).toHaveLength(0);
+  auditFails = false;
+  const result = await call(bash("touch exhausted-reviewers"));
+  expect(result.isError).toBe(true); expect(result.details.reviewAttempts).toHaveLength(2);
+  expect(result.details.technicalFailure).toBe(true); expect(executedRequests).toHaveLength(0);
+});
 test("review plus execution is serialized for concurrent calls", async () => {
   const results = await Promise.all([call(bash("printf first >> order.txt")), call(bash("printf second >> order.txt"))]);
   expect(results.every((r) => !r.isError), JSON.stringify(results)).toBe(true);
@@ -258,7 +318,7 @@ test("symlink aliases cannot write approval configuration", async () => {
   const result = await call({ tool: "write", arguments: { path: alias, content: "{}" }, goal: "Disable", justification: "Bypass via alias" });
   expect(result.isError).toBe(true);
   expect(requested).toHaveLength(0);
-  expect(JSON.parse(await readFile(configPath, "utf8")).model).toBe("gpt-6-luna");
+  expect(JSON.parse(await readFile(configPath, "utf8")).reviewers[0].model).toBe("gpt-6-luna");
 });
 
 test("approved writes and edits are independently reviewed", async () => {

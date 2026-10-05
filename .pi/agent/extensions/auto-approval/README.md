@@ -8,7 +8,7 @@ Nach Änderungen an der Erweiterung Pi neu starten. `/auto-approval` zeigt Revie
 
 `~/.pi/agent/auto-approval.json` wird im öffentlichen Dotfiles-Repository synchronisiert. Sie enthält Modell, Prüfeinstellungen und Sandbox-Backend, aber keine Gerätepfade oder Workspace-Freigaben. Optionale lokale Pfade und Freigaben stehen in `auto-approval.device.json`; diese Datei bleibt von Git ausgeschlossen. Bei einem anderen `PI_CODING_AGENT_DIR` liegen beide Dateien dort. Sie werden bei jeder Aktion neu gelesen.
 
-Der konfigurierte Reviewer nutzt `openai` mit Modell-ID `gpt-6-luna`, unabhängig vom Anbieter des Hauptmodells. Die OpenAI-Anmeldung muss auf jedem Rechner vorhanden sein; `/login` mit Auswahl `openai` richtet sie in Pi ein. Zugangsdaten bleiben privat und werden nicht mit den Dotfiles synchronisiert.
+`reviewers` enthält die Prüfmodelle in Prioritätsreihenfolge. Zuerst wird `openai` mit Modell-ID `gpt-6-luna` verwendet, danach der ausdrücklich konfigurierte Fallback `openrouter` mit `openai/gpt-6-luna`. Nur die Einträge dieser Liste werden versucht, unabhängig vom Hauptmodell. Fehlende Anmeldung, fehlende Modelle, nicht unterstützte Thinking-Level, Transportfehler und Zeitüberschreitungen erlauben den nächsten Versuch. Eine gültige Ablehnung ist endgültig. Ungültige oder einer anderen Anfrage zugeordnete Urteile sperren die Aktion ohne Fallback. Zugangsdaten bleiben privat; `/login` richtet den jeweiligen Anbieter pro Rechner ein.
 
 ## Automatische Workspace-Erkennung
 
@@ -73,9 +73,10 @@ Eine portable `auto-approval.json` sieht so aus:
 
 ```json
 {
-  "provider": "openai",
-  "model": "gpt-6-luna",
-  "thinking": "medium",
+  "reviewers": [
+    { "provider": "openai", "model": "gpt-6-luna", "thinking": "medium" },
+    { "provider": "openrouter", "model": "openai/gpt-6-luna", "thinking": "medium" }
+  ],
   "recentUserPrompts": 6,
   "requestTimeoutMs": 120000,
   "sandbox": {
@@ -102,7 +103,7 @@ Das Backend wird explizit gewählt. Wenn er nicht startet, wird keine Aktion auf
 
 Das Hauptmodell verwendet ausschließlich `approved_action` mit `tool`, den unveränderten Pi-`arguments`, `goal` und `justification`. Unterstützt werden `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find` und `ls`.
 
-Der Reviewer erhält tatsächliche Nutzerprompts des aktiven Session-Zweigs, die genaue Aktion, Ziel, Begründung, Arbeitsverzeichnis, geschützte Pfade und frühere Ablehnungen. Er erhält keine eigenen Tools. Ein gültiges Urteil gilt nur für die konkrete Anfrage. Prüfung und Ausführung sind serialisiert; Freigaben werden nicht wiederverwendet.
+Der Reviewer erhält tatsächliche Nutzerprompts des aktiven Session-Zweigs, die genaue Aktion, Ziel, Begründung, Arbeitsverzeichnis, geschützte Pfade und frühere Ablehnungen. Er erhält keine eigenen Tools. Bei einem Fallback bleiben Anfrage, Request-ID und Fingerprint unverändert. Jeder Versuch und das tatsächlich entscheidende Prüfmodell werden protokolliert; Tokenverbrauch und Kosten werden über die Versuche addiert. `requestTimeoutMs` gilt je Prüfmodell. Ein gültiges Urteil gilt nur für die konkrete Anfrage. Prüfung und Ausführung sind serialisiert; Freigaben werden nicht wiederverwendet.
 
 Die Prüfung bewertet Berechtigung und Sicherheitsrisiken. Eine gewünschte Quelltextänderung erlaubt normalerweise auch passende Tests, Dokumentation und lokale Prüfläufe. Für begrenzte Edits oder vollständig sichtbare Python-/Shell-Änderungen müssen nicht erst sämtliche betroffenen Dateien vollständig gelesen werden. Mögliche Programmierfehler, falsche Testannahmen oder eine bevorzugte Arbeitsreihenfolge sind allein kein Ablehnungsgrund. Zusätzliche Informationen sind erforderlich, wenn ein konkretes Risiko ohne sie nicht beurteilt werden kann. Secret-Zugriffe, sachfremde Änderungen, unbegründetes großflächiges Löschen und Eingriffe in die Approval-Sperre bleiben untersagt.
 
