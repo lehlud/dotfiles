@@ -18,6 +18,7 @@ import { assertSandboxReady, loadConfig } from "./config.ts";
 import { reviewWithFallback, reviewerLabel, ReviewChainError } from "./reviews.ts";
 import { removeSessionTemporaryDirectory } from "./temporary-storage.ts";
 import { registerGoals } from "./goals.ts";
+import { registerSide } from "./side.ts";
 import { isWebTool, webTools } from "../web-research/index.ts";
 import { resolveWebRuntime, reviewedWebRequest } from "../web-research/runtime.ts";
 import { webExecutionPlan } from "../web-research/execute.ts";
@@ -64,6 +65,7 @@ const LOCK_MESSAGE = "Auto-Approval: direct and alternative tools are blocked. U
 
 export default function autoApproval(pi: ExtensionAPI) {
   const operatorGoal = registerGoals(pi);
+  registerSide(pi);
   // Serialize review AND execution, not just the model requests. No shared approval
   // flag, reusable token, bypass environment variable, or agent-callable off switch.
   let queue: Promise<unknown> = Promise.resolve();
