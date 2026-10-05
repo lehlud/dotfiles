@@ -7,8 +7,9 @@ import { homedir } from "node:os";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { Config, Request, SandboxRequest } from "./policy.ts";
 import { resolveLocalTools, toolRuntimeDirectory, type LocalTool } from "./local-tools.ts";
+import type { WebRuntime } from "../web-research/runtime.ts";
 export type SandboxConfig = Config["sandbox"];
-export type Workspace = { path: string; cwd: string; bindings: string[]; readOnlyBindings?: string[]; searchPaths?: string[]; localTools?: LocalTool[]; temporaryDirectory?: string; masked: { path: string; directory: boolean }[] };
+export type Workspace = { path: string; cwd: string; bindings: string[]; readOnlyBindings?: string[]; searchPaths?: string[]; localTools?: LocalTool[]; webRuntime?: WebRuntime; temporaryDirectory?: string; masked: { path: string; directory: boolean }[] };
 const within = (root: string, path: string) => {
   const rel = relative(root, path);
   return rel === "" || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel));
@@ -227,6 +228,13 @@ function localToolArguments(workspace: Workspace, native: boolean): string[] {
   return sources.flatMap(({ source, target }) => native ? ["--ro-bind", source, target] : ["--mount", `type=bind,src=${source},dst=${target},bind-recursive=disabled,readonly`]);
 }
 
+function webRuntimeArguments(workspace: Workspace, native: boolean): string[] {
+  if (!workspace.webRuntime) return [];
+  const { dependencies, worker } = workspace.webRuntime;
+  return [{ source: dependencies, target: "/opt/pi-web/dependencies" }, { source: worker, target: "/opt/pi-web/worker.py" }]
+    .flatMap(({ source, target }) => native ? ["--ro-bind", source, target] : ["--mount", `type=bind,src=${source},dst=${target},bind-recursive=disabled,readonly`]);
+}
+
 export function sandboxArguments(workspace: Workspace, config: SandboxConfig, name: string, request?: SandboxRequest) {
   const limits = request?.limits;
   const uid = getuid?.() ?? 501;
@@ -245,6 +253,7 @@ export function sandboxArguments(workspace: Workspace, config: SandboxConfig, na
     ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
     ...workspace.bindings.flatMap((path) => ["--mount", `type=bind,src=${path},dst=${path},bind-recursive=disabled${workspace.readOnlyBindings?.includes(path) ? ",readonly" : ""}`]),
     ...localToolArguments(workspace, false),
+    ...webRuntimeArguments(workspace, false),
     "--workdir", workspace.cwd, "--entrypoint", workspace.localTools?.length ? "/bin/bash" : "/usr/local/bin/bun", config.image,
     ...(workspace.localTools?.length ? ["/opt/pi-tools/runtime/bootstrap.sh", ...workspace.localTools.map((tool) => tool.name), "--", "/usr/local/bin/bun"] : []), "/executor/runner.ts"];
   const args = ["--unshare-all", "--unshare-user", "--disable-userns", "--die-with-parent", "--new-session",
@@ -269,6 +278,7 @@ export function sandboxArguments(workspace: Workspace, config: SandboxConfig, na
     else args.push("--ro-bind", "/dev/null", entry.path);
   }
   args.push(...localToolArguments(workspace, true));
+  args.push(...webRuntimeArguments(workspace, true));
   // Projected parent directories are ephemeral and read-only. Only mounts persist.
   if (!workspace.bindings.includes(workspace.path)) args.push("--remount-ro", workspace.path);
   args.push("--chdir", workspace.cwd, ...(workspace.localTools?.length ? ["/bin/bash", "/opt/pi-tools/runtime/bootstrap.sh", ...workspace.localTools.map((tool) => tool.name), "--"] : []), "/executor/runner");

@@ -12,6 +12,8 @@ const runner = join(home, ".local", "cache", "pi-auto-approval", "executor");
 const portable = { reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }], recentUserPrompts: 6, requestTimeoutMs: 120000, sandbox: { backend: "bwrap" } };
 beforeAll(async () => {
   await mkdir(source, { recursive: true });
+  await mkdir(join(source, "../web-research"), { recursive: true });
+  for (const name of ["index.ts", "execute.ts", "package.json", "bun.lock"]) await copyFile(join(import.meta.dir, "../../web-research", name), join(source, "../web-research", name));
   for (const name of ["package.json", "bun.lock", "config.ts", "policy.ts"]) await copyFile(join(import.meta.dir, "..", name), join(source, name));
   await writeFile(join(source, "runner.ts"), 'console.log("first executor");\n');
   await writeFile(join(agent, "auto-approval.json"), JSON.stringify(portable));
@@ -48,6 +50,19 @@ test("startup validates custom executors without overwriting them", async () => 
   await prepareExecutor(source, home, agent);
   expect(await readFile(custom, "utf8")).toBe("#!/bin/sh\nexit 0\n");
   await rm(local);
+});
+
+test("startup rebuilds compiled web code after an extension update", async () => {
+  await writeFile(join(agent, "auto-approval.json"), JSON.stringify(portable));
+  await writeFile(join(agent, "auto-approval.device.json"), JSON.stringify({ sandbox: { executable: process.execPath } }));
+  const web = join(source, "../web-research/execute.ts");
+  await writeFile(web, 'export const fixture = "first web implementation";\n');
+  await writeFile(join(source, "runner.ts"), 'import { fixture } from "../web-research/execute.ts"; console.log(fixture);\n');
+  await prepareExecutor(source, home, agent);
+  expect(Bun.spawnSync([runner]).stdout.toString()).toContain("first web implementation");
+  await writeFile(web, 'export const fixture = "updated web implementation";\n');
+  await prepareExecutor(source, home, agent);
+  expect(Bun.spawnSync([runner]).stdout.toString()).toContain("updated web implementation");
 });
 
 test("Docker startup leaves the native executor untouched", async () => {

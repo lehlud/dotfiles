@@ -45,7 +45,7 @@ _pi_download() {
 
 _pi_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/pi")"
 
-# Mandatory approval: only the trusted gate may load executable extensions.
+# Mandatory approval: only the trusted gate and web extension may load.
 # Model actions run in its isolated executor, never in this host shell.
 for _arg in "$@"; do
     case "$_arg" in
@@ -57,8 +57,13 @@ for _arg in "$@"; do
 done
 
 _gate="$HOME/.pi/agent/extensions/auto-approval/index.ts"
+_web="$HOME/.pi/agent/extensions/web-research/index.ts"
 if [ ! -r "$_gate" ]; then
     printf 'pi: mandatory approval gate is missing; startup blocked\n' >&2
+    exit 1
+fi
+if [ ! -r "$_web" ]; then
+    printf 'pi: web-research extension is missing; startup blocked\n' >&2
     exit 1
 fi
 
@@ -69,10 +74,13 @@ if auto_update_ensure_tar_app pi "$_pi_cache_dir" pi pi/pi 3 _pi_download https:
         printf 'pi: Bun is required to prepare Auto-Approval; startup blocked\n' >&2
         exit 1
     fi
+    if ! bun "${_web%/*}/bootstrap.ts" >&2; then
+        exit 1
+    fi
     if ! bun "${_gate%/*}/bootstrap.ts" >&2; then
         exit 1
     fi
-    exec "$_pi_cache_dir/pi/pi" --no-extensions --extension "$_gate" --no-approve --tools approved_action "$@"
+    exec "$_pi_cache_dir/pi/pi" --no-extensions --extension "$_gate" --extension "$_web" --no-approve --tools approved_action "$@"
 fi
 
 exit 1

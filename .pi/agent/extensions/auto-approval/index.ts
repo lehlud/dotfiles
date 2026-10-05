@@ -18,6 +18,9 @@ import { assertSandboxReady, loadConfig } from "./config.ts";
 import { reviewWithFallback, reviewerLabel, ReviewChainError } from "./reviews.ts";
 import { removeSessionTemporaryDirectory } from "./temporary-storage.ts";
 import { registerGoals } from "./goals.ts";
+import { isWebTool, webTools } from "../web-research/index.ts";
+import { resolveWebRuntime, reviewedWebRequest } from "../web-research/runtime.ts";
+import { webExecutionPlan } from "../web-research/execute.ts";
 
 const TOOL_NAME = "approved_action";
 const factories = {
@@ -25,6 +28,8 @@ const factories = {
   powershell: createPowerShellToolDefinition, edit: createEditToolDefinition,
   write: createWriteToolDefinition, grep: createGrepToolDefinition,
   find: createFindToolDefinition, ls: createLsToolDefinition,
+  websearch: (_cwd: string) => webTools.websearch,
+  webfetch: (_cwd: string) => webTools.webfetch,
 };
 type ToolName = keyof typeof factories;
 const toolNames = Object.keys(factories) as ToolName[];
@@ -75,6 +80,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     sourceDir, getAgentDir(), join(homedir(), ".docker"), join(homedir(), ".ssh"), join(homedir(), ".aws"),
     join(homedir(), ".gnupg"), join(homedir(), ".codex"), join(homedir(), ".claude"),
     join(homedir(), ".local", "cache", "pi"),
+    join(homedir(), ".local", "cache", "pi-web-research"),
     join(homedir(), ".local", "bin", "pi"),
     join(homedir(), ".local", "bin", "auto-update-app.bash"),
     process.execPath,
@@ -126,7 +132,7 @@ export default function autoApproval(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: TOOL_NAME, label: "Reviewed action", exposure: "model-only", executionMode: "sequential",
-    description: "Submit one exact built-in operation for independent approval and, only if approved, immediate execution. Optional sandbox requests additional paths/read-write rights, network, literal environment variables, executable search paths, local tools or limits for this action only; explain necessity in justification. Use sandbox.tools: [node] for nvm/node/npm/npx or [sqlmap] for the local sqlmap launcher. Installed code stays read-only; version choices, caches and auto-updates persist only in session-private /tmp. Include tools on each action that needs them. npm install or tool downloads require the shell flag network: true (or sandbox.network: host), independently reviewed before execution. Network permission applies only to this new process and its descendants; existing processes stay isolated. Tools never enable networking automatically. The reviewer checks every expansion against the real user request. No blanket approvals. Every operation needs goal and justification. arguments follows the selected tool's schema.",
+    description: "Submit one exact operation for independent approval and, only if approved, immediate execution. websearch uses DDGS (query, optional maxResults/region/timeLimit); webfetch reads one URL as clean plain text (url, optional maxChars/offset). Web operations request per-action network access before review. Optional sandbox requests additional paths/read-write rights, network, literal environment variables, executable search paths, local tools or limits for this action only; explain necessity in justification. Use sandbox.tools: [node] for nvm/node/npm/npx or [sqlmap] for the local sqlmap launcher. Installed code stays read-only; version choices, caches and auto-updates persist only in session-private /tmp. Include tools on each action that needs them. npm install or tool downloads require the shell flag network: true (or sandbox.network: host), independently reviewed before execution. Network permission applies only to this new process and its descendants; existing processes stay isolated. The reviewer checks every expansion against the real user request. No blanket approvals. Every operation needs goal and justification. arguments follows the selected tool's schema.",
     promptSnippet: "Request independent approval and execution of one operation",
     parameters,
     ...createApprovalRenderers(definitions),
@@ -153,7 +159,7 @@ export default function autoApproval(pi: ExtensionAPI) {
           const snapshot = structuredClone(raw) as Request;
           const validRequest: boolean = Check(parameters, snapshot);
           if (!validRequest || !snapshot.goal.trim() || !snapshot.justification.trim()) throw new Error("Invalid action, goal, or justification");
-          const request = normalizeNetworkFlag(snapshot);
+          const request = reviewedWebRequest(normalizeNetworkFlag(snapshot));
           const config = await loadConfig(getAgentDir());
           await assertSandboxReady(config);
           reviewer = config.reviewers.map(reviewerLabel).join(" → ");
@@ -164,12 +170,13 @@ export default function autoApproval(pi: ExtensionAPI) {
           if (!Check(tool.parameters, request.arguments)) throw new Error("Invalid underlying tool arguments");
           const privateTmp = await sessionTemporaryDirectory();
           const workspace = await validateWorkspace(ctx.cwd, config.sandbox, protectedPaths, request.sandbox, privateTmp);
+          if (isWebTool(name) && config.sandbox.backend === "bwrap") workspace.webRuntime = await resolveWebRuntime();
           if (name === "write" || name === "edit") {
             const path = await canonicalPath(sandboxHostPath(workspace, String(request.arguments.path)));
             const roots = await protectedRoots;
             if (roots.some((p) => path === p || path.startsWith(`${p}/`))) throw new Error("The agent cannot modify Pi installation, approval code, configuration, or credentials");
           }
-          const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], localTools: workspace.localTools ?? [], localToolStorage: workspace.localTools?.length ? { path: "/tmp/pi-tools", lifetime: "Pi session", updates: "private copies only" } : undefined, temporaryStorage: { path: "/tmp", lifetime: "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
+          const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], localTools: workspace.localTools ?? [], webRuntime: isWebTool(name) ? { ...(workspace.webRuntime ?? { imageBundled: true }), readOnly: true, execution: webExecutionPlan(request) } : undefined, localToolStorage: workspace.localTools?.length ? { path: "/tmp/pi-tools", lifetime: "Pi session", updates: "private copies only" } : undefined, temporaryStorage: { path: "/tmp", lifetime: "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
           const review = buildReview(request, ctx.sessionManager.getBranch(), config, ctx.cwd, protectedPaths, sandboxPlan, operatorGoal());
           audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
           const checked = await reviewWithFallback(config, ctx.modelRegistry, review, {
@@ -200,6 +207,10 @@ export default function autoApproval(pi: ExtensionAPI) {
           };
           ctx.ui.setStatus("auto-approval", `approved: ${name}`);
           executionStarted = true;
+          if (isWebTool(name)) {
+            const result = await executeIsolated(request, workspace, config.sandbox, signal);
+            return { ...result, details: { approval: audit, approvalSummary: decisionSummary, result: result.details }, usage };
+          }
           const result = await executeIsolated(request, workspace, config.sandbox, signal);
           return { ...result, content: [{ type: "text" as const, text: decisionSummary }, ...result.content], details: { approval: audit, result: result.details }, usage };
         } catch (error) {

@@ -25,6 +25,7 @@ mock.module("../isolation.ts", () => ({
   executeIsolated: async (request: any, workspace: { path: string }, _config: unknown, signal?: AbortSignal) => {
     const cwd = workspace.path;
     executedRequests.push(structuredClone(request));
+    if (["websearch", "webfetch"].includes(request.tool)) return { content: [{ type: "text", text: "Readable public page." }], details: { finalUrl: "https://example.com/", hasMore: false } };
     const factories: any = { bash: createBashToolDefinition, read: createReadToolDefinition, write: createWriteToolDefinition, edit: createEditToolDefinition };
     return await factories[request.tool](cwd).execute("test-only", request.arguments, signal, undefined, ctx);
   },
@@ -175,6 +176,31 @@ test("denial returns reason without executing", async () => {
   expect(result.isError).toBe(true);
   expect(JSON.stringify(result.content)).toContain("Nicht vom Nutzer gewollt");
   expect(await exists(join(root, "denied-sentinel"))).toBe(false);
+});
+test("web operations review exact input and networking before isolated execution", async () => {
+  const args = { tool: "webfetch", arguments: { url: "https://example.com/" }, goal: "Research", justification: "Read a public source" };
+  responseHook = () => { args.arguments.url = "http://localhost/admin"; };
+  const result = await call(args);
+  expect(result.isError).not.toBe(true);
+  expect(requested[0].data.action.sandbox.network).toBe("host");
+  expect(requested[0].data.sandboxPlan.webRuntime.execution.stdin.arguments.url).toBe("https://example.com/");
+  expect(executedRequests[0].arguments.url).toBe("https://example.com/");
+  expect(result.content).toEqual([{ type: "text", text: "Readable public page." }]);
+  expect(result.details.approvalSummary).toContain("Passt zur Aufgabe");
+  responseHook = undefined;
+  await call(bash("printf offline-next"));
+  expect(executedRequests[1].sandbox).toBeUndefined();
+});
+test("web denials and invalid expansions cannot execute or ask another reviewer", async () => {
+  mode = "deny";
+  const args = { tool: "websearch", arguments: { query: "Python documentation" }, goal: "Research", justification: "Find official sources" };
+  expect((await call(args)).isError).toBe(true);
+  expect(executedRequests).toHaveLength(0); expect(requested).toHaveLength(1);
+  mode = "approve";
+  expect((await call({ ...args, sandbox: { network: "none" } })).isError).toBe(true);
+  expect((await call({ ...args, arguments: { query: "secret", command: "id" } })).isError).toBe(true);
+  expect(executedRequests).toHaveLength(0); expect(requested).toHaveLength(1);
+  expect((await hooks.tool_call({ toolName: "websearch" }, ctx)).block).toBe(true);
 });
 test("sandbox expansion is reviewed with the action, executed exactly, and never retained", async () => {
   const sandbox = { paths: [{ path: "/tmp/shared-source", access: "read" }], network: "host", environment: { BUILD_MODE: "test" }, limits: { executionTimeoutMs: 900000 } };

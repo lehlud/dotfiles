@@ -6,6 +6,7 @@ import {
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { createApprovalRenderers } from "../renderers.ts";
+import { webTools } from "../../web-research/index.ts";
 
 initTheme("dark", false);
 const cwd = "/tmp/approval-renderer-fixture";
@@ -122,6 +123,18 @@ test("one-command network and selected tool bundles are visible", () => {
   }, undefined, renderers, ui, cwd);
   expect(display(component)).toContain("tool: node");
   expect(display(component)).toContain("network: host");
+});
+test("web approval stays visible in the activity log while model content is only page text", () => {
+  const component = row("webfetch", { url: "https://example.com/" }, createApprovalRenderers({ ...tools, ...webTools }));
+  const page = Array.from({ length: 30 }, (_, i) => `Page paragraph ${i}`).join("\n");
+  const result = { isError: false, content: [{ type: "text", text: page }], details: { approval: { decision: "approve" }, approvalSummary: "✓ Auto-Approval · allowed", result: { hasMore: true, nextOffset: 20000 } } };
+  component.updateResult(result);
+  expect(display(component)).toContain("✓ Auto-Approval · allowed");
+  expect(display(component)).toContain("Page paragraph 0");
+  expect(display(component)).not.toContain("Page paragraph 29");
+  component.setExpanded(true);
+  expect(display(component)).toContain("Page paragraph 29");
+  expect(result.content).toEqual([{ type: "text", text: page }]);
 });
 
 test("executor errors remain visible and do not enter native success rendering", () => {

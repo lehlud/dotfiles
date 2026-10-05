@@ -1,0 +1,15 @@
+*
+!auto-approval/
+!auto-approval/Dockerfile
+!auto-approval/package.json
+!auto-approval/runner.ts
+!auto-approval/node_modules/
+!auto-approval/node_modules/**
+!web-research/
+!web-research/package.json
+!web-research/index.ts
+!web-research/execute.ts
+!web-research/worker.py
+!web-research/requirements.txt
+!web-research/node_modules/
+!web-research/node_modules/**

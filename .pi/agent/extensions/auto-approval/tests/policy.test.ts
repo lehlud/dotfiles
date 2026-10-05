@@ -5,6 +5,22 @@ const portable: PortableConfig = { reviewers: [{ provider: "openai", model: "gpt
 const config: Config = { ...portable, sandbox: { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/executor/runner" } };
 const request = { tool: "bash", arguments: { command: "printf ok" }, goal: "Test", justification: "Smoke test" };
 
+test("page-only web results remain auditable evidence without dropping their first content block", () => {
+  const action = { tool: "webfetch", arguments: { url: "https://example.com/" } };
+  const audit = { toolCallId: "web", requestId: "review-id", fingerprint: "fingerprint", decision: "approve", action, cwd: "/project" };
+  const receipt = { approval: { ...audit }, approvalSummary: "approved", result: { finalUrl: "https://example.com/" } };
+  const entries = [
+    { type: "message", message: { role: "user", content: "Research public sources" } },
+    { type: "custom", customType: "auto-approval-review", data: audit },
+    { type: "message", message: { role: "toolResult", toolName: "approved_action", toolCallId: "web", content: [{ type: "text", text: "Complete public page." }], details: receipt } },
+  ];
+  const data = () => JSON.parse(buildReview(request, entries, config, "/project", []).text);
+  expect(data().reviewedContext[0].content).toEqual([{ type: "text", text: "Complete public page." }]);
+  expect(data().reviewedContext[0].arguments.url).toBe("https://example.com/");
+  receipt.approval.fingerprint = "forged";
+  expect(data().reviewedContext).toEqual([]);
+});
+
 describe("review policy", () => {
   test("local tool names and single-process network normalization are strict", () => {
     expect(Check(sandboxRequestSchema, { tools: ["node", "sqlmap"] })).toBe(true);

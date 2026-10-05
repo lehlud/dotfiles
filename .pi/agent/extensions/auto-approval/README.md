@@ -95,7 +95,7 @@ Um bestehenden Programmcode beurteilen zu können, erhält der Reviewer Text-Erg
 
 ## bwrap einrichten
 
-Der Launcher `~/.local/bin/pi` benötigt Bun für die Einrichtung beim Start. Er installiert die festgeschriebenen Dependencies mit deaktivierten Installationsskripten und baut unter Linux den Standard-Executor, wenn er fehlt oder sich `runner.ts`, `package.json`, `bun.lock`, Bun-Version oder Plattform ändern. Unveränderte Installationen werden wiederverwendet. Ein fehlgeschlagener Build sperrt den Start; der bisherige Executor bleibt erhalten. Der Austausch der Binary erfolgt atomar, damit bereits laufende Pi-Sandboxes weiterarbeiten können.
+Der Launcher `~/.local/bin/pi` benötigt Bun und Python 3 mit `venv`/`ensurepip` für die Einrichtung beim Start. Er bereitet zuerst die [Web-Recherche-Extension](../web-research/README.md) vor und installiert die festgeschriebenen Dependencies mit deaktivierten Installationsskripten. Unter Linux baut er den Standard-Executor, wenn er fehlt oder sich `runner.ts`, dessen Web-Module/Dependencies, Bun-Version oder Plattform ändern. Unveränderte Installationen werden wiederverwendet. Ein fehlgeschlagener Build sperrt den Start; der bisherige Executor bleibt erhalten. Der Austausch der Binary erfolgt atomar, damit bereits laufende Pi-Sandboxes weiterarbeiten können.
 
 Linux benötigt zusätzlich Bubblewrap und Git. Die Sandbox verwendet den eigenständigen Executor und die Systemprogramme unter `/usr`. Eigene `sandbox.runnerExecutable`-Pfade werden geprüft, aber weder gebaut noch überschrieben. Das Docker-Backend baut keinen nativen Executor.
 
@@ -105,6 +105,7 @@ Zur manuellen Einrichtung außerhalb von Pi ausführen:
 
 ```bash
 cd ~/.pi/agent/extensions/auto-approval
+bun ../web-research/bootstrap.ts
 bun bootstrap.ts
 ```
 
@@ -144,7 +145,7 @@ Das Backend wird explizit gewählt. Wenn er nicht startet, wird keine Aktion auf
 
 ## Prüfung und Protokoll
 
-Das Hauptmodell verwendet ausschließlich `approved_action` mit `tool`, den unveränderten Pi-`arguments`, `goal` und `justification`. Unterstützt werden `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find` und `ls`.
+Das Hauptmodell verwendet ausschließlich `approved_action` mit `tool`, den unveränderten Pi-`arguments`, `goal` und `justification`. Unterstützt werden `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls`, `websearch` und `webfetch`. Web-Operationen beantragen vor der Prüfung Netzwerkzugriff für genau diesen Aufruf; die feste Worker-Ausführung steht im Prüfplan. `webfetch` liefert dem Modell nur den bereinigten Seitentext, während die Freigabe in den Ergebnisdetails und im Aktivitätsprotokoll bleibt.
 
 Der Reviewer erhält tatsächliche Nutzerprompts des aktiven Session-Zweigs, die genaue Aktion, Ziel, Begründung, Arbeitsverzeichnis, geschützte Pfade und frühere Ablehnungen. Er erhält keine eigenen Tools. Bei einem Fallback bleiben Anfrage, Request-ID und Fingerprint unverändert. Jeder Versuch und das tatsächlich entscheidende Prüfmodell werden protokolliert; Tokenverbrauch und Kosten werden über die Versuche addiert. `requestTimeoutMs` gilt je Prüfmodell. Ein gültiges Urteil gilt nur für die konkrete Anfrage. Prüfung und Ausführung sind serialisiert; Freigaben werden nicht wiederverwendet.
 

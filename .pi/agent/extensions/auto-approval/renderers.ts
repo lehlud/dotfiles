@@ -73,9 +73,9 @@ export function createApprovalRenderers(tools: Record<string, NativeTool>): Pick
       // result. Keep it out of syntax highlighting and tool-specific output.
       const completed = !options.isPartial && details?.approval && Object.hasOwn(details, "result");
       if (completed) {
-        const decision = result.content[0];
+        const decision = details.approvalSummary ? { type: "text", text: details.approvalSummary } : result.content[0];
         if (decision?.type === "text") state.wrapper.addChild(new Text(theme.fg("muted", decision.text), 0, 0));
-        const output = { ...result, content: result.content.slice(1), details: details.result };
+        const output = { ...result, content: details.approvalSummary ? result.content : result.content.slice(1), details: details.result };
         const tool = definition(name);
         state.result = tool?.renderResult?.(output, options, theme, nativeContext(context, state, state.result))
           ?? new Text(output.content.filter((item) => item.type === "text").map((item) => item.text).join("\n"), 0, 0);
