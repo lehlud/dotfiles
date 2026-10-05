@@ -36,7 +36,7 @@ Workspaces innerhalb der aktiven Pi-Installation, Approval-Konfiguration oder be
 
 ## Tool-Anzeige
 
-`approved_action` verwendet die originalen Pi-Renderer des gewählten Tools. Reads behalten ihre aufklappbare Ausgabe, Syntaxhervorhebung und Hinweise auf gekürzte Inhalte. Edits zeigen den Standard-Diff mit Zeilennummern aus dem tatsächlichen Sandbox-Ergebnis. Writes, Bash und die übrigen Tools behalten ebenfalls ihre normale Darstellung. Die Approval-Entscheidung erscheint als eigener Hinweis.
+`approved_action` verwendet die originalen Pi-Renderer des gewählten Tools. Reads behalten ihre aufklappbare Ausgabe, Syntaxhervorhebung und Hinweise auf gekürzte Inhalte. Edits zeigen den Standard-Diff mit Zeilennummern aus dem tatsächlichen Sandbox-Ergebnis. Writes, Bash und die übrigen Tools behalten ebenfalls ihre normale Darstellung. Die Approval-Entscheidung erscheint als eigener Hinweis im Aktivitätsprotokoll; oberhalb der Eingabe bleibt kein Approval-Widget stehen.
 
 Die Edit-Vorschau liest vor der Freigabe keine Dateien vom Host. Der Diff wird nach der genehmigten Ausführung angezeigt und bleibt beim Aufklappen sowie beim Wiederherstellen einer Session erhalten. Abgelehnte Aktionen und Ausführungsfehler werden als solche angezeigt.
 
@@ -124,6 +124,8 @@ Das Backend wird explizit gewählt. Wenn er nicht startet, wird keine Aktion auf
 Das Hauptmodell verwendet ausschließlich `approved_action` mit `tool`, den unveränderten Pi-`arguments`, `goal` und `justification`. Unterstützt werden `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find` und `ls`.
 
 Der Reviewer erhält tatsächliche Nutzerprompts des aktiven Session-Zweigs, die genaue Aktion, Ziel, Begründung, Arbeitsverzeichnis, geschützte Pfade und frühere Ablehnungen. Er erhält keine eigenen Tools. Bei einem Fallback bleiben Anfrage, Request-ID und Fingerprint unverändert. Jeder Versuch und das tatsächlich entscheidende Prüfmodell werden protokolliert; Tokenverbrauch und Kosten werden über die Versuche addiert. `requestTimeoutMs` gilt je Prüfmodell. Ein gültiges Urteil gilt nur für die konkrete Anfrage. Prüfung und Ausführung sind serialisiert; Freigaben werden nicht wiederverwendet.
+
+Für die Sprache der Begründung erhält der Reviewer den letzten tatsächlichen Nutzerprompt separat als `latestUserPrompt`. Dazu zählt auch das über `/goal` eingegebene Ziel; spätere Nutzerprompts ersetzen es als Sprachvorgabe. Aktions- und Zielprüfer sind angewiesen, die Sprache der eigenen Nutzeranweisung zu verwenden und fremdsprachige Logausgaben, Zitate, ältere Begründungen und Modelltexte dabei auszuklammern.
 
 Die Prüfung bewertet Berechtigung und Sicherheitsrisiken. Eine gewünschte Quelltextänderung erlaubt normalerweise auch passende Tests, Dokumentation und lokale Prüfläufe. Für begrenzte Edits oder vollständig sichtbare Python-/Shell-Änderungen müssen nicht erst sämtliche betroffenen Dateien vollständig gelesen werden. Mögliche Programmierfehler, falsche Testannahmen oder eine bevorzugte Arbeitsreihenfolge sind allein kein Ablehnungsgrund. Zusätzliche Informationen sind erforderlich, wenn ein konkretes Risiko ohne sie nicht beurteilt werden kann. Secret-Zugriffe, sachfremde Änderungen, unbegründetes großflächiges Löschen und Eingriffe in die Approval-Sperre bleiben untersagt.
 

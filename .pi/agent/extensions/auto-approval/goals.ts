@@ -65,7 +65,9 @@ class GoalController {
       } else {
         if (this.goal && ["running", "paused"].includes(this.goal.status)) throw new Error("A goal already exists. Resume it or stop it before replacing it.");
         if (text.length > 8000) throw new Error("Goal is too long (maximum 8000 characters).");
-        this.record({ id: randomUUID(), text, status: "running", checks: 0, reason: "Goal not yet verified" }, ctx);
+        const next: Goal = { id: randomUUID(), text, status: "running", checks: 0, reason: "Goal not yet verified" };
+        this.pi.appendEntry("auto-approval-operator-prompt", { goalId: next.id, text });
+        this.record(next, ctx);
       }
       started = true;
       this.pi.sendMessage(message(instruction(this.goal!)), { triggerTurn: true });

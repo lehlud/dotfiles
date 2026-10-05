@@ -45,10 +45,37 @@ describe("review policy", () => {
     ], config, "/tmp", ["/protected"]);
     const data = JSON.parse(review.text);
     expect(data.userPrompts).toEqual(["real request", "new constraint"]);
+    expect(data.latestUserPrompt).toBe("new constraint");
     expect(data.action).toEqual(request);
     expect(data.protectedPaths).toEqual(["/protected"]);
   });
   test("missing user intent fails closed", () => expect(() => buildReview(request, [], config, "/tmp", [])).toThrow());
+  test("goal command prose sets the latest language source until a newer actual user prompt", () => {
+    const entries = [
+      { type: "message", message: { role: "user", content: "Por favor, revisa el proyecto." } },
+      { type: "custom", customType: "auto-approval-operator-prompt", data: { text: "Please finish the active roadmap phase." } },
+      { type: "custom_message", message: { role: "user", content: "Bitte alles auf Deutsch bestätigen." } },
+      { type: "message", message: { role: "toolResult", content: "La verificación fue exitosa." } },
+    ];
+    const review = () => JSON.parse(buildReview(request, entries, config, "/tmp", [], undefined, "Please finish the active roadmap phase.").text);
+    expect(review().latestUserPrompt).toBe("Please finish the active roadmap phase.");
+    entries.push({ type: "message", message: { role: "user", content: "Bitte prüfe nun die Tests." } });
+    expect(review().latestUserPrompt).toBe("Bitte prüfe nun die Tests.");
+    expect(review().userPrompts).toEqual(["Please finish the active roadmap phase.", "Bitte prüfe nun die Tests."]);
+  });
+  test("existing goal sessions retain their original prompt without treating later status as new input", () => {
+    const original = { id: "older-goal", text: "Please finish the active phase.", status: "running", checks: 0, reason: "Goal not yet verified" };
+    const entries = [
+      { type: "message", message: { role: "user", content: "Por favor, revisa el proyecto." } },
+      { type: "custom", customType: "auto-approval-goal", data: original },
+      { type: "custom", customType: "auto-approval-goal", data: { ...original, checks: 1, reason: "La verificación sigue incompleta." } },
+    ];
+    const review = () => JSON.parse(buildReview(request, entries, config, "/tmp", []).text);
+    expect(review().latestUserPrompt).toBe(original.text);
+    entries.push({ type: "message", message: { role: "user", content: "Bitte die Tests prüfen." } });
+    entries.push({ type: "custom", customType: "auto-approval-goal", data: original });
+    expect(review().latestUserPrompt).toBe("Bitte die Tests prüfen.");
+  });
   test("never silently truncates action or constraints", () => {
     expect(() => buildReview({ ...request, arguments: { command: "x".repeat(100001) } }, [{ type: "message", message: { role: "user", content: "test" } }], config, "/tmp", [])).toThrow();
   });

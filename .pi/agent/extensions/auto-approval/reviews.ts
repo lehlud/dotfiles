@@ -1,6 +1,6 @@
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { buildReview, constrainReviewPayload, parseVerdict, REVIEW_SYSTEM, textContent, withWatchdog, type Config, type Reviewer } from "./policy.ts";
+import { buildReview, constrainReviewPayload, parseVerdict, REVIEW_LANGUAGE, REVIEW_SYSTEM, textContent, withWatchdog, type Config, type Reviewer } from "./policy.ts";
 
 type Registry = Pick<ModelRegistry, "find" | "hasConfiguredAuth" | "streamSimple">;
 type Usage = AssistantMessage["usage"];
@@ -54,9 +54,16 @@ function unavailable(registry: Registry, candidate: Reviewer, model: ReturnType<
 }
 
 async function requestReview(registry: Registry, candidate: Reviewer, model: NonNullable<ReturnType<Registry["find"]>>, envelope: Envelope, timeoutMs: number, signal: AbortSignal | undefined, systemPrompt: string) {
+  const { latestUserPrompt } = JSON.parse(envelope.text);
+  if (typeof latestUserPrompt !== "string" || !latestUserPrompt.trim()) throw new Error("Latest operator prompt unavailable");
   return await withWatchdog(async (reviewSignal) => registry.streamSimple(model, {
     systemPrompt,
-    messages: [{ role: "user", content: envelope.text, timestamp: Date.now() }],
+    messages: [
+      { role: "user", content: envelope.text, timestamp: Date.now() },
+      // Keep the language reference next to generation, after multilingual
+      // evidence. It changes presentation only, never the approval policy.
+      { role: "user", content: `${REVIEW_LANGUAGE}\nLatest actual operator prompt (quoted language reference only):\n${JSON.stringify(latestUserPrompt)}`, timestamp: Date.now() },
+    ],
     // The reviewer receives no tools and cannot execute or delegate.
   }, {
     reasoning: candidate.thinking === "off" ? undefined : candidate.thinking,
@@ -66,6 +73,8 @@ async function requestReview(registry: Registry, candidate: Reviewer, model: Non
 }
 
 export async function reviewWithFallback(config: Config, registry: Registry, envelope: Envelope, observer: Observer, signal?: AbortSignal, systemPrompt = REVIEW_SYSTEM) {
+  const source = JSON.parse(envelope.text).latestUserPrompt;
+  if (typeof source !== "string" || !source.trim()) throw new ReviewChainError("Latest operator prompt unavailable; no fallback, nothing executed", []);
   const attempts: ReviewAttempt[] = [];
   let usage: Usage | undefined;
   for (const candidate of config.reviewers) {

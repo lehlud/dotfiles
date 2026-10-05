@@ -42,7 +42,7 @@ let entries: any[];
 let active: string[];
 let auditFails: boolean;
 let responseHook: (() => void) | undefined;
-let widgets: string[][];
+let widgets: (string[] | undefined)[];
 let statuses: string[];
 let ctx: ExtensionToolContext;
 
@@ -67,7 +67,7 @@ beforeEach(async () => {
   } as unknown as ExtensionAPI;
   ctx = {
     cwd: root,
-    ui: { setStatus: (_key: string, text?: string) => { if (text) statuses.push(text); }, setWidget: (_key: string, lines: string[]) => widgets.push(lines), notify: () => {} },
+    ui: { setStatus: (_key: string, text?: string) => { if (text) statuses.push(text); }, setWidget: (_key: string, lines?: string[]) => widgets.push(lines), notify: () => {} },
     sessionManager: { getBranch: () => entries, getSessionId: () => "test-session", getSessionFile: () => undefined },
     modelRegistry: {
       find: (provider: string, id: string) => ({ provider, id, api: "openai-responses", reasoning: true, thinkingLevelMap: { medium: "medium", low: "low" } }),
@@ -382,17 +382,19 @@ test("reviewed argument snapshot cannot be mutated during review", async () => {
   expect(await exists(join(root, "mutated-command"))).toBe(false);
 });
 
-test("approval and denial reasons, durations, and reviewer are visible and persisted", async () => {
+test("approval and denial remain in activity results and audit without a prompt widget", async () => {
+  await hooks.session_start({}, ctx);
+  expect(widgets).toEqual([undefined]);
   const approval = await call(bash("printf transparent"));
   expect(JSON.stringify(approval.content)).toContain("Passt zur Aufgabe");
-  expect(widgets.at(-1)?.join("\n")).toContain("Passt zur Aufgabe");
   expect(statuses.some((s) => s.includes("⠋") && s.includes("gpt-6-luna"))).toBe(true);
   expect(typeof approval.details.approval.reviewDurationMs).toBe("number");
   mode = "deny";
   const denial = await call(bash("printf denied"));
   expect(JSON.stringify(denial.content)).toContain("Nicht vom Nutzer gewollt");
-  expect(widgets.at(-1)?.join("\n")).toContain("Nicht vom Nutzer gewollt");
+  expect(widgets).toEqual([undefined]);
+  expect(entries.at(-1).data.reason).toBe("Nicht vom Nutzer gewollt");
   expect(typeof denial.details.reviewDurationMs).toBe("number");
-  expect(requested[0].context.systemPrompt).toContain("LAST actual user prompt");
+  expect(requested[0].context.systemPrompt).toContain("LAST actual operator prompt");
   expect(requested[0].context.systemPrompt).toContain("ONE short sentence");
 });

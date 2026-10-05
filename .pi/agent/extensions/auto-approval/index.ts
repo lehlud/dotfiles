@@ -11,7 +11,7 @@ import {
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { detectWorkspace, executeIsolated, sandboxHostPath, validateWorkspace } from "./isolation.ts";
-import { reviewSummary, startReviewDisplay, showDecision } from "./display.ts";
+import { reviewSummary, startReviewDisplay } from "./display.ts";
 import { createApprovalRenderers } from "./renderers.ts";
 import { buildReview, sandboxRequestSchema, type Request } from "./policy.ts";
 import { assertSandboxReady, loadConfig } from "./config.ts";
@@ -84,6 +84,8 @@ export default function autoApproval(pi: ExtensionAPI) {
 
   function lock(ctx: ExtensionContext) {
     pi.setActiveTools([TOOL_NAME]);
+    // Clear a widget left by an older version after /reload.
+    ctx.ui.setWidget("auto-approval", undefined);
     ctx.ui.setStatus("auto-approval", "approval: on");
   }
   pi.on("session_start", async (_event, ctx) => {
@@ -179,7 +181,6 @@ export default function autoApproval(pi: ExtensionAPI) {
             failed(attempt) {
               pi.appendEntry("auto-approval-reviewer-failure", { toolCallId: id, requestId: review.requestId, fingerprint: review.fingerprint, attempt });
               const text = `Reviewer unavailable · ${reviewerLabel(attempt)}\n${attempt.reason}`;
-              ctx.ui.setWidget("auto-approval", text.split("\n"));
               onUpdate?.({ content: [{ type: "text", text }], details: { phase: "reviewing", reviewer, attempt } });
             },
           }, signal);
@@ -190,7 +191,6 @@ export default function autoApproval(pi: ExtensionAPI) {
           decisionSummary = reviewSummary(verdict.decision === "approve", verdict.reason, reviewDurationMs, reviewer);
           // Record the exact decision before execution; audit failure blocks execution.
           pi.appendEntry("auto-approval-review", audit);
-          showDecision(ctx, decisionSummary);
           onUpdate?.({ content: [{ type: "text", text: decisionSummary }], details: audit });
           if (verdict.decision === "deny") return {
             content: [{ type: "text" as const, text: decisionSummary }],
@@ -214,7 +214,6 @@ export default function autoApproval(pi: ExtensionAPI) {
           }
           audit = { ...audit, decision: "deny", reason, reviewDurationMs, technicalFailure: true };
           decisionSummary = reviewSummary(false, `Blocked; nothing executed: ${reason}`, reviewDurationMs, reviewer);
-          showDecision(ctx, decisionSummary);
           try { pi.appendEntry("auto-approval-review", audit); } catch { /* still fail closed */ }
           return { content: [{ type: "text" as const, text: decisionSummary }], details: audit, usage, isError: true };
         } finally {

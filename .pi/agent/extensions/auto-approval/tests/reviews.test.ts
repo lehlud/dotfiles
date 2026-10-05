@@ -46,6 +46,8 @@ test("highest-priority success stops the chain and preserves request-bound outpu
   expect(result.selectedReviewer).toEqual(primary); expect(calls).toHaveLength(1);
   expect(result.usage).toEqual(usage); expect(attempts).toHaveLength(0);
   expect(calls[0].context.tools).toBeUndefined();
+  expect(calls[0].context.messages.at(-1).content).toContain(JSON.parse(envelope.text).latestUserPrompt);
+  expect(calls[0].context.messages.at(-1).content).toContain("quoted language reference only");
   const payload = calls[0].options.onPayload({}, calls[0].model);
   expect(payload.text.format.schema.properties.requestId.enum).toEqual([envelope.requestId]);
 });
