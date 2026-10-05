@@ -109,7 +109,10 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
         throw error;
       });
       if (!target) return;
-      if (hidden(target) || !bindings.some((binding) => within(binding, target))) throw new Error(`Workspace symlink escapes its exposed boundary: ${path}`);
+      // Native bwrap already exposes /usr read-only. Virtualenv links to its
+      // system Python need no additional host access or writable mount.
+      const systemRuntime = config.backend === "bwrap" && within("/usr", target);
+      if (hidden(target) || protectedRoots.some((root) => within(root, target)) || (!systemRuntime && !bindings.some((binding) => within(binding, target)))) throw new Error(`Workspace symlink escapes its exposed boundary: ${path}`);
     } else if (stat.isDirectory()) {
       for (const name of await readdir(path)) await walk(join(path, name));
     } else if (!stat.isFile()) throw new Error(`Workspace contains a special file: ${path}`);

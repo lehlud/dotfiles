@@ -155,7 +155,7 @@ export default function autoApproval(pi: ExtensionAPI) {
           audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
           const model = ctx.modelRegistry.find(config.provider, config.model);
           if (!model) throw new Error(`Reviewer model not found: ${config.provider}/${config.model}`);
-          if (!ctx.modelRegistry.hasConfiguredAuth(model)) throw new Error("Reviewer authentication is unavailable");
+          if (!ctx.modelRegistry.hasConfiguredAuth(model)) throw new Error(`Reviewer authentication is unavailable for ${config.provider}/${config.model}. Use /login and select ${config.provider} on this machine; credentials are private and not synced with dotfiles.`);
           if (config.thinking !== "off" && (!model.reasoning || (model.thinkingLevelMap && model.thinkingLevelMap[config.thinking] === undefined))) throw new Error("Reviewer does not support the configured thinking level");
           stopDisplay = startReviewDisplay(ctx, reviewer, name).stop;
           activeDisplays.add(stopDisplay);

@@ -8,6 +8,8 @@ Nach Änderungen an der Erweiterung Pi neu starten. `/auto-approval` zeigt Revie
 
 `~/.pi/agent/auto-approval.json` wird im öffentlichen Dotfiles-Repository synchronisiert. Sie enthält Modell, Prüfeinstellungen und Sandbox-Backend, aber keine Gerätepfade oder Workspace-Freigaben. Optionale lokale Pfade und Freigaben stehen in `auto-approval.device.json`; diese Datei bleibt von Git ausgeschlossen. Bei einem anderen `PI_CODING_AGENT_DIR` liegen beide Dateien dort. Sie werden bei jeder Aktion neu gelesen.
 
+Der konfigurierte Reviewer nutzt `openai` mit Modell-ID `gpt-6-luna`, unabhängig vom Anbieter des Hauptmodells. Die OpenAI-Anmeldung muss auf jedem Rechner vorhanden sein; `/login` mit Auswahl `openai` richtet sie in Pi ein. Zugangsdaten bleiben privat und werden nicht mit den Dotfiles synchronisiert.
+
 ## Automatische Workspace-Erkennung
 
 - Ein eigenes Projekt-Repository verwendet seinen Git-Root als Workspace. Die Aktion läuft weiterhin im ursprünglichen Arbeitsverzeichnis.
@@ -16,7 +18,7 @@ Nach Änderungen an der Erweiterung Pi neu starten. `/auto-approval` zeigt Revie
 
 Ein direkt im Home-Verzeichnis gestartetes Pi benötigt eine eingeschränkte `sandbox.workspaceViews`-Ansicht in `auto-approval.device.json`. In der lokalen Einrichtung sind darin einzelne öffentliche, versionierte Dotfile-Dateien aufgeführt. Unversionierte Dateien, Zugangsdaten und der aktive Approval-Code werden nicht eingebunden. Diese Ansicht erlaubt Änderungen an den eingebundenen Dateien, aber keine neuen Dateien in den schreibgeschützten Elternverzeichnissen. Für normale Projektarbeit ist keine lokale Freigabeliste erforderlich.
 
-Workspaces innerhalb der aktiven Pi-Installation, Approval-Konfiguration oder bekannten Credential-Verzeichnisse bleiben gesperrt. Geschützte Dateien innerhalb eines sonst zulässigen bwrap-Workspaces werden ausgeblendet. Hardlinks sind erlaubt, wenn sämtliche Links desselben Inodes innerhalb der eingebundenen, ungeschützten Pfade liegen. So funktionieren beispielsweise Cargo-Build-Artefakte zwischen `release` und `release/deps`. Links nach außen, in ausgeblendete Verzeichnisse und Unix-Sockets werden zurückgewiesen. Dangling Symlinks aus Build-Caches sperren den Workspace nicht; fehlende Ziele werden nicht eingebunden.
+Workspaces innerhalb der aktiven Pi-Installation, Approval-Konfiguration oder bekannten Credential-Verzeichnisse bleiben gesperrt. Geschützte Dateien innerhalb eines sonst zulässigen bwrap-Workspaces werden ausgeblendet. Hardlinks sind erlaubt, wenn sämtliche Links desselben Inodes innerhalb der eingebundenen, ungeschützten Pfade liegen. So funktionieren beispielsweise Cargo-Build-Artefakte zwischen `release` und `release/deps`. Symlinks auf den bereits schreibgeschützt eingebundenen Systembereich `/usr` sind bei bwrap erlaubt, etwa auf Python in einem Virtualenv. Andere Links nach außen, Links in geschützte Verzeichnisse und Unix-Sockets werden zurückgewiesen. Dangling Symlinks aus Build-Caches sperren den Workspace nicht; fehlende Ziele werden nicht eingebunden.
 
 ## Tool-Anzeige
 

@@ -232,6 +232,19 @@ test("missing reviewer and missing auth fail closed", async () => {
   expect((await call(bash("touch missing-auth"))).isError).toBe(true);
   expect(requested).toHaveLength(0);
 });
+test("OpenRouter session cannot replace the configured direct OpenAI reviewer", async () => {
+  ctx.model = { provider: "openrouter", id: "openai/gpt-6.1-sol" } as any;
+  ctx.modelRegistry.hasConfiguredAuth = (model) => model.provider === "openrouter";
+  const result = await call(bash("touch missing-direct-openai-auth"));
+  expect(result.isError).toBe(true);
+  expect(JSON.stringify(result.content)).toContain("openai/gpt-6-luna");
+  expect(JSON.stringify(result.content)).toContain("/login and select openai");
+  expect(requested).toHaveLength(0); expect(executedRequests).toHaveLength(0);
+  ctx.modelRegistry.hasConfiguredAuth = (model) => model.provider === "openai";
+  expect((await call(bash("printf direct-reviewer"))).isError).not.toBe(true);
+  expect(requested[0].model.provider).toBe("openai");
+  expect(requested[0].model.id).toBe("gpt-6-luna");
+});
 test("review plus execution is serialized for concurrent calls", async () => {
   const results = await Promise.all([call(bash("printf first >> order.txt")), call(bash("printf second >> order.txt"))]);
   expect(results.every((r) => !r.isError), JSON.stringify(results)).toBe(true);

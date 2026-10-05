@@ -158,6 +158,16 @@ nativeTest("dangling build-cache symlinks do not block unrelated project actions
     expect(await readFile(join(project, "unrelated.txt"), "utf8")).toBe("still usable");
   } finally { await rm(broken, { force: true }); await rm(join(project, "unrelated.txt"), { force: true }); }
 });
+nativeTest("virtualenv links to mounted system Python permit project reads and stay read-only", async () => {
+  const cache = join(project, ".zig-cache/wasi-testsuite-venv/bin"); await mkdir(cache, { recursive: true });
+  const python = join(cache, "python3"); await symlink("/usr/bin/python3", python);
+  try {
+    expect(JSON.stringify((await run("ls", { path: ".", limit: 100 })).content)).toContain(".zig-cache");
+    const result = await run("bash", { command: 'test ! -w .zig-cache/wasi-testsuite-venv/bin/python3 && .zig-cache/wasi-testsuite-venv/bin/python3 -c "print(\"safe-system-python\")"' });
+    expect(JSON.stringify(result.content)).toContain("safe-system-python");
+    await expect(validateWorkspace(project, native, ["/usr/bin/python3"])).rejects.toThrow("symlink escapes");
+  } finally { await rm(join(project, ".zig-cache"), { recursive: true, force: true }); }
+});
 nativeTest("protected descendants are masked instead of exposing credentials", async () => {
   const hidden = join(project, "private"); await mkdir(hidden); await writeFile(join(hidden, "token"), "private");
   const w = await validateWorkspace(project, native, [hidden]);
