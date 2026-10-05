@@ -71,7 +71,9 @@ Die Erweiterung erscheint sichtbar neben der normalen Tool-Anzeige und wird mit 
 
 ## Lokale Tools und Netzwerkzugriff für einen Befehl
 
-Mit `sandbox.tools: ["node"]` erhält eine Aktion `nvm`, `node`, `npm`, `npx` und, sofern installiert, `corepack`. Vorhandene Node-Versionen werden schreibgeschützt eingebunden. `nvm use 22` wählt eine installierte Version; die Auswahl bleibt für folgende Node-Aktionen derselben Session erhalten. Ohne Versionsargument liest `nvm use` die nächste `.nvmrc`. Für jede Aktion, die diese Tools braucht, wird der Bundle-Antrag erneut gestellt.
+Mit `sandbox.tools: ["node"]` erhält eine Aktion `nvm`, `node`, `npm`, `npx` und, sofern installiert, `corepack`. Vorhandene Node-Versionen werden schreibgeschützt eingebunden. Vor der Freigabe prüft die Erweiterung den ELF-Header und die CPU-Architektur jeder Version; die Sandbox prüft sie bei der Auswahl erneut, auch im privaten Cache. In einem vom macOS-Host eingebundenen Home werden Mach-O-Binaries, fremde CPU-Architekturen und Shell-Wrapper für solche Binaries ausgeschlossen. Das gilt auch für alte, noch nicht nach Plattform getrennte nvm-Verzeichnisse. Der macOS-nvm-Launcher wird nicht durchgereicht.
+
+`nvm use 22` wählt eine kompatible Linux-Version; die Auswahl bleibt für folgende Node-Aktionen derselben Session erhalten. Ohne Versionsargument liest `nvm use` die nächste `.nvmrc`. `nvm help` und `nvm --help` zeigen die unterstützten Befehle. Fehlt eine Linux-Version, meldet die Sandbox den notwendigen `nvm install 22`-Aufruf mit separat zu prüfendem `network: true`; sie lädt nichts automatisch herunter. Eine veraltete Auswahl, die nur noch auf inkompatible Dateien zeigt, wird mit einer konkreten Fehlermeldung zurückgewiesen. Für jede Aktion, die diese Tools braucht, wird der Bundle-Antrag erneut gestellt.
 
 Der Ablauf besteht beispielsweise aus drei separat geprüften Shell-Aktionen:
 

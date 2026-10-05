@@ -1,4 +1,4 @@
-import { access, lstat, readdir } from "node:fs/promises";
+import { access, lstat, open, readdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
@@ -17,15 +17,36 @@ async function regularExecutable(path: string, executable = true): Promise<void>
   await access(path, constants.R_OK | (executable ? constants.X_OK : 0));
 }
 
+/** Inspect the ELF header without executing shared-home Node code on the host. */
+export async function nativeLinuxNode(binary: string, architecture = process.arch): Promise<boolean> {
+  const machine = architecture === "x64" ? 62 : architecture === "arm64" ? 183 : undefined;
+  if (!machine) return false;
+  let file;
+  try {
+    file = await open(binary, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = await file.stat();
+    if (!stat.isFile() || !(stat.mode & 0o111)) return false;
+    const header = Buffer.alloc(64);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    return bytesRead === 64 && header.subarray(0, 7).equals(Buffer.from([127, 69, 76, 70, 2, 1, 1]))
+      && [0, 3].includes(header[7]) && [2, 3].includes(header.readUInt16LE(16))
+      && header.readUInt16LE(18) === machine && header.readUInt32LE(20) === 1 && header.readUInt16LE(52) === 64;
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR", "EACCES", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    throw error;
+  } finally { await file?.close(); }
+}
+
 async function nodeSources(home: string): Promise<LocalTool["sources"]> {
   const sources: LocalTool["sources"] = [];
-  for (const root of [join(home, ".local/share/nvm"), join(home, ".nvm/versions/node")]) {
+  const platform = `Linux-${process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : process.arch}`;
+  for (const root of [join(home, ".local/share/nvm", platform), join(home, ".local/share/nvm"), join(home, ".nvm/versions/node")]) {
     if (!await existing(root)) continue;
     for (const entry of await readdir(root, { withFileTypes: true })) {
-      const platform = `Linux-${process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : process.arch}`;
-      if (!entry.isDirectory() || (!/^v\d+\.\d+\.\d+$/.test(entry.name) && entry.name !== platform)) continue;
+      if (!entry.isDirectory() || !/^v\d+\.\d+\.\d+$/.test(entry.name)) continue;
       const source = join(root, entry.name);
-      sources.push({ source, target: `/opt/pi-tools/source/node/${sources.length}${entry.name.startsWith("v") ? `/${entry.name}` : ""}` });
+      if (!await nativeLinuxNode(join(source, "bin/node"))) continue;
+      sources.push({ source, target: `/opt/pi-tools/source/node/${sources.length}/${entry.name}` });
     }
   }
   // With no installed runtime, nvm install can bootstrap into private /tmp.
