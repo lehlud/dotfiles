@@ -17,6 +17,7 @@ import { buildReview, sandboxRequestSchema, type Request } from "./policy.ts";
 import { assertSandboxReady, loadConfig } from "./config.ts";
 import { reviewWithFallback, reviewerLabel, ReviewChainError } from "./reviews.ts";
 import { removeSessionTemporaryDirectory } from "./temporary-storage.ts";
+import { registerGoals } from "./goals.ts";
 
 const TOOL_NAME = "approved_action";
 const factories = {
@@ -54,6 +55,7 @@ async function canonicalPath(path: string): Promise<string> {
 const LOCK_MESSAGE = "Auto-Approval: direct and alternative tools are blocked. Use approved_action with the exact action, goal, and justification. A denied action must not be bypassed.";
 
 export default function autoApproval(pi: ExtensionAPI) {
+  const operatorGoal = registerGoals(pi);
   // Serialize review AND execution, not just the model requests. No shared approval
   // flag, reusable token, bypass environment variable, or agent-callable off switch.
   let queue: Promise<unknown> = Promise.resolve();
@@ -164,7 +166,7 @@ export default function autoApproval(pi: ExtensionAPI) {
             if (roots.some((p) => path === p || path.startsWith(`${p}/`))) throw new Error("The agent cannot modify Pi installation, approval code, configuration, or credentials");
           }
           const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], temporaryStorage: { path: "/tmp", lifetime: "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
-          const review = buildReview(request, ctx.sessionManager.getBranch(), config, ctx.cwd, protectedPaths, sandboxPlan);
+          const review = buildReview(request, ctx.sessionManager.getBranch(), config, ctx.cwd, protectedPaths, sandboxPlan, operatorGoal());
           audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
           const checked = await reviewWithFallback(config, ctx.modelRegistry, review, {
             start(candidate) {

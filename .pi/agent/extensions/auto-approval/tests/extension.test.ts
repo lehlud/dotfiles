@@ -53,7 +53,10 @@ beforeEach(async () => {
   validatedScopes = []; executedRequests = []; temporaryStores = [];
   entries = [{ type: "message", message: { role: "user", content: "Run a harmless smoke test in the temporary working directory. Do not change any approval settings." } }];
   const pi = {
-    on: (name: string, callback: Function) => { hooks[name] = callback; },
+    on: (name: string, callback: Function) => {
+      const previous = hooks[name];
+      hooks[name] = previous ? async (...args: any[]) => { await previous(...args); return callback(...args); } : callback;
+    },
     registerTool: (tool: ToolDefinition<any, any>) => { actions[tool.name] = tool; },
     registerCommand: () => {},
     setActiveTools: (names: string[]) => { active = names; },
@@ -64,7 +67,7 @@ beforeEach(async () => {
   } as unknown as ExtensionAPI;
   ctx = {
     cwd: root,
-    ui: { setStatus: (_key: string, text: string) => statuses.push(text), setWidget: (_key: string, lines: string[]) => widgets.push(lines), notify: () => {} },
+    ui: { setStatus: (_key: string, text?: string) => { if (text) statuses.push(text); }, setWidget: (_key: string, lines: string[]) => widgets.push(lines), notify: () => {} },
     sessionManager: { getBranch: () => entries, getSessionId: () => "test-session", getSessionFile: () => undefined },
     modelRegistry: {
       find: (provider: string, id: string) => ({ provider, id, api: "openai-responses", reasoning: true, thinkingLevelMap: { medium: "medium", low: "low" } }),

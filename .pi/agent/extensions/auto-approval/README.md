@@ -10,6 +10,20 @@ Nach Änderungen an der Erweiterung Pi neu starten. `/auto-approval` zeigt Revie
 
 `reviewers` enthält die Prüfmodelle in Prioritätsreihenfolge. Zuerst wird `openai` mit Modell-ID `gpt-6-luna` verwendet, danach der ausdrücklich konfigurierte Fallback `openrouter` mit `openai/gpt-6-luna`. Nur die Einträge dieser Liste werden versucht, unabhängig vom Hauptmodell. Fehlende Anmeldung, fehlende Modelle, nicht unterstützte Thinking-Level, Transportfehler und Zeitüberschreitungen erlauben den nächsten Versuch. Eine gültige Ablehnung beendet die Prüfkette. Safety-Refusals sowie abgeschnittene oder abgebrochene Modellantworten sperren die Aktion ebenfalls ohne weiteren Modellversuch. Ein vollständiges, zur Anfrage gehörendes `deny` bleibt auch dann bindend, wenn der Provider danach einen Transportfehler meldet. Provider-Fehler werden mit festen Diagnosekategorien angezeigt; rohe Fehlermeldungen mit möglichen Zugangsdaten oder Prompt-Inhalten werden nicht ausgegeben. Ungültige oder einer anderen Anfrage zugeordnete Urteile sperren die Aktion ohne Fallback. Zugangsdaten bleiben privat; `/login` richtet den jeweiligen Anbieter pro Rechner ein.
 
+## Bis zum bestätigten Ziel weiterarbeiten
+
+`/goal <Ziel>` startet das aktuelle Arbeitsmodell mit einem konkreten Ziel. Sobald das Modell seine Antwort beendet, prüft das konfigurierte Prüfmodell die Zielerfüllung anhand der Antwort und der protokollierten Ergebnisse genehmigter Aktionen. Eine bloße Behauptung des Arbeitsmodells genügt bei Codeänderungen und Laufzeitprüfungen nicht.
+
+Fehlt noch Arbeit, erhält das Arbeitsmodell die Begründung und setzt automatisch fort. Erst ein positives Prüferegebnis markiert das Ziel als erfüllt. Eine negative Zielprüfung wechselt nicht zum nächsten Prüfmodell; Fallbacks gelten weiterhin ausschließlich für technische Nichtverfügbarkeit. Jede Aktion bleibt separat genehmigungspflichtig und läuft in der Sandbox.
+
+- `/goal` oder `/goal status` zeigt Ziel, Zustand, Begründung und Anzahl der Prüfungen.
+- `/goal resume` setzt ein pausiertes Ziel fort.
+- `/goal stop` ist der ausdrückliche Betreiberabbruch und behauptet keine Zielerfüllung. Auch Escape, Ctrl+C und Beenden bleiben möglich.
+
+Prüfausfälle, ungültige Urteile und unterbrochene Modellläufe pausieren das Ziel. Nach einem Neustart, Neuladen oder Session-Wechsel wird ein gespeichertes, unerfülltes Ziel ebenfalls pausiert wiederhergestellt. Es startet erst mit `/goal resume` erneut; das private `/tmp` wurde beim Session-Shutdown gelöscht. Eine Navigation im Session-Baum übernimmt den Zielzustand des gewählten Zweigs ohne automatischen Neustart.
+
+Ziel, Prüfversuche, Entscheidungsmodell, Request-ID, Evidence-Fingerprint und Verbrauch werden im Session-Protokoll gespeichert. Die ursprüngliche `/goal`-Anweisung bleibt den Aktionsprüfern als Nutzerauftrag erhalten, auch wenn weitere Modellrunden keinen neuen Nutzerprompt haben. Spätere Nutzerkorrekturen gelten weiterhin. Es gibt keine feste Rundenzahl oder Laufzeitgrenze für ein Ziel; bis zur Bestätigung oder Unterbrechung können laufend Modellkosten entstehen.
+
 ## Automatische Workspace-Erkennung
 
 - Ein eigenes Projekt-Repository verwendet seinen Git-Root als Workspace. Die Aktion läuft weiterhin im ursprünglichen Arbeitsverzeichnis.

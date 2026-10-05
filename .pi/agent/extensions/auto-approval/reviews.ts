@@ -53,9 +53,9 @@ function unavailable(registry: Registry, candidate: Reviewer, model: ReturnType<
   if (candidate.thinking !== "off" && (!model.reasoning || (model.thinkingLevelMap && model.thinkingLevelMap[candidate.thinking] === undefined))) return "Reviewer does not support the configured thinking level";
 }
 
-async function requestReview(registry: Registry, candidate: Reviewer, model: NonNullable<ReturnType<Registry["find"]>>, envelope: Envelope, timeoutMs: number, signal?: AbortSignal) {
+async function requestReview(registry: Registry, candidate: Reviewer, model: NonNullable<ReturnType<Registry["find"]>>, envelope: Envelope, timeoutMs: number, signal: AbortSignal | undefined, systemPrompt: string) {
   return await withWatchdog(async (reviewSignal) => registry.streamSimple(model, {
-    systemPrompt: REVIEW_SYSTEM,
+    systemPrompt,
     messages: [{ role: "user", content: envelope.text, timestamp: Date.now() }],
     // The reviewer receives no tools and cannot execute or delegate.
   }, {
@@ -65,7 +65,7 @@ async function requestReview(registry: Registry, candidate: Reviewer, model: Non
   }).result(), timeoutMs, signal);
 }
 
-export async function reviewWithFallback(config: Config, registry: Registry, envelope: Envelope, observer: Observer, signal?: AbortSignal) {
+export async function reviewWithFallback(config: Config, registry: Registry, envelope: Envelope, observer: Observer, signal?: AbortSignal, systemPrompt = REVIEW_SYSTEM) {
   const attempts: ReviewAttempt[] = [];
   let usage: Usage | undefined;
   for (const candidate of config.reviewers) {
@@ -75,7 +75,7 @@ export async function reviewWithFallback(config: Config, registry: Registry, env
     let reason = unavailable(registry, candidate, model);
     let response: AssistantMessage | undefined;
     try {
-      if (!reason && model) response = await requestReview(registry, candidate, model, envelope, config.requestTimeoutMs, signal);
+      if (!reason && model) response = await requestReview(registry, candidate, model, envelope, config.requestTimeoutMs, signal, systemPrompt);
     } catch (error) {
       signal?.throwIfAborted();
       if (error instanceof Error && refusedReview(error.message)) {
