@@ -53,6 +53,8 @@ Unterstützte Dimensionen:
 - `executableSearchPaths`: zusätzliche absolute Tool-Verzeichnisse, die schreibgeschützt eingebunden und dem Suchpfad hinzugefügt werden.
 - `limits`: `executionTimeoutMs` und `maxOutputBytes`; beim Docker-Backend zusätzlich `memoryMiB`, `cpus` und `pids`. Das persistente Session-`/tmp` liegt auf dem Dateisystem und unterstützt keine `tmpBytes`-Grenze. Ein solcher Antrag wird zurückgewiesen. `tmpBytes` bleibt für einzelne Executor-Aufrufe mit einem flüchtigen tmpfs verfügbar. Native bwrap-cgroup-Limits sind nicht implementiert und werden mit einer konkreten Fehlermeldung zurückgewiesen.
 
+Notwendige Downloads wie `nvm install`, Projektabhängigkeiten mit `npm install` und Registry-Abfragen mit `npm audit` sollen bei passendem Nutzerauftrag genehmigt werden. Der Reviewer bewertet konkrete Ziele, Datenübertragungen und Nebenwirkungen. Die theoretische Erreichbarkeit weiterer Hosts oder lokaler Dienste durch `network: host` genügt allein nicht für eine Ablehnung; das Backend bietet keine Domain-Freigabeliste. Unnötiger Netzwerkzugriff, Credential-Uploads und sachfremde Zugriffe auf lokale Dienste bleiben Ablehnungsgründe. Jeder Aufruf wird weiterhin einzeln geprüft.
+
 Beispiel für einen notwendigen externen Read:
 
 ```json
@@ -165,3 +167,5 @@ bun run test
 ```
 
 Gate-Tests verwenden einen Test-Mock für den Executor. Die Isolationstests laufen in einem separaten Bun-Prozess, damit dieser Mock die echten bwrap-Tests nicht ersetzt. Auf Linux mit Bubblewrap prüfen sie zusätzlich Dateizugriffe, den Schutz von Host-Dateien und Umgebungsvariablen, getrennte Namespaces, Abbruch und das Ende von Hintergrundprozessen. Ohne Bubblewrap werden nur diese nativen Integrationstests übersprungen.
+
+`bun run eval:network` prüft zusätzlich sechs Netzwerkfälle mit den tatsächlich konfigurierten Prüfmodellen und vorhandener Anmeldung. Dazu gehören notwendige Node-/npm-Downloads und Audits sowie unnötige Netzwerkfreigaben, Credential-Uploads und sachfremde lokale Dienste. Der Lauf verursacht Modellanfragen; keine der vorgeschlagenen Aktionen wird ausgeführt. Er gehört deshalb nicht zum normalen Unit-Testlauf.
