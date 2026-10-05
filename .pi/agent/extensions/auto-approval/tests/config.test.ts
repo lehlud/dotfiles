@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtemp, mkdir, writeFile, readFile, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadConfig, resolveConfig } from "../config.ts";
+import { assertSandboxReady, loadConfig, resolveConfig } from "../config.ts";
 import { parseConfig, parseLocalConfig, type PortableConfig } from "../policy.ts";
 
 const portable: PortableConfig = { reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }], recentUserPrompts: 6, requestTimeoutMs: 120000, sandbox: { backend: "bwrap" } };
@@ -87,4 +87,18 @@ test("relative PATH entries and non-executable candidates do not select project 
   await expect(resolveConfig(portable, {}, { searchPath: ".:relative:" })).rejects.toThrow("not found on PATH");
   await rm(join(bin, "bwrap")); await writeFile(join(bin, "bwrap"), "not executable", { mode: 0o600 });
   await expect(resolveConfig(portable, {}, { searchPath: bin })).rejects.toThrow("not found on PATH");
+});
+
+test("native readiness rejects missing, non-executable and directory executors before review", async () => {
+  const runner = join(directory, "runner");
+  const config = await resolveConfig(portable, { sandbox: { runnerExecutable: runner } }, { searchPath: bin });
+  await expect(assertSandboxReady(config)).rejects.toThrow(`Sandbox executable unavailable: ${runner}`);
+  await writeFile(runner, "#!/bin/sh\nexit 0\n", { mode: 0o600 });
+  await expect(assertSandboxReady(config)).rejects.toThrow("Restart Pi");
+  await rm(runner); await mkdir(runner);
+  await expect(assertSandboxReady(config)).rejects.toThrow("not a regular file");
+  await rm(runner, { recursive: true }); await writeFile(runner, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  await assertSandboxReady(config);
+  await rm(join(bin, "bwrap"));
+  await expect(assertSandboxReady(config)).rejects.toThrow("Sandbox executable unavailable");
 });

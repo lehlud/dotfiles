@@ -65,6 +65,13 @@ fi
 # Bootstrap and update on operator startup, before any agent tools run.
 # Pi's cache, launcher and approval gate remain protected inside the sandbox.
 if auto_update_ensure_tar_app pi "$_pi_cache_dir" pi pi/pi 3 _pi_download https://github.com/earendil-works/pi; then
+    if ! command -v bun >/dev/null 2>&1; then
+        printf 'pi: Bun is required to prepare Auto-Approval; startup blocked\n' >&2
+        exit 1
+    fi
+    if ! bun "${_gate%/*}/bootstrap.ts" >&2; then
+        exit 1
+    fi
     exec "$_pi_cache_dir/pi/pi" --no-extensions --extension "$_gate" --no-approve --tools approved_action "$@"
 fi
 

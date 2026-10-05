@@ -7,6 +7,18 @@ import { parseConfig, parseLocalConfig, resolvedConfigSchema, type Config, type 
 
 type RuntimePaths = { home?: string; searchPath?: string };
 
+export async function assertSandboxReady(config: Config): Promise<void> {
+  if (config.sandbox.backend !== "bwrap") return;
+  for (const path of [config.sandbox.executable, config.sandbox.runnerExecutable]) {
+    try {
+      await access(path, constants.R_OK | constants.X_OK);
+      if (!(await stat(path)).isFile()) throw new Error("not a regular file");
+    } catch (error) {
+      throw new Error(`Sandbox executable unavailable: ${path}. Restart Pi through ~/.local/bin/pi to prepare the default executor, or repair the custom path in auto-approval.device.json outside Pi. ${String(error)}`);
+    }
+  }
+}
+
 async function findProgram(name: string, searchPath: string): Promise<string> {
   for (const directory of searchPath.split(delimiter)) {
     // Never select executable code from the agent's current project directory.

@@ -58,15 +58,17 @@ Um bestehenden Programmcode beurteilen zu können, erhält der Reviewer Text-Erg
 
 ## bwrap einrichten
 
-Linux benötigt Bubblewrap, Git und Bun zum Bauen des eigenständigen Executors. Die Runtime benötigt anschließend Bubblewrap und die Systemprogramme unter `/usr`.
+Der Launcher `~/.local/bin/pi` benötigt Bun für die Einrichtung beim Start. Er installiert die festgeschriebenen Dependencies mit deaktivierten Installationsskripten und baut unter Linux den Standard-Executor, wenn er fehlt oder sich `runner.ts`, `package.json`, `bun.lock`, Bun-Version oder Plattform ändern. Unveränderte Installationen werden wiederverwendet. Ein fehlgeschlagener Build sperrt den Start; der bisherige Executor bleibt erhalten. Der Austausch der Binary erfolgt atomar, damit bereits laufende Pi-Sandboxes weiterarbeiten können.
 
-Außerhalb von Pi ausführen:
+Linux benötigt zusätzlich Bubblewrap und Git. Die Sandbox verwendet den eigenständigen Executor und die Systemprogramme unter `/usr`. Eigene `sandbox.runnerExecutable`-Pfade werden geprüft, aber weder gebaut noch überschrieben. Das Docker-Backend baut keinen nativen Executor.
+
+Die Erweiterung prüft native Executables beim Session-Start, bei `/auto-approval` und vor jedem Review. Ein fehlender oder nicht ausführbarer Executor sperrt die Aktion vor der kostenpflichtigen Modellprüfung.
+
+Zur manuellen Einrichtung außerhalb von Pi ausführen:
 
 ```bash
 cd ~/.pi/agent/extensions/auto-approval
-bun install --frozen-lockfile --ignore-scripts
-mkdir -p ~/.local/cache/pi-auto-approval
-bun build --compile runner.ts --outfile ~/.local/cache/pi-auto-approval/executor
+bun bootstrap.ts
 ```
 
 Eine portable `auto-approval.json` sieht so aus:
@@ -91,7 +93,7 @@ Der Executor wird schreibgeschützt eingebunden. Die Sandbox erhält eine leere 
 
 Ein Abbruch beendet den Sandbox-Prozess; Kindprozesse dürfen nach der Aktion nicht weiterlaufen. Ausgabemenge und Laufzeit sind begrenzt. Die Docker-spezifischen Speicher-, CPU- und PID-Grenzen gelten für das Docker-Backend; das bwrap-Backend richtet keine entsprechenden cgroup-Grenzen ein.
 
-Nach Änderungen an `runner.ts` oder dessen Dependencies den Executor erneut außerhalb von Pi bauen. Die Auswahl des Prüfmodells lässt sich über `auto-approval.json` ändern. Änderungen am Erweiterungscode erfordern einen Neustart von Pi.
+Nach Änderungen an `runner.ts` oder dessen Dependencies Pi über den Launcher neu starten oder `bun bootstrap.ts` außerhalb von Pi ausführen. Eigene Executor-Pfade bleiben manuell verwaltet. Die Auswahl des Prüfmodells lässt sich über `auto-approval.json` ändern. Änderungen am Erweiterungscode erfordern einen Neustart von Pi.
 
 ## Docker-Kompatibilität
 

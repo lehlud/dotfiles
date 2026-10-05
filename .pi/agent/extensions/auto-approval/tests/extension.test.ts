@@ -99,6 +99,20 @@ test("only approved_action is active on session start and before each run", asyn
   await hooks.before_agent_start({}, ctx); expect(active).toEqual(["approved_action"]);
   expect(actions.approved_action.exposure).toBe("model-only");
 });
+
+test("a missing native executor locks startup and blocks before any paid review", async () => {
+  await writeFile(configPath, JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }));
+  const missing = join(agentRoot, "missing-executor");
+  await writeFile(localConfigPath, JSON.stringify({ sandbox: { executable: process.execPath, runnerExecutable: missing } }));
+  await hooks.session_start({}, ctx);
+  expect(statuses.some((status) => status.includes("LOCKED"))).toBe(true);
+  const result = await call(bash("touch must-not-run"));
+  expect(result.isError).toBe(true);
+  expect(JSON.stringify(result.content)).toContain(`Sandbox executable unavailable: ${missing}`);
+  expect(requested).toHaveLength(0);
+  expect(executedRequests).toHaveLength(0);
+  expect(await exists(join(root, "must-not-run"))).toBe(false);
+});
 test("every direct, unknown, nested, MCP, and codemode route is blocked", async () => {
   for (const toolName of ["bash", "powershell", "read", "edit", "write", "codemode", "tool_search", "mcp_exec", "subagent", "arbitrary"]) {
     expect((await hooks.tool_call({ toolName }, ctx)).block).toBe(true);

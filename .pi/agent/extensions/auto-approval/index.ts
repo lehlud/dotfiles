@@ -14,7 +14,7 @@ import { detectWorkspace, executeIsolated, validateWorkspace } from "./isolation
 import { reviewSummary, startReviewDisplay, showDecision } from "./display.ts";
 import { createApprovalRenderers } from "./renderers.ts";
 import { buildReview, sandboxRequestSchema, type Request } from "./policy.ts";
-import { loadConfig } from "./config.ts";
+import { assertSandboxReady, loadConfig } from "./config.ts";
 import { reviewWithFallback, reviewerLabel, ReviewChainError } from "./reviews.ts";
 
 const TOOL_NAME = "approved_action";
@@ -81,9 +81,11 @@ export default function autoApproval(pi: ExtensionAPI) {
     lock(ctx);
     try {
       const config = await loadConfig(getAgentDir());
+      await assertSandboxReady(config);
       ctx.ui.setStatus("auto-approval", `approval: ${config.reviewers.map(reviewerLabel).join(" → ")}`);
-    } catch {
-      ctx.ui.setStatus("auto-approval", "approval: LOCKED (invalid/missing config)");
+    } catch (error) {
+      ctx.ui.setStatus("auto-approval", "approval: LOCKED (configuration/runtime unavailable)");
+      ctx.ui.notify(`Auto-Approval LOCKED: ${String(error)}`, "error");
     }
   });
   pi.on("before_agent_start", async (_event, ctx) => {
@@ -105,6 +107,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       try {
         const config = await loadConfig(getAgentDir());
+        await assertSandboxReady(config);
         ctx.ui.notify(`Auto-Approval ON\nReviewers (priority order):\n${config.reviewers.map((item, i) => `${i + 1}. ${reviewerLabel(item)}`).join("\n")}\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nLocal paths/views (optional): ${localConfigPath}\nChanges take effect on the next action. No bypass/off command.`, "info");
       } catch (error) { ctx.ui.notify(`Auto-Approval LOCKED: ${String(error)}\nConfig: ${configPath}\nLocal paths/views (optional): ${localConfigPath}`, "error"); }
     },
@@ -139,6 +142,7 @@ export default function autoApproval(pi: ExtensionAPI) {
           const validRequest: boolean = Check(parameters, request);
           if (!validRequest || !request.goal.trim() || !request.justification.trim()) throw new Error("Invalid action, goal, or justification");
           const config = await loadConfig(getAgentDir());
+          await assertSandboxReady(config);
           reviewer = config.reviewers.map(reviewerLabel).join(" → ");
           const name = request.tool as ToolName;
           // Private built-in definitions: never resolve a same-name extension/MCP
