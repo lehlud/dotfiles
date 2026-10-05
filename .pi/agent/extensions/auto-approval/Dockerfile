@@ -7,6 +7,7 @@ COPY auto-approval/package.json ./package.json
 COPY auto-approval/node_modules ./node_modules
 COPY auto-approval/runner.ts ./runner.ts
 COPY web-research /extensions/web-research
+COPY public-writing /extensions/public-writing
 RUN python3 -m venv /tmp/web-venv && /tmp/web-venv/bin/pip install --no-cache-dir --only-binary=:all: --target /opt/pi-web/dependencies -r /extensions/web-research/requirements.txt && rm -rf /tmp/web-venv
 COPY web-research/worker.py /opt/pi-web/worker.py
 RUN mkdir /executor && ln -s /extensions/auto-approval/runner.ts /executor/runner.ts

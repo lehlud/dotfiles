@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, writeFile, readFile, rm, access, stat, symlink }
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { writingCheckTool } from "../../public-writing/index.ts";
 
 const root = await mkdtemp(join(tmpdir(), "pi-approval-test-"));
 const agentRoot = await mkdtemp(join(tmpdir(), "pi-approval-agent-test-"));
@@ -26,6 +27,7 @@ mock.module("../isolation.ts", () => ({
     const cwd = workspace.path;
     executedRequests.push(structuredClone(request));
     if (["websearch", "webfetch"].includes(request.tool)) return { content: [{ type: "text", text: "Readable public page." }], details: { finalUrl: "https://example.com/", hasMore: false } };
+    if (request.tool === "writing_check") return writingCheckTool.execute("test-only", request.arguments, signal, undefined, ctx);
     const factories: any = { bash: createBashToolDefinition, read: createReadToolDefinition, write: createWriteToolDefinition, edit: createEditToolDefinition };
     return await factories[request.tool](cwd).execute("test-only", request.arguments, signal, undefined, ctx);
   },
@@ -176,6 +178,31 @@ test("denial returns reason without executing", async () => {
   expect(result.isError).toBe(true);
   expect(JSON.stringify(result.content)).toContain("Nicht vom Nutzer gewollt");
   expect(await exists(join(root, "denied-sentinel"))).toBe(false);
+});
+test("style review judges the immutable exact draft once and uses no network grant", async () => {
+  const args = { tool: "writing_check", arguments: { text: "自転車の修理を承ります。", audience: "public" }, goal: "Public draft", justification: "Review visitor copy" };
+  responseHook = () => { args.arguments.text = "changed during review"; };
+  const result = await call(args);
+  expect(result.isError).not.toBe(true);
+  expect(requested).toHaveLength(1);
+  expect(requested[0].data.action.arguments.text).toBe("自転車の修理を承ります。");
+  expect(requested[0].data.action.sandbox?.network).not.toBe("host");
+  expect(executedRequests[0].arguments.text).toBe("自転車の修理を承ります。");
+  expect(result.details.result.checked).toBe(true);
+  expect(requested[0].context.systemPrompt).toContain("EVERY language");
+});
+test("a valid style denial executes nothing; a corrected exact draft gets a new review", async () => {
+  const args = { tool: "writing_check", arguments: { text: "Not a product. A revolution.", audience: "public" }, goal: "Public draft", justification: "Review visitor copy" };
+  mode = "deny";
+  expect((await call(args)).isError).toBe(true);
+  expect(requested).toHaveLength(1);
+  expect(executedRequests).toHaveLength(0);
+  mode = "approve";
+  args.arguments.text = "Repairs take two days.";
+  expect((await call(args)).isError).not.toBe(true);
+  expect(requested).toHaveLength(2);
+  expect(executedRequests).toHaveLength(1);
+  expect(requested[0].data.requestId).not.toBe(requested[1].data.requestId);
 });
 test("web operations review exact input and networking before isolated execution", async () => {
   const args = { tool: "webfetch", arguments: { url: "https://example.com/" }, goal: "Research", justification: "Read a public source" };

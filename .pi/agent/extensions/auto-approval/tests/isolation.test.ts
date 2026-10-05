@@ -53,6 +53,16 @@ const action = (tool: string, args: Record<string, unknown>) => ({ tool, argumen
 const run = async (tool: string, args: Record<string, unknown>, signal?: AbortSignal) => executeIsolated(action(tool, args), await validateWorkspace(project, native, [], undefined, privateTmp), native, signal);
 const scoped = async (request: Request) => executeIsolated(request, await validateWorkspace(project, native, [], request.sandbox, privateTmp), native);
 
+nativeTest("writing receipts run offline inside the real sandbox with original Unicode", async () => {
+  const text = "自転車の修理を承ります。 نصلح الدراجات.";
+  const result = await run("writing_check", { text, audience: "public", format: "plain" });
+  const { createHash } = await import("node:crypto");
+  expect(result.details.checked).toBe(true);
+  expect(result.details.textHash).toBe(createHash("sha256").update(text).digest("hex"));
+  expect((await run("writing_check", { text, audience: "operator" })).details.checked).toBe(false);
+  await expect(run("writing_check", { text, audience: "invalid" })).rejects.toThrow("Invalid writing check arguments");
+});
+
 nativeTest("empty legacy workspaceRoots do not disable automatic detection", async () => {
   expect((await validateWorkspace(project, { ...native, workspaceRoots: [] }, [])).path).toBe(project);
 });

@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { registerGoals } from "../goals.ts";
 import { buildGoalReview, GOAL_REVIEW_SYSTEM } from "../goal-review.ts";
-import { buildReview, type Config } from "../policy.ts";
+import { buildReview, REVIEW_SYSTEM, type Config } from "../policy.ts";
+import { WRITING_RULEBOOK } from "../../public-writing/rules.ts";
 
 const root = await mkdtemp(join(tmpdir(), "pi-goal-test-"));
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -16,6 +17,12 @@ let operatorGoal: () => string | undefined;
 const boundary = () => ({ outcome: "completed", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "I am done" }] } });
 const state = () => entries.filter((entry) => entry.customType === "auto-approval-goal").at(-1)?.data;
 const settle = () => hooks.turn_end(boundary(), ctx);
+
+test("goal completion stays independent of the public-writing rulebook", () => {
+  expect(REVIEW_SYSTEM).toContain(WRITING_RULEBOOK);
+  expect(GOAL_REVIEW_SYSTEM).not.toContain(WRITING_RULEBOOK);
+  expect(GOAL_REVIEW_SYSTEM).not.toContain("writing_check");
+});
 
 beforeEach(async () => {
   process.env.PI_CODING_AGENT_DIR = root;

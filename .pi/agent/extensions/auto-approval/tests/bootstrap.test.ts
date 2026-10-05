@@ -14,6 +14,8 @@ beforeAll(async () => {
   await mkdir(source, { recursive: true });
   await mkdir(join(source, "../web-research"), { recursive: true });
   for (const name of ["index.ts", "execute.ts", "package.json", "bun.lock"]) await copyFile(join(import.meta.dir, "../../web-research", name), join(source, "../web-research", name));
+  await mkdir(join(source, "../public-writing"), { recursive: true });
+  for (const name of ["index.ts", "rules.ts", "package.json", "bun.lock"]) await copyFile(join(import.meta.dir, "../../public-writing", name), join(source, "../public-writing", name));
   for (const name of ["package.json", "bun.lock", "config.ts", "policy.ts"]) await copyFile(join(import.meta.dir, "..", name), join(source, name));
   await writeFile(join(source, "runner.ts"), 'console.log("first executor");\n');
   await writeFile(join(agent, "auto-approval.json"), JSON.stringify(portable));
@@ -63,6 +65,18 @@ test("startup rebuilds compiled web code after an extension update", async () =>
   await writeFile(web, 'export const fixture = "updated web implementation";\n');
   await prepareExecutor(source, home, agent);
   expect(Bun.spawnSync([runner]).stdout.toString()).toContain("updated web implementation");
+});
+
+test("a frozen editorial-rule change rebuilds the native executor", async () => {
+  const rules = join(source, "../public-writing/rules.ts");
+  const original = await readFile(rules, "utf8");
+  await writeFile(rules, `${original}\nexport const fixture = "first editorial rules";\n`);
+  await writeFile(join(source, "runner.ts"), 'import { fixture } from "../public-writing/rules.ts"; console.log(fixture);\n');
+  await prepareExecutor(source, home, agent);
+  expect(Bun.spawnSync([runner]).stdout.toString()).toContain("first editorial rules");
+  await writeFile(rules, `${original}\nexport const fixture = "updated editorial rules";\n`);
+  await prepareExecutor(source, home, agent);
+  expect(Bun.spawnSync([runner]).stdout.toString()).toContain("updated editorial rules");
 });
 
 test("Docker startup leaves the native executor untouched", async () => {

@@ -8,6 +8,7 @@ import { Check } from "typebox/value";
 import { mkdir } from "node:fs/promises";
 import { isWebTool, webTools } from "../web-research/index.ts";
 import { executeWeb } from "../web-research/execute.ts";
+import { writingCheckTool } from "../public-writing/index.ts";
 
 const factories = {
   read: createReadToolDefinition, bash: createBashToolDefinition,
@@ -28,6 +29,9 @@ try {
     const tool = webTools[request.tool as keyof typeof webTools];
     if (!Check(tool.parameters, request.arguments)) throw new Error("Invalid web executor arguments");
     result = await executeWeb(request);
+  } else if (request.tool === "writing_check") {
+    if (!Check(writingCheckTool.parameters, request.arguments)) throw new Error("Invalid writing check arguments");
+    result = await writingCheckTool.execute("isolated", request.arguments, undefined, undefined, undefined as any);
   } else {
     if (!Object.hasOwn(factories, request.tool)) throw new Error("Unknown executor operation");
     const name = request.tool as keyof typeof factories;

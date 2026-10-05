@@ -13,3 +13,9 @@
 !web-research/requirements.txt
 !web-research/node_modules/
 !web-research/node_modules/**
+!public-writing/
+!public-writing/package.json
+!public-writing/index.ts
+!public-writing/rules.ts
+!public-writing/node_modules/
+!public-writing/node_modules/**

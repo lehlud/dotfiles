@@ -153,6 +153,7 @@ describe("review policy", () => {
     expect(result.text.format.strict).toBe(true);
     expect(result.text.format.schema.properties.requestId.enum).toEqual(["nonce"]);
     expect(result.text.format.schema.properties.decision.enum).toEqual(["approve", "deny"]);
+    expect(result.text.format.schema.properties.reason.description).toContain("latestUserPrompt");
     expect(result.text.format.schema.additionalProperties).toBe(false);
     expect(body.text).toEqual({ verbosity: "low" });
     const chat = constrainReviewPayload({ messages: ["unchanged"] }, { provider: "openai", api: "openai-completions" }, "nonce") as any;

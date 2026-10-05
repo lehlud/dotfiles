@@ -1,0 +1,4 @@
+{
+  "extends": "../auto-approval/tsconfig.json",
+  "include": ["*.ts", "tests/**/*.ts"]
+}

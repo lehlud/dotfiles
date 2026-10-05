@@ -37,7 +37,7 @@ export async function prepareExecutor(directory: string, home = homedir(), agent
   const runner = join(home, ".local", "cache", "pi-auto-approval", "executor");
   // Custom device executors are operator-managed; never replace them.
   if (config.sandbox.runnerExecutable !== runner) return await assertSandboxReady(config);
-  const sources = await fingerprint(directory, ["runner.ts", "package.json", "bun.lock", "../web-research/index.ts", "../web-research/execute.ts", "../web-research/package.json", "../web-research/bun.lock"]);
+  const sources = await fingerprint(directory, ["runner.ts", "package.json", "bun.lock", "../web-research/index.ts", "../web-research/execute.ts", "../web-research/package.json", "../web-research/bun.lock", "../public-writing/index.ts", "../public-writing/rules.ts", "../public-writing/package.json", "../public-writing/bun.lock"]);
   let executable = false;
   try { await access(runner, constants.R_OK | constants.X_OK); executable = (await stat(runner)).isFile(); }
   catch (error) {

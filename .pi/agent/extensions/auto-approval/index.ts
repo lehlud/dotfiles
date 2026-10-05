@@ -21,6 +21,7 @@ import { registerGoals } from "./goals.ts";
 import { isWebTool, webTools } from "../web-research/index.ts";
 import { resolveWebRuntime, reviewedWebRequest } from "../web-research/runtime.ts";
 import { webExecutionPlan } from "../web-research/execute.ts";
+import { writingCheckTool } from "../public-writing/index.ts";
 
 const TOOL_NAME = "approved_action";
 const factories = {
@@ -30,6 +31,7 @@ const factories = {
   find: createFindToolDefinition, ls: createLsToolDefinition,
   websearch: (_cwd: string) => webTools.websearch,
   webfetch: (_cwd: string) => webTools.webfetch,
+  writing_check: (_cwd: string) => writingCheckTool,
 };
 type ToolName = keyof typeof factories;
 const toolNames = Object.keys(factories) as ToolName[];
@@ -132,7 +134,7 @@ export default function autoApproval(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: TOOL_NAME, label: "Reviewed action", exposure: "model-only", executionMode: "sequential",
-    description: "Submit one exact operation for independent approval and, only if approved, immediate execution. websearch uses DDGS (query, optional maxResults/region/timeLimit); webfetch reads one URL as clean plain text (url, optional maxChars/offset). Web operations request per-action network access before review. Optional sandbox requests additional paths/read-write rights, network, literal environment variables, executable search paths, local tools or limits for this action only; explain necessity in justification. Use sandbox.tools: [node] for nvm/node/npm/npx or [sqlmap] for the local sqlmap launcher. Installed code stays read-only; version choices, caches and auto-updates persist only in session-private /tmp. Include tools on each action that needs them. npm install or tool downloads require the shell flag network: true (or sandbox.network: host), independently reviewed before execution. Network permission applies only to this new process and its descendants; existing processes stay isolated. The reviewer checks every expansion against the real user request. No blanket approvals. Every operation needs goal and justification. arguments follows the selected tool's schema.",
+    description: "Submit one exact operation for independent approval and, only if approved, immediate execution. websearch uses DDGS (query, optional maxResults/region/timeLimit); webfetch reads one URL as clean plain text (url, optional maxChars/offset). Web operations request per-action network access before review. writing_check semantically reviews public prose in its original language (text, audience public/operator, optional format/context); it runs offline, and a denial reports editorial findings. Optional sandbox requests additional paths/read-write rights, network, literal environment variables, executable search paths, local tools or limits for this action only; explain necessity in justification. Use sandbox.tools: [node] for nvm/node/npm/npx or [sqlmap] for the local sqlmap launcher. Installed code stays read-only; version choices, caches and auto-updates persist only in session-private /tmp. Include tools on each action that needs them. npm install or tool downloads require the shell flag network: true (or sandbox.network: host), independently reviewed before execution. Network permission applies only to this new process and its descendants; existing processes stay isolated. The reviewer checks every expansion against the real user request. No blanket approvals. Every operation needs goal and justification. arguments follows the selected tool's schema.",
     promptSnippet: "Request independent approval and execution of one operation",
     parameters,
     ...createApprovalRenderers(definitions),
