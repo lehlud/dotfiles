@@ -74,6 +74,45 @@ nativeTest("reviewed network and literal environment overrides expire after exec
   const later = JSON.stringify((await run("bash", { command: 'readlink /proc/self/ns/net; test -z "${PI_TEST_REVIEWED_VALUE+x}" && printf default-env' })).content);
   expect(later).not.toContain(hostNet); expect(later).toContain("default-env");
 });
+
+nativeTest("a network action never grants connectivity to an already-running offline process", async () => {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("network-proof") });
+  const controller = new AbortController();
+  let pending: Promise<any> | undefined;
+  try {
+    const probe = `import socket,time,pathlib,os
+start=pathlib.Path('online-start'); end=pathlib.Path('online-end')
+before=os.readlink('/proc/self/ns/net'); failures=0
+pathlib.Path('offline-ready').write_text('ready')
+deadline=time.monotonic()+10
+while not end.exists() and time.monotonic()<deadline:
+ if start.exists():
+  s=socket.socket(); s.settimeout(.2)
+  try: s.connect(('127.0.0.1',${server.port})); raise SystemExit('offline process gained network')
+  except OSError: failures+=1
+  finally: s.close()
+ time.sleep(.05)
+assert end.exists() and failures>=2
+assert os.readlink('/proc/self/ns/net')==before
+print('offline-during-online',failures)`;
+    pending = run("bash", { command: `python3 - <<'PY'\n${probe}\nPY` }, controller.signal);
+    for (let count = 0; count < 100; count++) {
+      if (await access(join(project, "offline-ready")).then(() => true, () => false)) break;
+      await Bun.sleep(25);
+    }
+    await access(join(project, "offline-ready"));
+    const online = await scoped({ ...action("bash", { command: `touch online-start; curl -fsS http://127.0.0.1:${server.port}/; sleep 1; touch online-end` }), sandbox: { network: "host" } });
+    expect(JSON.stringify(online.content)).toContain("network-proof");
+    const offline = await pending;
+    expect(offline.isError).not.toBe(true);
+    expect(JSON.stringify(offline.content)).toContain("offline-during-online");
+  } finally {
+    controller.abort();
+    await pending?.catch(() => {});
+    server.stop(true);
+    await Promise.all(["offline-ready", "online-start", "online-end"].map((file) => rm(join(project, file), { force: true })));
+  }
+}, 15000);
 nativeTest("reviewed executable search paths mount tools read-only without exposing their parent", async () => {
   const tools = join(fixture, "test-bin"); await mkdir(tools);
   await writeFile(join(tools, "approval-test-tool"), '#!/bin/sh\nprintf runtime-tool', { mode: 0o755 });

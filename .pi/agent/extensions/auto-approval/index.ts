@@ -13,7 +13,7 @@ import { Check } from "typebox/value";
 import { detectWorkspace, executeIsolated, sandboxHostPath, validateWorkspace } from "./isolation.ts";
 import { reviewSummary, startReviewDisplay } from "./display.ts";
 import { createApprovalRenderers } from "./renderers.ts";
-import { buildReview, sandboxRequestSchema, type Request } from "./policy.ts";
+import { buildReview, normalizeNetworkFlag, sandboxRequestSchema, type Request } from "./policy.ts";
 import { assertSandboxReady, loadConfig } from "./config.ts";
 import { reviewWithFallback, reviewerLabel, ReviewChainError } from "./reviews.ts";
 import { removeSessionTemporaryDirectory } from "./temporary-storage.ts";
@@ -38,6 +38,7 @@ const parameters = Type.Union(toolNames.map((name) => Type.Object({
   goal: Type.String({ minLength: 1, maxLength: 4000, description: "Current concrete goal, tied to the real user's request." }),
   justification: Type.String({ minLength: 1, maxLength: 4000, description: "Why this exact action is needed now; explain side effects and scope." }),
   sandbox: Type.Optional(sandboxRequestSchema),
+  ...(["bash", "powershell"].includes(name) ? { network: Type.Optional(Type.Boolean({ description: "Request one-command network access (true) or explicitly stay offline (false). Independent approval is required before execution; expires when this action ends." })) } : {}),
 }, { additionalProperties: false })));
 
 // Resolve symlinks even for not-yet-created paths. Unexpected filesystem errors
@@ -125,7 +126,7 @@ export default function autoApproval(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: TOOL_NAME, label: "Reviewed action", exposure: "model-only", executionMode: "sequential",
-    description: "Submit one exact built-in operation for independent approval and, only if approved, immediate execution. Optional sandbox requests additional paths/read-write rights, network, literal environment variables, executable search paths or limits for this action only; explain necessity in justification. The reviewer checks every expansion against the real user request. No blanket approvals. Every operation needs goal and justification. arguments follows the selected tool's schema.",
+    description: "Submit one exact built-in operation for independent approval and, only if approved, immediate execution. Optional sandbox requests additional paths/read-write rights, network, literal environment variables, executable search paths, local tools or limits for this action only; explain necessity in justification. Use sandbox.tools: [node] for nvm/node/npm/npx or [sqlmap] for the local sqlmap launcher. Installed code stays read-only; version choices, caches and auto-updates persist only in session-private /tmp. Include tools on each action that needs them. npm install or tool downloads require the shell flag network: true (or sandbox.network: host), independently reviewed before execution. Network permission applies only to this new process and its descendants; existing processes stay isolated. Tools never enable networking automatically. The reviewer checks every expansion against the real user request. No blanket approvals. Every operation needs goal and justification. arguments follows the selected tool's schema.",
     promptSnippet: "Request independent approval and execution of one operation",
     parameters,
     ...createApprovalRenderers(definitions),
@@ -149,9 +150,10 @@ export default function autoApproval(pi: ExtensionAPI) {
           signal?.throwIfAborted();
           // Snapshot and validate inside execute as well as at Pi's tool boundary.
           // Other event handlers cannot mutate arguments after they were reviewed.
-          const request = structuredClone(raw) as Request;
-          const validRequest: boolean = Check(parameters, request);
-          if (!validRequest || !request.goal.trim() || !request.justification.trim()) throw new Error("Invalid action, goal, or justification");
+          const snapshot = structuredClone(raw) as Request;
+          const validRequest: boolean = Check(parameters, snapshot);
+          if (!validRequest || !snapshot.goal.trim() || !snapshot.justification.trim()) throw new Error("Invalid action, goal, or justification");
+          const request = normalizeNetworkFlag(snapshot);
           const config = await loadConfig(getAgentDir());
           await assertSandboxReady(config);
           reviewer = config.reviewers.map(reviewerLabel).join(" → ");
@@ -167,7 +169,7 @@ export default function autoApproval(pi: ExtensionAPI) {
             const roots = await protectedRoots;
             if (roots.some((p) => path === p || path.startsWith(`${p}/`))) throw new Error("The agent cannot modify Pi installation, approval code, configuration, or credentials");
           }
-          const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], temporaryStorage: { path: "/tmp", lifetime: "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
+          const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], localTools: workspace.localTools ?? [], localToolStorage: workspace.localTools?.length ? { path: "/tmp/pi-tools", lifetime: "Pi session", updates: "private copies only" } : undefined, temporaryStorage: { path: "/tmp", lifetime: "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
           const review = buildReview(request, ctx.sessionManager.getBranch(), config, ctx.cwd, protectedPaths, sandboxPlan, operatorGoal());
           audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
           const checked = await reviewWithFallback(config, ctx.modelRegistry, review, {

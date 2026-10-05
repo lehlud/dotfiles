@@ -199,6 +199,24 @@ test("denied sandbox requests and forged disable switches never execute", async 
   expect((await call({ ...bash("printf bypass"), sandbox: { isolation: false } })).isError).toBe(true);
   expect(requested).toHaveLength(reviewed); expect(executedRequests).toHaveLength(0);
 });
+
+test("one-command network flag requires approval and expires after that process", async () => {
+  mode = "deny";
+  expect((await call({ ...bash("touch denied-network-flag"), network: true, sandbox: { tools: ["node"] } })).isError).toBe(true);
+  expect(requested[0].data.action.sandbox).toEqual({ tools: ["node"], network: "host" });
+  expect(requested[0].data.action.network).toBeUndefined();
+  expect(executedRequests).toHaveLength(0);
+  mode = "approve";
+  expect((await call({ ...bash("printf scoped-network"), network: true })).isError).not.toBe(true);
+  expect(executedRequests[0].sandbox.network).toBe("host");
+  await call(bash("printf subsequent-offline"));
+  expect(executedRequests[1].sandbox).toBeUndefined();
+  const count = requested.length;
+  expect((await call({ ...bash("touch conflict"), network: true, sandbox: { network: "none" } })).isError).toBe(true);
+  expect((await call({ tool: "read", arguments: { path: "package.json" }, goal: "Read", justification: "Inspect", network: true })).isError).toBe(true);
+  expect(requested).toHaveLength(count);
+  expect(executedRequests).toHaveLength(2);
+});
 test("invalid, errored, or mismatched verdicts fail closed", async () => {
   for (const variant of ["invalid", "error", "mismatch"] as const) {
     mode = variant;

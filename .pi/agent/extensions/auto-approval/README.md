@@ -46,6 +46,7 @@ Benötigt eine Nutzeraufgabe mehr Zugriff, ergänzt das Hauptmodell den konkrete
 
 Unterstützte Dimensionen:
 
+- `tools`: einzeln ausgewählte lokale Tool-Bundles, etwa `"node"` oder `"sqlmap"`; Runtime-Mounts werden geprüft, Caches und Updates bleiben im privaten Session-`/tmp`.
 - `paths`: vorhandene absolute Datei- oder Verzeichnispfade mit `access: "read"` oder `"write"`. Symlinks werden vor der Prüfung aufgelöst; der Reviewer sieht die tatsächlichen Mounts.
 - `network`: `"none"` oder `"host"`. Host-Netzwerkzugriff umfasst auch lokale Dienste. Der konkrete Befehl und mögliche Datenübertragungen werden mitgeprüft.
 - `environment`: explizite Literal-Werte. Es werden keine Host-Umgebungsvariablen oder Secrets automatisch übernommen.
@@ -66,7 +67,25 @@ Beispiel für einen notwendigen externen Read:
 }
 ```
 
-Die Erweiterung erscheint sichtbar neben der normalen Tool-Anzeige und wird mit ihrem aufgelösten Plan protokolliert. Bestehende Schreibrechte werden durch zusätzliche Read-Mounts nicht automatisch erweitert. Hardlinks zwischen einem schreibbaren und einem nur lesbaren Mount werden zurückgewiesen. Die aktive Approval-Installation, ihre Konfiguration, bekannte Credential-Verzeichnisse und das gesamte Home bleiben geschützt. Der Executor und die unabhängige Prüfung können durch keinen Antrag abgeschaltet werden.
+Die Erweiterung erscheint sichtbar neben der normalen Tool-Anzeige und wird mit ihrem aufgelösten Plan protokolliert. Lange Shell-Befehle sind standardmäßig eingeklappt; `ctrl+o` zeigt den vollständigen Befehl. Geprüft und ausgeführt wird immer das unveränderte Original. Bestehende Schreibrechte werden durch zusätzliche Read-Mounts nicht automatisch erweitert. Hardlinks zwischen einem schreibbaren und einem nur lesbaren Mount werden zurückgewiesen. Die aktive Approval-Installation, ihre Konfiguration, bekannte Credential-Verzeichnisse und das gesamte Home bleiben geschützt. Der Executor und die unabhängige Prüfung können durch keinen Antrag abgeschaltet werden.
+
+## Lokale Tools und Netzwerkzugriff für einen Befehl
+
+Mit `sandbox.tools: ["node"]` erhält eine Aktion `nvm`, `node`, `npm`, `npx` und, sofern installiert, `corepack`. Vorhandene Node-Versionen werden schreibgeschützt eingebunden. `nvm use 22` wählt eine installierte Version; die Auswahl bleibt für folgende Node-Aktionen derselben Session erhalten. Ohne Versionsargument liest `nvm use` die nächste `.nvmrc`. Für jede Aktion, die diese Tools braucht, wird der Bundle-Antrag erneut gestellt.
+
+Der Ablauf besteht beispielsweise aus drei separat geprüften Shell-Aktionen:
+
+| Befehl | Zusätzliche Felder von `approved_action` |
+| --- | --- |
+| `nvm use 22` | `"sandbox": {"tools": ["node"]}` |
+| `npm install` | `"sandbox": {"tools": ["node"]}, "network": true` |
+| `npm run build` | `"sandbox": {"tools": ["node"]}` |
+
+Das Shell-Flag `network: true` beantragt Netzwerkzugriff nur für den neu gestarteten Befehlsprozess und seine Unterprozesse. Der unabhängige Reviewer prüft ihn vor dem Start zusammen mit dem exakten Befehl. Die Erweiterung übersetzt das Flag in `sandbox.network: "host"`; widersprüchliche Angaben werden zurückgewiesen. Ohne Antrag startet jede Aktion in einem eigenen Netzwerk-Namespace ohne Host-Netzwerk. Ein freigegebener Netzwerkbefehl verändert weder die Namespaces bereits laufender Prozesse noch den Standard für folgende Aktionen. DNS-Konfiguration und öffentliche CA-Zertifikate werden bei dieser Freigabe ebenfalls nur lesbar eingebunden.
+
+`nvm install <numerische Version>` lädt die offizielle Linux-Distribution von nodejs.org, prüft deren SHA256 gegen `SHASUMS256.txt` und installiert sie in das private `/tmp`. Dafür ist ebenfalls ein Netzwerk-Antrag nötig. npm-Caches und neu installierte Node-Versionen verschwinden beim Ende der Session; Projektabhängigkeiten und Build-Ergebnisse bleiben im Projekt.
+
+Andere reguläre, ausführbare Launcher aus `~/.local/bin` können einzeln mit ihrem Namen angefordert werden, etwa `sandbox.tools: ["sqlmap"]`. Der Launcher und sein öffentlicher Cache `~/.local/cache/<Name>` werden schreibgeschützt eingebunden. Die Sandbox erstellt eine private Kopie mit eigenem Home und kopiert den vorhandenen `auto-update-app.bash`-Helper. Aktualisierungen betreffen diese Kopie, niemals die Host-Installation. Downloads brauchen eine separat genehmigte Netzwerkfreigabe; ein vorhandener Cache ist auch offline nutzbar. Selbstständige Executables benötigen keinen Update-Helper. Tools mit weiteren privaten Dateien, Diensten oder externen Runtimes brauchen passende zusätzliche Integration. Der aktuelle WPScan-Launcher benötigt einen externen Container-Engine-Zugriff und wird nicht unterstützt.
 
 Um bestehenden Programmcode beurteilen zu können, erhält der Reviewer Text-Ergebnisse vorher genehmigter Aktionen aus demselben Session-Zweig. Dazu gehören Reads, Dateisuche und Shell-Ausgaben, etwa von `cat`, `sed`, `git diff` oder Projekttests. Dafür müssen Tool-Ergebnis und Approval-Protokoll samt Request-ID und Fingerprint zusammenpassen. Dateiinhalte und Ausgaben sind Belege für die Prüfung, keine Nutzeranweisungen. Berücksichtigt werden höchstens acht aktuelle Ergebnisse. Ergebnisse, die das Kontextbudget überschreiten, werden vollständig ausgelassen und ausdrücklich benannt.
 

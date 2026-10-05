@@ -6,8 +6,9 @@ import { getuid, getgid } from "node:process";
 import { homedir } from "node:os";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { Config, Request, SandboxRequest } from "./policy.ts";
+import { resolveLocalTools, toolRuntimeDirectory, type LocalTool } from "./local-tools.ts";
 export type SandboxConfig = Config["sandbox"];
-export type Workspace = { path: string; cwd: string; bindings: string[]; readOnlyBindings?: string[]; searchPaths?: string[]; temporaryDirectory?: string; masked: { path: string; directory: boolean }[] };
+export type Workspace = { path: string; cwd: string; bindings: string[]; readOnlyBindings?: string[]; searchPaths?: string[]; localTools?: LocalTool[]; temporaryDirectory?: string; masked: { path: string; directory: boolean }[] };
 const within = (root: string, path: string) => {
   const rel = relative(root, path);
   return rel === "" || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel));
@@ -134,14 +135,23 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
   const modes = new Map(bindings.map((path) => [path, "write" as "read" | "write"]));
   const home = await realpath(homedir());
   const searchPaths: string[] = [];
-  const extra = [...(request?.paths ?? []), ...(request?.executableSearchPaths ?? []).map((path) => ({ path, access: "read" as const }))];
+  const localTools = await resolveLocalTools(request?.tools);
+  if (localTools.length && !temporaryDirectory) throw new Error("Local tools require session-private temporary storage");
+  const toolSources = localTools.flatMap((tool) => tool.sources);
+  const toolRoots = await Promise.all(toolSources.map(({ source }) => realpath(source)));
+  const writableGrants = [...bindings, ...(request?.paths ?? []).filter((entry) => entry.access === "write").map((entry) => entry.path)];
+  for (const grant of writableGrants) {
+    const path = await realpath(grant);
+    if (toolRoots.some((root) => within(root, path) || within(path, root))) throw new Error("Local tool installations must remain read-only; writable grants cannot overlap them");
+  }
+  const extra = [...(request?.paths ?? []), ...(request?.executableSearchPaths ?? []).map((path) => ({ path, access: "read" as const })), ...toolSources.map(({ source: path }) => ({ path, access: "read" as const }))];
   for (const entry of extra) {
     const path = await realpath(entry.path);
     if (temporaryDirectory && (within(path, temporaryDirectory) || within(temporaryDirectory, path))) throw new Error("Additional access overlaps private sandbox temporary storage");
     const stat = await lstat(path);
     if (!stat.isFile() && !stat.isDirectory()) throw new Error(`Additional access needs an existing regular file or directory: ${entry.path}`);
     if (/[\n\r,]/.test(path) || within(path, home)) throw new Error("Additional access cannot expose the whole home directory or its ancestors");
-    if (["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/tmp"].includes(path) || ["/proc", "/dev", "/executor", "/tmp/home"].some((root) => within(root, path))) throw new Error("Additional access overlaps sandbox runtime infrastructure");
+    if (["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/tmp"].includes(path) || ["/proc", "/dev", "/executor", "/opt/pi-tools", "/tmp/home", "/tmp/pi-tools"].some((root) => within(root, path))) throw new Error("Additional access overlaps sandbox runtime infrastructure");
     if (protectedRoots.some((root) => within(root, path) || within(path, root))) throw new Error(`Additional access overlaps protected Pi or credential storage: ${entry.path}`);
     if (request?.executableSearchPaths?.includes(entry.path)) {
       if (!stat.isDirectory()) throw new Error("Executable search paths must be directories");
@@ -204,7 +214,17 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
     if (entry.seen !== entry.expected) throw new Error(`Workspace hardlink has aliases outside its exposed boundary: ${entry.path}`);
     if (entry.write && entry.read) throw new Error(`Writable hardlink would modify a read-only grant: ${entry.path}`);
   }
-  return { ...detected, bindings, readOnlyBindings, searchPaths, masked, ...(temporaryDirectory ? { temporaryDirectory } : {}) };
+  return { ...detected, bindings, readOnlyBindings, searchPaths, masked, ...(localTools.length ? { localTools } : {}), ...(temporaryDirectory ? { temporaryDirectory } : {}) };
+}
+
+function localToolArguments(workspace: Workspace, native: boolean): string[] {
+  const tools = workspace.localTools ?? [];
+  if (!tools.length) return [];
+  const sources = [{ source: toolRuntimeDirectory, target: "/opt/pi-tools/runtime" }, ...tools.flatMap((tool) => tool.sources)];
+  for (const tool of tools) {
+    if (tool.helper) sources.push({ source: tool.helper, target: `/opt/pi-tools/source/${tool.name}/helper` });
+  }
+  return sources.flatMap(({ source, target }) => native ? ["--ro-bind", source, target] : ["--mount", `type=bind,src=${source},dst=${target},bind-recursive=disabled,readonly`]);
 }
 
 export function sandboxArguments(workspace: Workspace, config: SandboxConfig, name: string, request?: SandboxRequest) {
@@ -224,8 +244,9 @@ export function sandboxArguments(workspace: Workspace, config: SandboxConfig, na
     "--env", "HOME=/tmp/home", "--env", "PI_CODING_AGENT_DIR=/tmp/pi",
     ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
     ...workspace.bindings.flatMap((path) => ["--mount", `type=bind,src=${path},dst=${path},bind-recursive=disabled${workspace.readOnlyBindings?.includes(path) ? ",readonly" : ""}`]),
-    "--workdir", workspace.cwd, "--entrypoint", "/usr/local/bin/bun", config.image,
-    "/executor/runner.ts"];
+    ...localToolArguments(workspace, false),
+    "--workdir", workspace.cwd, "--entrypoint", workspace.localTools?.length ? "/bin/bash" : "/usr/local/bin/bun", config.image,
+    ...(workspace.localTools?.length ? ["/opt/pi-tools/runtime/bootstrap.sh", ...workspace.localTools.map((tool) => tool.name), "--", "/usr/local/bin/bun"] : []), "/executor/runner.ts"];
   const args = ["--unshare-all", "--unshare-user", "--disable-userns", "--die-with-parent", "--new-session",
     "--cap-drop", "ALL", "--ro-bind", "/usr", "/usr",
     "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin",
@@ -237,6 +258,9 @@ export function sandboxArguments(workspace: Workspace, config: SandboxConfig, na
     "--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp/home",
     "--setenv", "PI_CODING_AGENT_DIR", "/tmp/pi", "--setenv", "LANG", "C.UTF-8"];
   if (request?.network === "host") args.push("--share-net");
+  if (request?.network === "host") {
+    for (const path of ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf", "/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"]) args.push("--ro-bind-try", path, path);
+  }
   for (const [key, value] of Object.entries(environment)) args.push("--setenv", key, value);
   if (!workspace.bindings.includes(workspace.path)) args.push("--size", "16777216", "--tmpfs", workspace.path);
   for (const path of workspace.bindings) args.push(workspace.readOnlyBindings?.includes(path) ? "--ro-bind" : "--bind", path, path);
@@ -244,9 +268,10 @@ export function sandboxArguments(workspace: Workspace, config: SandboxConfig, na
     if (entry.directory) args.push("--perms", "000", "--tmpfs", entry.path, "--remount-ro", entry.path);
     else args.push("--ro-bind", "/dev/null", entry.path);
   }
+  args.push(...localToolArguments(workspace, true));
   // Projected parent directories are ephemeral and read-only. Only mounts persist.
   if (!workspace.bindings.includes(workspace.path)) args.push("--remount-ro", workspace.path);
-  args.push("--chdir", workspace.cwd, "/executor/runner");
+  args.push("--chdir", workspace.cwd, ...(workspace.localTools?.length ? ["/bin/bash", "/opt/pi-tools/runtime/bootstrap.sh", ...workspace.localTools.map((tool) => tool.name), "--"] : []), "/executor/runner");
   return args;
 }
 

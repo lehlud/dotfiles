@@ -36,11 +36,19 @@ export function createApprovalRenderers(tools: Record<string, NativeTool>): Pick
       const name = typeof args?.tool === "string" ? args.tool : "";
       const state = slot(context, name);
       const tool = definition(name);
-      state.call = tool?.renderCall?.(args?.arguments ?? {}, theme, nativeContext(context, state, state.call))
+      let displayed = args?.arguments ?? {};
+      const command = displayed.command;
+      if (["bash", "powershell"].includes(name) && typeof command === "string" && !context.expanded && (command.length > 300 || command.split("\n").length > 5)) {
+        const lines = command.split("\n");
+        const preview = lines[0].slice(0, 160);
+        displayed = { ...displayed, command: `${preview} …\n[${lines.length} lines, ${command.length} characters · ctrl+o to expand]` };
+      }
+      state.call = tool?.renderCall?.(displayed, theme, { ...nativeContext(context, state, state.call), args: displayed })
         ?? new Text(theme.fg("toolTitle", theme.bold(name || "approved_action")), 0, 0);
-      if (args?.sandbox) {
-        const changes = args.sandbox;
+      if (args?.sandbox || args?.network !== undefined) {
+        const changes = { ...args.sandbox, ...(args?.network !== undefined ? { network: args.network ? "host" : "none" } : {}) };
         const labels = [
+          ...(changes.tools ?? []).map((name: string) => `tool: ${name}`),
           ...(changes.paths ?? []).map((entry: any) => `${entry.access}: ${entry.path}`),
           ...(changes.network ? [`network: ${changes.network}`] : []),
           ...(changes.environment ? [`environment: ${Object.keys(changes.environment).join(", ")}`] : []),

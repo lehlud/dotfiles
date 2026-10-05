@@ -1,11 +1,21 @@
 import { describe, test, expect } from "bun:test";
-import { buildReview, constrainReviewPayload, parseConfig, parseVerdict, sandboxRequestSchema, textContent, withWatchdog, type Config, type PortableConfig } from "../policy.ts";
+import { buildReview, constrainReviewPayload, normalizeNetworkFlag, parseConfig, parseVerdict, sandboxRequestSchema, textContent, withWatchdog, type Config, type PortableConfig } from "../policy.ts";
 import { Check } from "typebox/value";
 const portable: PortableConfig = { reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }], recentUserPrompts: 2, requestTimeoutMs: 120000, sandbox: { backend: "bwrap" } };
 const config: Config = { ...portable, sandbox: { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/executor/runner" } };
 const request = { tool: "bash", arguments: { command: "printf ok" }, goal: "Test", justification: "Smoke test" };
 
 describe("review policy", () => {
+  test("local tool names and single-process network normalization are strict", () => {
+    expect(Check(sandboxRequestSchema, { tools: ["node", "sqlmap"] })).toBe(true);
+    for (const tools of [[], ["../node"], ["node", "node"], ["foo/bar"], ["x".repeat(65)]]) expect(Check(sandboxRequestSchema, { tools })).toBe(false);
+    const original = { ...request, network: true, sandbox: { tools: ["node"] } };
+    expect(normalizeNetworkFlag(original).sandbox).toEqual({ tools: ["node"], network: "host" });
+    expect(original.sandbox).toEqual({ tools: ["node"] });
+    expect(normalizeNetworkFlag({ ...request, network: false }).sandbox?.network).toBe("none");
+    expect(() => normalizeNetworkFlag({ ...request, network: false, sandbox: { network: "host" } })).toThrow("Conflicting");
+    expect(() => normalizeNetworkFlag({ ...request, tool: "read", network: true })).toThrow("shell actions");
+  });
   test("sandbox requests are strict and the reviewer gets all dimensions and resolved mounts", () => {
     const sandbox = { paths: [{ path: "/tmp/shared", access: "read" }], network: "host", environment: { BUILD_MODE: "test" }, executableSearchPaths: ["/tmp/bin"], limits: { executionTimeoutMs: 900000, tmpBytes: 536870912, cpus: 4, memoryMiB: 2048, pids: 256 } };
     expect(Check(sandboxRequestSchema, sandbox)).toBe(true);

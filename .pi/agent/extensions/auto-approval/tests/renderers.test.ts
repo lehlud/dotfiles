@@ -15,8 +15,8 @@ const tools = {
 };
 const renderers = createApprovalRenderers(tools);
 const ui = { requestRender() {} } as TUI;
-const row = (tool: string, args: Record<string, unknown>) => {
-  const component = new ToolExecutionComponent("approved_action", "render-test", { tool, arguments: args }, undefined, renderers, ui, cwd);
+const row = (tool: string, args: Record<string, unknown>, rendering = renderers) => {
+  const component = new ToolExecutionComponent("approved_action", "render-test", { tool, arguments: args }, undefined, rendering, ui, cwd);
   component.setArgsComplete(); component.markExecutionStarted();
   return component;
 };
@@ -91,6 +91,37 @@ test("write, bash and ls also keep their native presentation", () => {
   const bash = row("bash", { command: "printf done" });
   bash.updateResult(approved({ content: [{ type: "text", text: "done" }] }));
   expect(display(bash)).toContain("printf done"); expect(display(bash)).toContain("done");
+});
+
+test("long shell commands collapse only their display and expand back to the complete command", () => {
+  const shown: string[] = [];
+  const rendering = createApprovalRenderers({ ...tools, bash: { ...tools.bash, renderCall(args: any, theme: any, context: any) {
+    shown.push(args.command);
+    return tools.bash.renderCall!(args, theme, context);
+  } } as ToolDefinition<any, any> });
+  for (const command of ["cat > /tmp/draft.py <<'PY'\n" + "print('visible-on-expand')\n".repeat(40) + "PY", "printf " + "single-line-payload".repeat(60)]) {
+    const args = { command, timeout: 10 };
+    const component = row("bash", args, rendering);
+    const collapsed = display(component).split("\n").map((line) => line.trimEnd()).join("\n");
+    expect(collapsed).toContain("ctrl+o to expand");
+    expect(collapsed).toContain(`${command.length} characters`);
+    expect(collapsed.length).toBeLessThan(400);
+    expect(collapsed).toContain("timeout 10s");
+    expect(args.command).toBe(command);
+    component.setExpanded(true);
+    expect(display(component).replace(/\s/g, "")).toContain(command.replace(/\s/g, ""));
+    expect(shown.at(-1)).toBe(command);
+    component.setExpanded(false);
+    expect(display(component)).toContain("ctrl+o to expand");
+  }
+});
+
+test("one-command network and selected tool bundles are visible", () => {
+  const component = new ToolExecutionComponent("approved_action", "node-scope", {
+    tool: "bash", arguments: { command: "npm install" }, network: true, sandbox: { tools: ["node"] },
+  }, undefined, renderers, ui, cwd);
+  expect(display(component)).toContain("tool: node");
+  expect(display(component)).toContain("network: host");
 });
 
 test("executor errors remain visible and do not enter native success rendering", () => {
