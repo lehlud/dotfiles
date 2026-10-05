@@ -9,6 +9,32 @@ export type ReviewAttempt = Reviewer & { status: "failed" | "invalid" | "approve
 type Observer = { start(candidate: Reviewer): void; finish(): void; failed(attempt: ReviewAttempt): void };
 export const reviewerLabel = (candidate: Reviewer) => `${candidate.provider}/${candidate.model} (${candidate.thinking})`;
 
+function refusedReview(message: string): boolean {
+  return /content.filter|safety.*(?:refus|block)|(?:refus|block).*safety/i.test(message);
+}
+
+function providerFailureDetail(error: unknown): string {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  // Fixed labels only: provider errors can contain credentials or prompt text.
+  if (/429|rate.?limit|quota/i.test(message)) return ": rate limit or quota unavailable";
+  if (/401|403|unauthoriz|authentication|api.?key/i.test(message)) return ": provider authentication rejected; use /login for this provider";
+  if (/invalid.*schema|schema.*invalid|unsupported.*param|param.*not supported/i.test(message)) return ": request schema or parameters rejected";
+  if (/model.*not found|model.*does not exist|model.*not.*access/i.test(message)) return ": reviewer model unavailable";
+  if (/fetch failed|ECONN|ENOTFOUND|network|connection|socket/i.test(message)) return ": provider connection unavailable";
+  return "";
+}
+
+function incompleteReview(response: AssistantMessage, requestId: string) {
+  try {
+    const verdict = parseVerdict(textContent(response.content), requestId);
+    if (verdict.decision === "deny") return { denial: verdict };
+  } catch { /* An incomplete response need not contain a complete verdict. */ }
+  const refused = /refusal/i.test(response.rawStopReason ?? "") || refusedReview(`${response.rawStopReason ?? ""} ${response.errorMessage ?? ""}`);
+  if (refused) return { blocked: "Reviewer refused the check; no fallback, nothing executed" };
+  if (response.stopReason !== "error") return { blocked: `Reviewer response is incomplete (${response.stopReason}); no fallback, nothing executed` };
+  return { failure: `Reviewer provider response failed (error)${providerFailureDetail(response.errorMessage)}` };
+}
+
 export class ReviewChainError extends Error {
   constructor(message: string, public attempts: ReviewAttempt[], public usage?: Usage) { super(message); }
 }
@@ -52,12 +78,30 @@ export async function reviewWithFallback(config: Config, registry: Registry, env
       if (!reason && model) response = await requestReview(registry, candidate, model, envelope, config.requestTimeoutMs, signal);
     } catch (error) {
       signal?.throwIfAborted();
-      reason = error instanceof Error && error.message === "Reviewer request timed out" ? error.message : "Reviewer provider request failed";
+      if (error instanceof Error && refusedReview(error.message)) {
+        const reason = "Reviewer refused the check; no fallback, nothing executed";
+        attempts.push({ ...candidate, status: "invalid", reason });
+        throw new ReviewChainError(reason, attempts, usage);
+      }
+      reason = error instanceof Error && error.message === "Reviewer request timed out" ? error.message : `Reviewer provider request failed${providerFailureDetail(error)}`;
     } finally { observer.finish(); }
     signal?.throwIfAborted();
     if (response) {
       usage = sumUsage(usage, response.usage);
-      if (response.stopReason !== "stop") reason = `Reviewer did not finish successfully (${response.stopReason})`;
+      if (response.stopReason !== "stop") {
+        // An explicit request-bound denial stays final even if transport fails
+        // after delivering it. An approval from a failed response is never used.
+        const stopped = incompleteReview(response, envelope.requestId);
+        if (stopped.denial) {
+          attempts.push({ ...candidate, status: "deny", reason: stopped.denial.reason });
+          return { verdict: stopped.denial, selectedReviewer: candidate, attempts, usage };
+        }
+        if (stopped.blocked) {
+          attempts.push({ ...candidate, status: "invalid", reason: stopped.blocked });
+          throw new ReviewChainError(stopped.blocked, attempts, usage);
+        }
+        reason = stopped.failure;
+      }
     }
     if (reason) {
       const attempt: ReviewAttempt = { ...candidate, status: "failed", reason };

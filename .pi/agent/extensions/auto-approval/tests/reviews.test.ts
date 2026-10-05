@@ -7,7 +7,7 @@ const fallback = { provider: "openrouter", model: "openai/gpt-6-luna", thinking:
 const config: Config = { reviewers: [primary, fallback], recentUserPrompts: 6, requestTimeoutMs: 120000, sandbox: { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/executor/runner" } };
 const envelope = buildReview({ tool: "bash", arguments: { command: "printf synthetic" }, goal: "Smoke test", justification: "Synthetic test" }, [{ type: "message", message: { role: "user", content: "Run a harmless synthetic smoke test" } }], config, "/tmp", []);
 const usage = { input: 2, output: 3, cacheRead: 1, cacheWrite: 0, totalTokens: 6, cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0, total: 0.31 } };
-type Mode = "approve" | "deny" | "missing" | "auth" | "unsupported" | "error" | "throw" | "timeout" | "invalid" | "mismatch";
+type Mode = "approve" | "deny" | "missing" | "auth" | "unsupported" | "error" | "error_deny" | "length" | "filtered" | "aborted" | "throw" | "throw_refusal" | "timeout" | "invalid" | "mismatch";
 let modes: Record<string, Mode>;
 let calls: any[];
 let attempts: ReviewAttempt[];
@@ -22,7 +22,8 @@ const observer = {
 };
 function message(provider: string) {
   const mode = modes[provider];
-  return { stopReason: mode === "error" ? "error" : "stop", usage, content: [{ type: "text", text: mode === "invalid" ? "not JSON" : JSON.stringify({ requestId: mode === "mismatch" ? "other-action" : envelope.requestId, decision: mode === "deny" ? "deny" : "approve", reason: "Synthetic verdict" }) }] };
+  const stopReason = mode === "length" || mode === "aborted" ? mode : ["error", "error_deny", "filtered"].includes(mode) ? "error" : "stop";
+  return { stopReason, rawStopReason: mode === "filtered" ? "incomplete.content_filter" : undefined, usage, content: [{ type: "text", text: mode === "invalid" ? "not JSON" : JSON.stringify({ requestId: mode === "mismatch" ? "other-action" : envelope.requestId, decision: mode === "deny" || mode === "error_deny" ? "deny" : "approve", reason: "Synthetic verdict" }) }] };
 }
 const registry: any = {
   find: (provider: string, id: string) => modes[provider] === "missing" ? undefined : { provider, id, reasoning: modes[provider] !== "unsupported", api: "openai-responses", thinkingLevelMap: { medium: "medium" } },
@@ -32,6 +33,7 @@ const registry: any = {
     return { result: async () => {
       onResponse?.();
       if (modes[model.provider] === "throw") throw new Error("HTTP 429 with synthetic-private-error-content");
+      if (modes[model.provider] === "throw_refusal") throw new Error("Request blocked by safety policy with synthetic-private-error-content");
       if (modes[model.provider] === "timeout") await new Promise((done) => setTimeout(done, 35));
       return message(model.provider);
     } };
@@ -61,7 +63,7 @@ test("provider failures fall back without exposing raw provider error content", 
   modes.openai = "throw";
   const result = await run();
   expect(result.selectedReviewer).toEqual(fallback);
-  expect(result.attempts[0].reason).toBe("Reviewer provider request failed");
+  expect(result.attempts[0].reason).toBe("Reviewer provider request failed: rate limit or quota unavailable");
   expect(JSON.stringify(result)).not.toContain("synthetic-private-error-content");
   expect(result.usage).toEqual(usage);
 });
@@ -78,6 +80,20 @@ test("valid denial is binding even when the fallback would approve", async () =>
   const result = await run();
   expect(result.verdict.decision).toBe("deny"); expect(result.selectedReviewer).toEqual(primary);
   expect(calls).toHaveLength(1); expect(attempts).toHaveLength(0);
+});
+test("denial remains final when a provider error follows the complete verdict", async () => {
+  modes.openai = "error_deny";
+  const result = await run();
+  expect(result.verdict.decision).toBe("deny");
+  expect(result.selectedReviewer).toEqual(primary);
+  expect(calls).toHaveLength(1);
+});
+test("truncated, refused or aborted model responses never consult a fallback", async () => {
+  for (const mode of ["length", "filtered", "aborted", "throw_refusal"] as const) {
+    modes.openai = mode; calls = [];
+    await expect(run()).rejects.toThrow("no fallback");
+    expect(calls).toHaveLength(1);
+  }
 });
 test("malformed or mismatched verdicts fail closed without consulting the fallback", async () => {
   for (const mode of ["invalid", "mismatch"] as const) {
