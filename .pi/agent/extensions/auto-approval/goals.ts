@@ -1,12 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { BoundaryResult, ExtensionAPI, ExtensionCommandContext, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
 import { assertSandboxReady, loadConfig } from "./config.ts";
 import { buildGoalReview, GOAL_REVIEW_SYSTEM } from "./goal-review.ts";
 import { reviewWithFallback, reviewerLabel, ReviewChainError } from "./reviews.ts";
 
 type Goal = { id: string; text: string; status: "running" | "paused" | "complete" | "stopped"; checks: number; reason: string };
 const STATE_ENTRY = "auto-approval-goal";
+// Pi sorts footer statuses by key; keep the target visible before review status.
+const STATUS_KEY = "00-goal";
+function goalTitle(text: string) {
+  const plain = stripTerminalSequences(text).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/gu, " ").trim();
+  return stripTerminalSequences(truncateToWidth(plain, 100, "…"));
+}
 
 const message = (text: string) => ({ customType: "auto-approval-goal-instruction", content: text, display: false });
 const instruction = (current: Goal) => `Operator goal: ${current.text}\nContinue until the independent goal reviewer confirms completion. Provide concrete evidence and required validation. All operations still require approved_action; respect denials and operator corrections. Missing work: ${current.reason}`;
@@ -15,7 +22,7 @@ class GoalController {
   goal: Goal | undefined;
   reviewController: AbortController | undefined;
   constructor(private pi: ExtensionAPI) {}
-  display = (ctx: ExtensionContext) => ctx.ui.setStatus("goal", this.goal ? `goal: ${this.goal.status} · ${this.goal.checks} checks` : undefined);
+  display = (ctx: ExtensionContext, status?: string) => ctx.ui.setStatus(STATUS_KEY, this.goal ? `goal: ${goalTitle(this.goal.text)} · ${status ?? this.goal.status} · ${this.goal.checks} checks` : undefined);
   record(next: Goal, ctx: ExtensionContext) {
     this.pi.appendEntry(STATE_ENTRY, next);
     this.goal = next;
@@ -30,6 +37,7 @@ class GoalController {
   }
   restore(_event: unknown, ctx: ExtensionContext) {
     this.reviewController?.abort();
+    ctx.ui.setStatus("goal", undefined); // Clear the old status key after reload.
     const last = ctx.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === STATE_ENTRY).at(-1);
     const saved = last?.type === "custom" ? last.data as Goal | undefined : undefined;
     this.goal = saved && typeof saved.text === "string" && typeof saved.id === "string" && Number.isInteger(saved.checks) && ["running", "paused", "complete", "stopped"].includes(saved.status) ? { ...saved } : undefined;
@@ -92,7 +100,7 @@ class GoalController {
       envelope = buildGoalReview(current.text, ctx.sessionManager.getBranch(), config, ctx.cwd, current.id);
       const requestId = envelope.requestId;
       const checked = await reviewWithFallback(config, ctx.modelRegistry, envelope, {
-        start: (candidate) => ctx.ui.setStatus("goal", `goal: checking · ${reviewerLabel(candidate)}`),
+        start: (candidate) => this.display(ctx, `checking · ${reviewerLabel(candidate)}`),
         finish() {},
         failed: (attempt) => this.pi.appendEntry("auto-approval-goal-reviewer-failure", { goalId: current.id, requestId, attempt }),
       }, signal, GOAL_REVIEW_SYSTEM);
@@ -122,7 +130,7 @@ export function registerGoals(pi: ExtensionAPI) {
   const controller = new GoalController(pi);
   pi.on("session_start", (event, ctx) => controller.restore(event, ctx));
   pi.on("session_tree", (event, ctx) => controller.restore(event, ctx));
-  pi.on("session_shutdown", () => { controller.reviewController?.abort(); controller.goal = undefined; });
+  pi.on("session_shutdown", (_event, ctx) => { controller.reviewController?.abort(); controller.goal = undefined; controller.display(ctx); });
   pi.on("turn_end", (event, ctx) => controller.check(event, ctx));
   pi.registerCommand("goal", {
     description: "Run until independent goal verification: /goal <target>, status, resume, stop",

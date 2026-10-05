@@ -93,7 +93,7 @@ beforeEach(async () => {
   } as unknown as ExtensionToolContext;
   extension(pi);
 });
-afterEach(async () => { await hooks.session_shutdown?.(); });
+afterEach(async () => { await hooks.session_shutdown?.({}, ctx); });
 afterAll(async () => {
   if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -140,7 +140,7 @@ test("private temporary storage is reused and removed on quit, reload and sessio
     await chmod(blocked, 0o000);
     const externalMode = (await stat(root)).mode;
     await symlink(root, join(current, "external-link"));
-    await hooks.session_shutdown({ reason });
+    await hooks.session_shutdown({ reason }, ctx);
     expect(await exists(current)).toBe(false);
     expect(await exists(root)).toBe(true);
     expect((await stat(root)).mode).toBe(externalMode);

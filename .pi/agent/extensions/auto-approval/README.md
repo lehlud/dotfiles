@@ -14,6 +14,8 @@ Nach Änderungen an der Erweiterung Pi neu starten. `/auto-approval` zeigt Revie
 
 `/goal <Ziel>` startet das aktuelle Arbeitsmodell mit einem konkreten Ziel. Sobald das Modell seine Antwort beendet, prüft das konfigurierte Prüfmodell die Zielerfüllung anhand der Antwort und der protokollierten Ergebnisse genehmigter Aktionen. Eine bloße Behauptung des Arbeitsmodells genügt bei Codeänderungen und Laufzeitprüfungen nicht.
 
+Das Ziel erscheint unten in der Statusleiste, auch während der Abschlussprüfung und bei pausierten Zielen. Es steht vor dem Approval-Status, damit dieser es auf schmalen Terminals nicht verdrängt. Lange oder mehrzeilige Ziele werden für die Anzeige gekürzt und auf eine Zeile gebracht; `/goal status` zeigt den vollständigen Text. Beim Session-Wechsel oder Beenden wird die Anzeige entfernt und anschließend gegebenenfalls aus der gewählten Session wiederhergestellt.
+
 Fehlt noch Arbeit, erhält das Arbeitsmodell die Begründung und setzt automatisch fort. Erst ein positives Prüferegebnis markiert das Ziel als erfüllt. Eine negative Zielprüfung wechselt nicht zum nächsten Prüfmodell; Fallbacks gelten weiterhin ausschließlich für technische Nichtverfügbarkeit. Jede Aktion bleibt separat genehmigungspflichtig und läuft in der Sandbox.
 
 - `/goal` oder `/goal status` zeigt Ziel, Zustand, Begründung und Anzahl der Prüfungen.

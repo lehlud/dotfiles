@@ -6,6 +6,8 @@ import { registerGoals } from "../goals.ts";
 import { buildGoalReview, GOAL_REVIEW_SYSTEM } from "../goal-review.ts";
 import { buildReview, REVIEW_SYSTEM, type Config } from "../policy.ts";
 import { WRITING_RULEBOOK } from "../../public-writing/rules.ts";
+import { FooterComponent, initTheme } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 
 const root = await mkdtemp(join(tmpdir(), "pi-goal-test-"));
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -14,9 +16,50 @@ const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2
 let hooks: Record<string, Function>, command: Function, ctx: any, entries: any[], sent: any[], requests: any[], notices: string[];
 let verdicts: string[], providerUnavailable: boolean, auditFails: boolean, duringReview: (() => void) | undefined;
 let operatorGoal: () => string | undefined;
+let statuses: Map<string, string>;
 const boundary = () => ({ outcome: "completed", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "I am done" }] } });
 const state = () => entries.filter((entry) => entry.customType === "auto-approval-goal").at(-1)?.data;
 const settle = () => hooks.turn_end(boundary(), ctx);
+
+function footer(width: number) {
+  initTheme("dark", false);
+  const session = {
+    state: {}, getContextUsage: () => undefined,
+    sessionManager: { getEntryCount: () => 0, getSessionId: () => "fixture", getLeafId: () => null, getEntries: () => [], getCwd: () => root, getSessionName: () => undefined },
+  };
+  const data = { getGitBranch: () => undefined, getAvailableProviderCount: () => 0, getExtensionStatuses: () => statuses };
+  return new FooterComponent(session as any, data as any).render(width).map(stripTerminalSequences);
+}
+
+test("the real narrow footer keeps the target visible during approval and goal checks", async () => {
+  await command("Repair the build", ctx);
+  statuses.set("auto-approval", "checking a reviewer with a very long model name".repeat(3));
+  expect(footer(40).at(-1)).toStartWith("goal: Repair the build");
+  duringReview = () => {
+    expect(footer(40).at(-1)).toContain("Repair the build");
+    expect([...statuses.values()].join(" ")).toContain("checking");
+  };
+  verdicts = ["deny", "approve"];
+  await settle(); expect([...statuses.values()].join(" ")).toContain("running · 1 checks");
+  await settle(); expect([...statuses.values()].join(" ")).toContain("complete · 2 checks");
+});
+
+test("footer summaries preserve Unicode, bound long input and clear across sessions", async () => {
+  const target = "日本語の目標\n\t" + "修正 👩🏽‍💻 ".repeat(100) + "\x1b[31m\x1b[2J";
+  statuses.set("goal", "legacy goal");
+  await hooks.session_start({}, ctx); expect(statuses.has("goal")).toBe(false);
+  await command(target, ctx);
+  expect(state().text).toBe(target);
+  const line = [...statuses.values()][0];
+  expect(line).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
+  expect(line).toContain("…");
+  expect(footer(40).at(-1)).toContain("日本語の目標");
+  expect(footer(40).every((row) => visibleWidth(row) <= 40)).toBe(true);
+  await command("status", ctx); expect(notices.at(-1)).toContain(target);
+  await hooks.session_shutdown({}, ctx); expect(statuses.size).toBe(0);
+  await hooks.session_start({}, ctx); expect([...statuses.values()][0]).toContain("paused");
+  entries = []; await hooks.session_tree({}, ctx); expect(statuses.size).toBe(0);
+});
 
 test("goal completion stays independent of the public-writing rulebook", () => {
   expect(REVIEW_SYSTEM).toContain(WRITING_RULEBOOK);
@@ -30,10 +73,11 @@ beforeEach(async () => {
   await writeFile(join(root, "auto-approval.device.json"), JSON.stringify({ sandbox: { executable: process.execPath, runnerExecutable: process.execPath } }));
   hooks = {}; entries = []; sent = []; requests = []; notices = []; verdicts = ["approve"];
   providerUnavailable = false; auditFails = false; duringReview = undefined;
+  statuses = new Map();
   ctx = {
     cwd: root, model: { provider: "working", id: "working" }, isIdle: () => true, hasPendingMessages: () => false,
     abort() { ctx.signalController?.abort(); },
-    ui: { setStatus() {}, notify: (text: string) => notices.push(text) },
+    ui: { setStatus: (key: string, text?: string) => { if (text === undefined) statuses.delete(key); else statuses.set(key, text); }, notify: (text: string) => notices.push(text) },
     sessionManager: { getBranch: () => entries },
     modelRegistry: {
       find: (provider: string, id: string) => ({ provider, id, api: "openai-responses" }),
@@ -137,7 +181,7 @@ test("audit failure blocks both completion and continuation", async () => {
 });
 test("restoring a session or tree keeps an unfinished goal paused until operator resumes", async () => {
   await command("Verify the fixture", ctx);
-  await hooks.session_shutdown(); expect(operatorGoal()).toBeUndefined();
+  await hooks.session_shutdown({}, ctx); expect(operatorGoal()).toBeUndefined();
   await hooks.session_start({}, ctx); expect(state().status).toBe("paused"); expect(sent).toHaveLength(1);
   await command("resume", ctx); await hooks.session_tree({}, ctx); expect(state().status).toBe("paused");
   entries = []; await hooks.session_tree({}, ctx); expect(operatorGoal()).toBeUndefined();
