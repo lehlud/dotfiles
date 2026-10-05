@@ -1,8 +1,8 @@
-import { test, expect, beforeEach, afterAll, mock } from "bun:test";
+import { test, expect, beforeEach, afterEach, afterAll, mock } from "bun:test";
 import { createBashToolDefinition, createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition } from "@earendil-works/pi-coding-agent";
-import { mkdtemp, writeFile, readFile, rm, access, symlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile, readFile, rm, access, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 const root = await mkdtemp(join(tmpdir(), "pi-approval-test-"));
@@ -10,14 +10,17 @@ const agentRoot = await mkdtemp(join(tmpdir(), "pi-approval-agent-test-"));
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 let validatedScopes: any[] = [];
 let executedRequests: any[] = [];
+let temporaryStores: string[] = [];
 process.env.PI_CODING_AGENT_DIR = agentRoot;
 // Test-only module mock. Production has one mandatory Docker executor and no
 // injection flag or local execution backend. Unit tests exercise the gate.
 mock.module("../isolation.ts", () => ({
   detectWorkspace: async (cwd: string) => ({ path: cwd, cwd }),
-  validateWorkspace: async (cwd: string, _config: unknown, _protected: unknown, scope: unknown) => {
+  sandboxHostPath: (workspace: { cwd: string }, path: string) => resolve(workspace.cwd, path),
+  validateWorkspace: async (cwd: string, _config: unknown, _protected: unknown, scope: unknown, temporaryDirectory: string) => {
     validatedScopes.push(structuredClone(scope));
-    return { path: cwd, cwd, bindings: [cwd], masked: [] };
+    temporaryStores.push(temporaryDirectory);
+    return { path: cwd, cwd, bindings: [cwd], masked: [], temporaryDirectory };
   },
   executeIsolated: async (request: any, workspace: { path: string }, _config: unknown, signal?: AbortSignal) => {
     const cwd = workspace.path;
@@ -47,7 +50,7 @@ beforeEach(async () => {
   await writeFile(configPath, JSON.stringify(config));
   await writeFile(localConfigPath, JSON.stringify({ sandbox: { dockerExecutable: "/usr/bin/docker" } }));
   mode = "approve"; requested = []; hooks = {}; actions = {}; active = []; auditFails = false; responseHook = undefined; widgets = []; statuses = [];
-  validatedScopes = []; executedRequests = [];
+  validatedScopes = []; executedRequests = []; temporaryStores = [];
   entries = [{ type: "message", message: { role: "user", content: "Run a harmless smoke test in the temporary working directory. Do not change any approval settings." } }];
   const pi = {
     on: (name: string, callback: Function) => { hooks[name] = callback; },
@@ -84,6 +87,7 @@ beforeEach(async () => {
   } as unknown as ExtensionToolContext;
   extension(pi);
 });
+afterEach(async () => { await hooks.session_shutdown?.(); });
 afterAll(async () => {
   if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
@@ -112,6 +116,30 @@ test("a missing native executor locks startup and blocks before any paid review"
   expect(requested).toHaveLength(0);
   expect(executedRequests).toHaveLength(0);
   expect(await exists(join(root, "must-not-run"))).toBe(false);
+});
+
+test("private temporary storage is reused and removed on quit, reload and session replacement", async () => {
+  let previous: string | undefined;
+  for (const reason of ["quit", "reload", "new", "resume", "fork"]) {
+    expect((await call(bash("printf first"))).isError).not.toBe(true);
+    expect((await call(bash("printf second"))).isError).not.toBe(true);
+    const current = temporaryStores.at(-1)!;
+    expect(current === temporaryStores.at(-2)).toBe(true);
+    expect(current === previous).toBe(false);
+    expect(await exists(current)).toBe(true);
+    expect(requested.at(-1).data.sandboxPlan.temporaryStorage).toEqual({ path: "/tmp", lifetime: "Pi session", private: true });
+    await writeFile(join(current, "cleanup-fixture"), "temporary");
+    const blocked = join(current, "inaccessible-directory");
+    await mkdir(blocked); await writeFile(join(blocked, "fixture"), "temporary");
+    await chmod(blocked, 0o000);
+    const externalMode = (await stat(root)).mode;
+    await symlink(root, join(current, "external-link"));
+    await hooks.session_shutdown({ reason });
+    expect(await exists(current)).toBe(false);
+    expect(await exists(root)).toBe(true);
+    expect((await stat(root)).mode).toBe(externalMode);
+    previous = current;
+  }
 });
 test("every direct, unknown, nested, MCP, and codemode route is blocked", async () => {
   for (const toolName of ["bash", "powershell", "read", "edit", "write", "codemode", "tool_search", "mcp_exec", "subagent", "arbitrary"]) {

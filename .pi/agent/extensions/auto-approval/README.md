@@ -36,7 +36,7 @@ Unterstützte Dimensionen:
 - `network`: `"none"` oder `"host"`. Host-Netzwerkzugriff umfasst auch lokale Dienste. Der konkrete Befehl und mögliche Datenübertragungen werden mitgeprüft.
 - `environment`: explizite Literal-Werte. Es werden keine Host-Umgebungsvariablen oder Secrets automatisch übernommen.
 - `executableSearchPaths`: zusätzliche absolute Tool-Verzeichnisse, die schreibgeschützt eingebunden und dem Suchpfad hinzugefügt werden.
-- `limits`: `executionTimeoutMs`, `maxOutputBytes` und `tmpBytes`; beim Docker-Backend zusätzlich `memoryMiB`, `cpus` und `pids`. Native bwrap-cgroup-Limits sind nicht implementiert und werden mit einer konkreten Fehlermeldung zurückgewiesen.
+- `limits`: `executionTimeoutMs` und `maxOutputBytes`; beim Docker-Backend zusätzlich `memoryMiB`, `cpus` und `pids`. Das persistente Session-`/tmp` liegt auf dem Dateisystem und unterstützt keine `tmpBytes`-Grenze. Ein solcher Antrag wird zurückgewiesen. `tmpBytes` bleibt für einzelne Executor-Aufrufe mit einem flüchtigen tmpfs verfügbar. Native bwrap-cgroup-Limits sind nicht implementiert und werden mit einer konkreten Fehlermeldung zurückgewiesen.
 
 Beispiel für einen notwendigen externen Read:
 
@@ -89,7 +89,11 @@ Eine portable `auto-approval.json` sieht so aus:
 
 Bubblewrap wird über absolute Verzeichnisse im `PATH` gesucht; der Executor liegt standardmäßig unter `~/.local/cache/pi-auto-approval/executor`. Abweichende absolute Pfade können als `sandbox.executable` und `sandbox.runnerExecutable` in `auto-approval.device.json` stehen. Dort kann auch `sandbox.workspaceViews` Einträge der Form `{"root":"/absolute/workspace","paths":["/absolute/workspace/public-file"]}` enthalten. Nur diese Pfade werden eingebunden. Keine Credential-Dateien oder ganzen privaten Home-Verzeichnisse hinzufügen.
 
-Der Executor wird schreibgeschützt eingebunden. Die Sandbox erhält eine leere Umgebung, ein temporäres Home, eigene Prozess-, Netzwerk-, IPC- und weitere Namespaces sowie keine Linux-Capabilities. Ohne genehmigte Erweiterung sind die Netzwerkschnittstellen des Hosts nicht erreichbar. Die Prozessnamespace bleibt isoliert. Nur die ausgewählten Workspace-Mounts können auf dem Host verändert werden. Temporäre Dateien bleiben in der Sandbox.
+Der Executor wird schreibgeschützt eingebunden. Die Sandbox erhält eine leere Umgebung, ein temporäres Home, eigene Prozess-, Netzwerk-, IPC- und weitere Namespaces sowie keine Linux-Capabilities. Ohne genehmigte Erweiterung sind die Netzwerkschnittstellen des Hosts nicht erreichbar. Die Prozessnamespace bleibt isoliert. Änderungen am Projekt erfolgen ausschließlich über die ausgewählten Workspace-Mounts.
+
+Jede Pi-Session erhält ein eigenes, schreibbares `/tmp`. Dateien und Skripte darin bleiben bei späteren genehmigten Aktionen derselben Session verfügbar. Das Host-`/tmp` und die temporären Dateien anderer Sessions werden nicht eingebunden. Die Verzeichnisse `/tmp/home` und `/tmp/pi` gehören zur jeweiligen Executor-Runtime und werden bei jeder Aktion neu erstellt. Zusätzliche Mounts gelten weiterhin nur für ihre einzelne Aktion; leere Mount-Platzhalter werden danach entfernt.
+
+Beim Beenden von Pi, beim Neuladen der Erweiterung und beim Wechsel zu einer neuen, fortgesetzten oder geforkten Session löscht der `session_shutdown`-Handler das gesamte private `/tmp` nach Abschluss der laufenden Aktion. Die nächste Session bekommt ein neues, leeres Verzeichnis. Ein abgebrochener Sitzungswechsel löst diese Bereinigung nicht aus. Bei einem erzwungenen Prozessabbruch, etwa `SIGKILL`, kann kein Shutdown-Handler laufen.
 
 Ein Abbruch beendet den Sandbox-Prozess; Kindprozesse dürfen nach der Aktion nicht weiterlaufen. Ausgabemenge und Laufzeit sind begrenzt. Die Docker-spezifischen Speicher-, CPU- und PID-Grenzen gelten für das Docker-Backend; das bwrap-Backend richtet keine entsprechenden cgroup-Grenzen ein.
 

@@ -1,19 +1,83 @@
 import { spawn } from "node:child_process";
-import { lstat, readdir, realpath } from "node:fs/promises";
-import { resolve, join, relative, isAbsolute } from "node:path";
+import { lstat, mkdir, readdir, readlink, realpath, rmdir, unlink, writeFile } from "node:fs/promises";
+import { resolve, join, relative, isAbsolute, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { getuid, getgid } from "node:process";
 import { homedir } from "node:os";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { Config, Request, SandboxRequest } from "./policy.ts";
 export type SandboxConfig = Config["sandbox"];
-export type Workspace = { path: string; cwd: string; bindings: string[]; readOnlyBindings?: string[]; searchPaths?: string[]; masked: { path: string; directory: boolean }[] };
+export type Workspace = { path: string; cwd: string; bindings: string[]; readOnlyBindings?: string[]; searchPaths?: string[]; temporaryDirectory?: string; masked: { path: string; directory: boolean }[] };
 const within = (root: string, path: string) => {
   const rel = relative(root, path);
   return rel === "" || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel));
 };
 const backendPaths = (config: SandboxConfig) => config.backend === "bwrap"
   ? [config.executable, config.runnerExecutable] : [config.dockerExecutable];
+
+export function sandboxHostPath(workspace: Workspace, path: string): string {
+  const absolute = resolve(workspace.cwd, path);
+  if (!workspace.temporaryDirectory || !within("/tmp", absolute) || workspace.bindings.some((binding) => within(binding, absolute))) return absolute;
+  return join(workspace.temporaryDirectory, relative("/tmp", absolute));
+}
+
+type TemporaryMountpoint = { path: string; dev: number; ino: number };
+
+async function temporaryMountpoints(workspace: Workspace): Promise<TemporaryMountpoint[]> {
+  if (!workspace.temporaryDirectory) return [];
+  const created: TemporaryMountpoint[] = [];
+  for (const guest of ["/tmp/home", "/tmp/pi", ...workspace.bindings.filter((path) => within("/tmp", path))]) {
+    const target = join(workspace.temporaryDirectory, relative("/tmp", guest));
+    let path = target;
+    if (await unsafeTemporaryParent(workspace.temporaryDirectory, path)) continue;
+    const absent: string[] = [];
+    while (path !== workspace.temporaryDirectory) {
+      try { await lstat(path); break; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      absent.push(path);
+      path = dirname(path);
+    }
+    const directory = guest === "/tmp/home" || guest === "/tmp/pi" || (await lstat(guest)).isDirectory();
+    for (const path of absent.reverse()) {
+      try {
+        if (path !== target || directory) await mkdir(path, { mode: 0o700 });
+        else await writeFile(path, "", { flag: "wx", mode: 0o600 });
+      } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") continue; throw error; }
+      const stat = await lstat(path);
+      created.push({ path, dev: stat.dev, ino: stat.ino });
+    }
+  }
+  return created.sort((a, b) => b.path.length - a.path.length);
+}
+
+async function unsafeTemporaryParent(root: string, path: string): Promise<boolean> {
+  let current = root;
+  for (const part of relative(root, dirname(path)).split("/").filter(Boolean)) {
+    current = join(current, part);
+    try { if (!(await lstat(current)).isDirectory()) return true; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+  return false;
+}
+
+async function cleanTemporaryMountpoints(root: string | undefined, paths: TemporaryMountpoint[]): Promise<void> {
+  if (!root) return;
+  for (const entry of paths) {
+    const path = entry.path;
+    if (await unsafeTemporaryParent(root, path)) continue;
+    try {
+      const stat = await lstat(path);
+      if (stat.dev !== entry.dev || stat.ino !== entry.ino) continue;
+      if (stat.isDirectory()) await rmdir(path);
+      else if (stat.isFile() && stat.size === 0 && stat.nlink === 1) await unlink(path);
+    } catch (error) {
+      if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+    }
+  }
+}
 
 /** A home-level dotfiles repository must never enlarge an unrelated directory. */
 export async function detectWorkspace(cwd: string, home = homedir()): Promise<{ path: string; cwd: string }> {
@@ -34,8 +98,12 @@ export async function detectWorkspace(cwd: string, home = homedir()): Promise<{ 
 }
 
 /** Starting Pi selects the workspace; operator-configured views constrain home. */
-export async function validateWorkspace(cwd: string, config: SandboxConfig, protectedPaths: readonly string[], request?: SandboxRequest): Promise<Workspace> {
+export async function validateWorkspace(cwd: string, config: SandboxConfig, protectedPaths: readonly string[], request?: SandboxRequest, privateTemporaryDirectory?: string): Promise<Workspace> {
   const detected = await detectWorkspace(cwd);
+  const temporaryDirectory = privateTemporaryDirectory ? await realpath(privateTemporaryDirectory) : undefined;
+  if (temporaryDirectory && !(await lstat(temporaryDirectory)).isDirectory()) throw new Error("Private /tmp backing storage must be a directory");
+  if (temporaryDirectory && (within(detected.path, temporaryDirectory) || within(temporaryDirectory, detected.path))) throw new Error("Workspace overlaps private sandbox temporary storage");
+  if (temporaryDirectory && request?.limits?.tmpBytes !== undefined) throw new Error("tmpBytes cannot limit a persistent disk-backed /tmp; omit it for session temporary storage");
   const workspace = detected.path;
   const root = workspace;
   const protectedRoots = await Promise.all([...protectedPaths, ...backendPaths(config)].map((path) => realpath(path).catch(() => resolve(path))));
@@ -69,6 +137,7 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
   const extra = [...(request?.paths ?? []), ...(request?.executableSearchPaths ?? []).map((path) => ({ path, access: "read" as const }))];
   for (const entry of extra) {
     const path = await realpath(entry.path);
+    if (temporaryDirectory && (within(path, temporaryDirectory) || within(temporaryDirectory, path))) throw new Error("Additional access overlaps private sandbox temporary storage");
     const stat = await lstat(path);
     if (!stat.isFile() && !stat.isDirectory()) throw new Error(`Additional access needs an existing regular file or directory: ${entry.path}`);
     if (/[\n\r,]/.test(path) || within(path, home)) throw new Error("Additional access cannot expose the whole home directory or its ancestors");
@@ -84,7 +153,7 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
   }
   bindings = [...modes.keys()].sort((a, b) => a.length - b.length);
   const readOnlyBindings = bindings.filter((path) => modes.get(path) === "read");
-  const writable = (path: string) => modes.get(bindings.filter((root) => within(root, path)).at(-1)!) === "write";
+  const writable = (path: string) => (temporaryDirectory && within(temporaryDirectory, path)) || modes.get(bindings.filter((root) => within(root, path)).at(-1)!) === "write";
   const masked: Workspace["masked"] = [];
   for (const binding of bindings) {
     if (/[\n\r,]/.test(binding)) throw new Error("Workspace path contains unsafe mount characters");
@@ -102,6 +171,9 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
     if (hidden(path)) return;
     const stat = await lstat(path);
     if (stat.isSymbolicLink()) {
+      // Private /tmp links resolve in the isolated namespace, never host /tmp.
+      const targetPath = resolve(dirname(path), await readlink(path));
+      if (temporaryDirectory && (within(temporaryDirectory, path) || (within("/tmp", targetPath) && !bindings.some((binding) => within(binding, targetPath))))) return;
       // Build caches commonly leave dangling links. They expose no target;
       // the isolated filesystem also cannot resolve missing host paths.
       const target = await realpath(path).catch((error: NodeJS.ErrnoException) => {
@@ -127,23 +199,28 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
     }
   };
   // Nested mounts must not cause the same inode entry to be counted twice.
-  for (const path of bindings.filter((path, index) => !bindings.slice(0, index).some((parent) => within(parent, path)))) await walk(path);
+  for (const path of [...bindings.filter((path, index) => !bindings.slice(0, index).some((parent) => within(parent, path))), ...(temporaryDirectory ? [temporaryDirectory] : [])]) await walk(path);
   for (const entry of hardlinks.values()) {
     if (entry.seen !== entry.expected) throw new Error(`Workspace hardlink has aliases outside its exposed boundary: ${entry.path}`);
     if (entry.write && entry.read) throw new Error(`Writable hardlink would modify a read-only grant: ${entry.path}`);
   }
-  return { ...detected, bindings, readOnlyBindings, searchPaths, masked };
+  return { ...detected, bindings, readOnlyBindings, searchPaths, masked, ...(temporaryDirectory ? { temporaryDirectory } : {}) };
 }
 
 export function sandboxArguments(workspace: Workspace, config: SandboxConfig, name: string, request?: SandboxRequest) {
   const limits = request?.limits;
+  const uid = getuid?.() ?? 501;
+  const gid = getgid?.() ?? 20;
+  const runtimeTmpfs = `rw,nosuid,nodev,size=268435456,mode=0700,uid=${uid},gid=${gid}`;
+  if (workspace.temporaryDirectory && limits?.tmpBytes !== undefined) throw new Error("tmpBytes cannot limit a persistent disk-backed /tmp; omit it for session temporary storage");
   const environment = { ...(workspace.searchPaths?.length ? { PATH: [...workspace.searchPaths, "/usr/bin", "/bin"].join(":") } : {}), ...request?.environment };
   if (Object.keys(environment).some((name) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) || Object.values(environment).some((value) => value.includes("\0"))) throw new Error("Invalid sandbox environment");
   if (config.backend !== "bwrap") return ["run", "--rm", "--interactive", "--name", name,
     "--pull", "never", "--network", request?.network ?? "none", "--read-only", "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges", "--ipc", "none", "--cgroupns", "private",
     "--pids-limit", String(limits?.pids ?? 128), "--memory", `${limits?.memoryMiB ?? 1024}m`, "--cpus", String(limits?.cpus ?? 2),
-    "--user", `${getuid?.() ?? 501}:${getgid?.() ?? 20}`, "--tmpfs", `/tmp:rw,nosuid,nodev,size=${limits?.tmpBytes ?? 268435456},mode=1777`,
+    "--user", `${uid}:${gid}`,
+    ...(workspace.temporaryDirectory ? ["--mount", `type=bind,src=${workspace.temporaryDirectory},dst=/tmp,bind-recursive=disabled`, "--tmpfs", `/tmp/home:${runtimeTmpfs}`, "--tmpfs", `/tmp/pi:${runtimeTmpfs}`] : ["--tmpfs", `/tmp:rw,nosuid,nodev,size=${limits?.tmpBytes ?? 268435456},mode=1777`]),
     "--env", "HOME=/tmp/home", "--env", "PI_CODING_AGENT_DIR=/tmp/pi",
     ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
     ...workspace.bindings.flatMap((path) => ["--mount", `type=bind,src=${path},dst=${path},bind-recursive=disabled${workspace.readOnlyBindings?.includes(path) ? ",readonly" : ""}`]),
@@ -154,7 +231,8 @@ export function sandboxArguments(workspace: Workspace, config: SandboxConfig, na
     "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin",
     "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64",
     "--ro-bind-try", "/etc/ld.so.cache", "/etc/ld.so.cache", "--ro-bind-try", "/etc/alternatives", "/etc/alternatives",
-    "--proc", "/proc", "--dev", "/dev", "--size", String(limits?.tmpBytes ?? 268435456), "--tmpfs", "/tmp", "--dir", "/tmp/home",
+    "--proc", "/proc", "--dev", "/dev",
+    ...(workspace.temporaryDirectory ? ["--bind", workspace.temporaryDirectory, "/tmp", "--size", "268435456", "--tmpfs", "/tmp/home", "--size", "268435456", "--tmpfs", "/tmp/pi"] : ["--size", String(limits?.tmpBytes ?? 268435456), "--tmpfs", "/tmp", "--dir", "/tmp/home"]),
     "--ro-bind", config.runnerExecutable, "/executor/runner",
     "--clearenv", "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp/home",
     "--setenv", "PI_CODING_AGENT_DIR", "/tmp/pi", "--setenv", "LANG", "C.UTF-8"];
@@ -178,6 +256,8 @@ export async function executeIsolated(request: Request, workspace: Workspace, co
   const name = `pi-approved-${randomUUID()}`;
   const native = config.backend === "bwrap";
   const executable = native ? config.executable : config.dockerExecutable;
+  // Bind mount scaffolding must not survive an action-specific access grant.
+  const mountpoints = await temporaryMountpoints(workspace);
   const child = spawn(executable, sandboxArguments(workspace, config, name, request.sandbox), { stdio: ["pipe", "pipe", "pipe"], detached: native });
   let stdout = "", stderr = "";
   let failure: Error | undefined;
@@ -214,5 +294,6 @@ export async function executeIsolated(request: Request, workspace: Workspace, co
     clearTimeout(watchdog);
     signal?.removeEventListener("abort", abort);
     await remove();
+    await cleanTemporaryMountpoints(workspace.temporaryDirectory, mountpoints);
   }
 }

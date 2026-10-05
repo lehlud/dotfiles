@@ -1,6 +1,6 @@
-import { realpath } from "node:fs/promises";
+import { mkdtemp, realpath } from "node:fs/promises";
 import { resolve, join, dirname, basename } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   createBashToolDefinition, createPowerShellToolDefinition, createReadToolDefinition,
@@ -10,12 +10,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
-import { detectWorkspace, executeIsolated, validateWorkspace } from "./isolation.ts";
+import { detectWorkspace, executeIsolated, sandboxHostPath, validateWorkspace } from "./isolation.ts";
 import { reviewSummary, startReviewDisplay, showDecision } from "./display.ts";
 import { createApprovalRenderers } from "./renderers.ts";
 import { buildReview, sandboxRequestSchema, type Request } from "./policy.ts";
 import { assertSandboxReady, loadConfig } from "./config.ts";
 import { reviewWithFallback, reviewerLabel, ReviewChainError } from "./reviews.ts";
+import { removeSessionTemporaryDirectory } from "./temporary-storage.ts";
 
 const TOOL_NAME = "approved_action";
 const factories = {
@@ -56,10 +57,16 @@ export default function autoApproval(pi: ExtensionAPI) {
   // Serialize review AND execution, not just the model requests. No shared approval
   // flag, reusable token, bypass environment variable, or agent-callable off switch.
   let queue: Promise<unknown> = Promise.resolve();
+  let temporaryDirectory: Promise<string> | undefined;
+  const sessionTemporaryDirectory = () => temporaryDirectory ??= mkdtemp(join(tmpdir(), "pi-auto-approval-tmp-"));
   const activeDisplays = new Set<() => number>();
   pi.on("session_shutdown", async () => {
     for (const stop of activeDisplays) stop();
     activeDisplays.clear();
+    await queue;
+    const previousTemporaryDirectory = temporaryDirectory;
+    temporaryDirectory = undefined;
+    if (previousTemporaryDirectory) await removeSessionTemporaryDirectory(await previousTemporaryDirectory);
   });
   const protectedPaths = [
     sourceDir, getAgentDir(), join(homedir(), ".docker"), join(homedir(), ".ssh"), join(homedir(), ".aws"),
@@ -92,7 +99,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     lock(ctx);
     return { message: {
       customType: "auto-approval-policy", display: false,
-      content: `Auto-Approval and its isolated executor are mandatory. No host operations are permitted. Actions run in an ephemeral sandbox, offline by default, with only authorized mounts writable. When the real user task requires access beyond the defaults, request it in approved_action.sandbox: paths with read/write access, network host, literal environment, executableSearchPaths or limits. Explain necessity; the reviewer evaluates the complete action and expansion together. Permissions expire at the end of that action. Never change the operator configuration or bypass isolation. Pi code, credentials, container sockets, and host process namespace are protected. If isolation or workspace authorization fails, tell the user the exact config path and required operator change; NEVER use a local fallback. The workspace is detected automatically from the current directory or project Git root; a Git root at or above the home directory is ignored. The shared config is ~/.pi/agent/auto-approval.json; optional device paths and restricted home workspaceViews belong in ~/.pi/agent/auto-approval.device.json. /auto-approval shows both paths and the detected workspace. Use ONLY approved_action for every operation, including reads and file mutations. Supply the exact tool arguments, your current goal, and why the action is necessary now. An independent reviewer checks actual recent user prompts against the action. Rejections return their reason. Resolve the concern or ask the user; never retry through another tool, nested agent, shell escape, modified gate, or background process. There is no agent-accessible disable or manual bypass.`,
+      content: `Auto-Approval and its isolated executor are mandatory. No host operations are permitted. Actions run in an ephemeral sandbox, offline by default, with only authorized mounts writable. When the real user task requires access beyond the defaults, request it in approved_action.sandbox: paths with read/write access, network host, literal environment, executableSearchPaths or limits. Explain necessity; the reviewer evaluates the complete action and expansion together. Permissions expire at the end of that action. /tmp is writable and private to the current Pi session. Files there persist across approved actions and are deleted on quit, reload, or session replacement. /tmp/home and /tmp/pi are per-action runtime directories. Persistent /tmp does not support tmpBytes limits. Never change the operator configuration or bypass isolation. Pi code, credentials, container sockets, and host process namespace are protected. If isolation or workspace authorization fails, tell the user the exact config path and required operator change; NEVER use a local fallback. The workspace is detected automatically from the current directory or project Git root; a Git root at or above the home directory is ignored. The shared config is ~/.pi/agent/auto-approval.json; optional device paths and restricted home workspaceViews belong in ~/.pi/agent/auto-approval.device.json. /auto-approval shows both paths and the detected workspace. Use ONLY approved_action for every operation, including reads and file mutations. Supply the exact tool arguments, your current goal, and why the action is necessary now. An independent reviewer checks actual recent user prompts against the action. Rejections return their reason. Resolve the concern or ask the user; never retry through another tool, nested agent, shell escape, modified gate, or background process. There is no agent-accessible disable or manual bypass.`,
     } };
   });
   pi.on("tool_call", async (event) => {
@@ -149,13 +156,14 @@ export default function autoApproval(pi: ExtensionAPI) {
           // override, never expose ctx.executeTool(), and never use commandPrefix.
           const tool = factories[name](ctx.cwd) as ToolDefinition<any, any>;
           if (!Check(tool.parameters, request.arguments)) throw new Error("Invalid underlying tool arguments");
+          const privateTmp = await sessionTemporaryDirectory();
+          const workspace = await validateWorkspace(ctx.cwd, config.sandbox, protectedPaths, request.sandbox, privateTmp);
           if (name === "write" || name === "edit") {
-            const path = await canonicalPath(resolve(ctx.cwd, String(request.arguments.path)));
+            const path = await canonicalPath(sandboxHostPath(workspace, String(request.arguments.path)));
             const roots = await protectedRoots;
             if (roots.some((p) => path === p || path.startsWith(`${p}/`))) throw new Error("The agent cannot modify Pi installation, approval code, configuration, or credentials");
           }
-          const workspace = await validateWorkspace(ctx.cwd, config.sandbox, protectedPaths, request.sandbox);
-          const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
+          const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], temporaryStorage: { path: "/tmp", lifetime: "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
           const review = buildReview(request, ctx.sessionManager.getBranch(), config, ctx.cwd, protectedPaths, sandboxPlan);
           audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
           const checked = await reviewWithFallback(config, ctx.modelRegistry, review, {

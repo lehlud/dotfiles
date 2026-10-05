@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, link, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { detectWorkspace, validateWorkspace, sandboxArguments, executeIsolated, type SandboxConfig } from "../isolation.ts";
+import { detectWorkspace, validateWorkspace, sandboxArguments, sandboxHostPath, executeIsolated, type SandboxConfig } from "../isolation.ts";
 import type { Request } from "../policy.ts";
 
 const fixture = await mkdtemp(join(tmpdir(), "pi-isolation-test-"));
@@ -39,6 +39,7 @@ const bwrap = Bun.which("bwrap");
 const nativeTest = process.platform === "linux" && bwrap ? test : test.skip;
 let native: SandboxConfig;
 let project: string;
+let privateTmp: string;
 beforeAll(async () => {
   if (!bwrap || process.platform !== "linux") return;
   const runner = join(fixture, "runner");
@@ -46,10 +47,11 @@ beforeAll(async () => {
   if (result.exitCode) throw new Error(result.stderr.toString());
   native = { backend: "bwrap", executable: bwrap, runnerExecutable: runner };
   project = join(fixture, "native-project"); await mkdir(project);
+  privateTmp = await mkdtemp(join(fixture, "session-tmp-"));
 });
 const action = (tool: string, args: Record<string, unknown>) => ({ tool, arguments: args, goal: "Sandbox integration test", justification: "Verify containment in a temporary test fixture" });
-const run = async (tool: string, args: Record<string, unknown>, signal?: AbortSignal) => executeIsolated(action(tool, args), await validateWorkspace(project, native, []), native, signal);
-const scoped = async (request: Request) => executeIsolated(request, await validateWorkspace(project, native, [], request.sandbox), native);
+const run = async (tool: string, args: Record<string, unknown>, signal?: AbortSignal) => executeIsolated(action(tool, args), await validateWorkspace(project, native, [], undefined, privateTmp), native, signal);
+const scoped = async (request: Request) => executeIsolated(request, await validateWorkspace(project, native, [], request.sandbox, privateTmp), native);
 
 nativeTest("empty legacy workspaceRoots do not disable automatic detection", async () => {
   expect((await validateWorkspace(project, { ...native, workspaceRoots: [] }, [])).path).toBe(project);
@@ -79,10 +81,65 @@ nativeTest("reviewed executable search paths mount tools read-only without expos
   expect(JSON.stringify(output.content)).toContain("runtime-tool");
 });
 nativeTest("execution, output and temporary storage limits are actually applied", async () => {
-  const tmp = await scoped({ ...action("bash", { command: "df -B1 --output=size /tmp | tail -1" }), sandbox: { limits: { tmpBytes: 4194304 } } });
+  const limitRequest = { ...action("bash", { command: "df -B1 --output=size /tmp | tail -1" }), sandbox: { limits: { tmpBytes: 4194304 } } };
+  await expect(scoped(limitRequest)).rejects.toThrow("cannot limit a persistent disk-backed /tmp");
+  const tmp = await executeIsolated(limitRequest, await validateWorkspace(project, native, [], limitRequest.sandbox), native);
   expect(JSON.stringify(tmp.content)).toContain("4194304");
   await expect(scoped({ ...action("bash", { command: "sleep 5" }), sandbox: { limits: { executionTimeoutMs: 1000 } } })).rejects.toThrow("technical execution limit");
   await expect(scoped({ ...action("bash", { command: "printf '%05000d' 0" }), sandbox: { limits: { maxOutputBytes: 2048 } } })).rejects.toThrow("output limit");
+});
+
+nativeTest("private /tmp files persist across actions without exposing host files or other sessions", async () => {
+  const guestFile = join(fixture, "private-temp-file.txt");
+  await writeFile(guestFile, "host-only");
+  await run("write", { path: guestFile, content: "sandbox-only" });
+  expect(JSON.stringify((await run("read", { path: guestFile })).content)).toContain("sandbox-only");
+  await run("edit", { path: guestFile, edits: [{ oldText: "sandbox-only", newText: "edited-temporary" }] });
+  expect(JSON.stringify((await run("bash", { command: `cat '${guestFile}'; printf '#!/bin/sh\nprintf temp-script' > /tmp/run-script; chmod +x /tmp/run-script; printf ephemeral-home > /tmp/home/runtime-file` })).content)).toContain("edited-temporary");
+  expect(JSON.stringify((await run("bash", { command: "/tmp/run-script; test ! -e /tmp/home/runtime-file" })).content)).toContain("temp-script");
+  expect(await readFile(guestFile, "utf8")).toBe("host-only");
+  const other = await mkdtemp(join(fixture, "other-session-"));
+  const workspace = await validateWorkspace(project, native, [], undefined, other);
+  const output = await executeIsolated(action("bash", { command: `test ! -e '${guestFile}' && test ! -e /tmp/run-script && printf session-separated` }), workspace, native);
+  expect(JSON.stringify(output.content)).toContain("session-separated");
+});
+
+nativeTest("temporary grants restore existing private files and leave newly created siblings intact", async () => {
+  const external = join(fixture, "temporary-grant.txt");
+  await writeFile(external, "external-source");
+  await run("write", { path: external, content: "private-original" });
+  const request = { ...action("bash", { command: `cat '${external}'; printf created-sibling > '${join(fixture, "created-sibling")}'` }), sandbox: { paths: [{ path: external, access: "read" as const }] } };
+  expect(JSON.stringify((await scoped(request)).content)).toContain("external-source");
+  expect(JSON.stringify((await run("read", { path: external })).content)).toContain("private-original");
+  expect(JSON.stringify((await run("read", { path: join(fixture, "created-sibling") })).content)).toContain("created-sibling");
+  expect(await readFile(external, "utf8")).toBe("external-source");
+});
+
+nativeTest("hardlinks within private /tmp are allowed, while external aliases are rejected", async () => {
+  await run("write", { path: "/tmp/temp-link-source", content: "linked-value" });
+  await run("bash", { command: "ln /tmp/temp-link-source /tmp/temp-link; ln -s /tmp/temp-link project-temp-symlink" });
+  expect(JSON.stringify((await run("read", { path: "/tmp/temp-link" })).content)).toContain("linked-value");
+  expect(JSON.stringify((await run("read", { path: "project-temp-symlink" })).content)).toContain("linked-value");
+  await run("bash", { command: "rm /tmp/temp-link /tmp/temp-link-source project-temp-symlink" });
+  const external = join(fixture, "external-temp-link");
+  const alias = join(privateTmp, "external-alias");
+  await writeFile(external, "external-value"); await link(external, alias);
+  try {
+    await expect(validateWorkspace(project, native, [], undefined, privateTmp)).rejects.toThrow("outside its exposed boundary");
+  } finally { await rm(alias); await rm(external); }
+  await expect(validateWorkspace(project, native, [], { paths: [{ path: privateTmp, access: "read" }] }, privateTmp)).rejects.toThrow("private sandbox temporary storage");
+});
+
+test("temporary path mapping preserves nested workspace mounts and mounts private storage for Docker", () => {
+  const workspace = { path: "/tmp/project", cwd: "/tmp/project", bindings: ["/tmp/project"], masked: [], temporaryDirectory: "/private/session-tmp" };
+  expect(sandboxHostPath(workspace, "/tmp/fixture")).toBe("/private/session-tmp/fixture");
+  expect(sandboxHostPath(workspace, "fixture")).toBe("/tmp/project/fixture");
+  const config: SandboxConfig = { backend: "docker", dockerExecutable: "/usr/bin/docker", image: `sha256:${"a".repeat(64)}` };
+  const args = sandboxArguments(workspace, config, "test");
+  expect(args).toContain("type=bind,src=/private/session-tmp,dst=/tmp,bind-recursive=disabled");
+  expect(args).toContain(`/tmp/home:rw,nosuid,nodev,size=268435456,mode=0700,uid=${process.getuid?.() ?? 501},gid=${process.getgid?.() ?? 20}`);
+  expect(args.some((arg) => arg.startsWith("/tmp:"))).toBe(false);
+  expect(() => sandboxArguments(workspace, config, "test", { limits: { tmpBytes: 4194304 } })).toThrow("cannot limit");
 });
 nativeTest("expansions cannot expose protected storage or writable aliases of read-only inputs", async () => {
   const privateDir = join(fixture, "private-approval"); await mkdir(privateDir);
