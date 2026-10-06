@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { buildReview, REVIEW_LANGUAGE, textContent, type Config, type Entry } from "./policy.ts";
+import { checkReviewSize } from "./review-context.ts";
 
 export const GOAL_REVIEW_SYSTEM = `You independently verify whether the operator's goal is fully achieved.
 ${REVIEW_LANGUAGE}
@@ -28,7 +29,6 @@ export function buildGoalReview(goal: string, entries: readonly Entry[], config:
   }
   const checkpoint = entries.filter((entry) => entry.customType === "auto-approval-goal" && (entry.data as { id?: string })?.id === goalId).at(-1)?.data;
   const evidence = { ...data, goalCheckpoint: checkpoint, assistantAnswers: [...selected].sort(([a], [b]) => a - b).map(([index, text]) => ({ index, text })), omittedAssistantAnswers: answers.length - selected.size };
-  const serialized = JSON.stringify(evidence);
-  if (Buffer.byteLength(serialized) > 130000) throw new Error("Goal evidence too large; provide focused verification");
+  const serialized = checkReviewSize(evidence);
   return { requestId: base.requestId, fingerprint: createHash("sha256").update(serialized).digest("hex"), text: serialized };
 }

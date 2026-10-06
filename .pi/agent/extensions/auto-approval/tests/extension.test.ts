@@ -76,7 +76,7 @@ beforeEach(async () => {
     ui: { setStatus: (_key: string, text?: string) => { if (text) statuses.push(text); }, setWidget: (_key: string, lines?: string[]) => widgets.push(lines), notify: () => {} },
     sessionManager: { getBranch: () => entries, getSessionId: () => "test-session", getSessionFile: () => undefined },
     modelRegistry: {
-      find: (provider: string, id: string) => ({ provider, id, api: "openai-responses", reasoning: true, thinkingLevelMap: { medium: "medium", low: "low" } }),
+      find: (provider: string, id: string) => ({ provider, id, api: "openai-responses", contextWindow: 272000, maxTokens: 128000, reasoning: true, thinkingLevelMap: { medium: "medium", low: "low" } }),
       hasConfiguredAuth: () => true,
       streamSimple: (model: any, context: any, options: any) => {
         const data = JSON.parse(context.messages[0].content);
@@ -234,6 +234,26 @@ test("unrelated missing skill files cannot prevent web review; project failures 
   expect(requested).toHaveLength(1); expect(executedRequests).toHaveLength(1);
   expect(JSON.stringify(failed.content)).toContain("workspace validation");
   expect(JSON.stringify(failed.content)).not.toContain("openai/gpt-6-luna");
+});
+test("large pasted reports and denial audits still permit an independently reviewed small read", async () => {
+  const prompt = "Prüfe den Quelltext ohne Änderungen: " + JSON.stringify({ tests: Array(2000).fill({ name: "Leerer Betreff", success: true, points: "-0.000000000000000" }) });
+  entries.push({ type: "message", message: { role: "user", content: prompt } });
+  for (let i = 0; i < 6; i++) entries.push({ type: "custom", customType: "auto-approval-review", data: { decision: "deny", reason: "Keine Zugangsdaten lesen.", action: bash("obsolete-command".repeat(10000)), sandboxPlan: { unused: "x".repeat(10000) } } });
+  const code = "/* geprüfter Quelltext */".repeat(3000);
+  const audit = { toolCallId: "prior-read", requestId: "prior-request", fingerprint: "prior-hash", decision: "approve", action: { tool: "read", arguments: { path: "reference.c" } } };
+  entries.push({ type: "custom", customType: "auto-approval-review", data: audit });
+  entries.push({ type: "message", message: { role: "toolResult", toolName: "approved_action", toolCallId: "prior-read", content: [{ type: "text", text: "approved" }, { type: "text", text: code }], details: { approval: audit } } });
+  await writeFile(join(root, "reference.c"), "int harmless;\n");
+  const read = { tool: "read", arguments: { path: "reference.c", offset: 1, limit: 1 }, goal: "Prüfen", justification: "Fehlerdiagnose" };
+  const result = await call(read);
+  expect(result.isError).not.toBe(true); expect(requested).toHaveLength(1);
+  expect(requested[0].data.userPrompts.at(-1)).toBe(prompt);
+  expect(requested[0].data.action).toEqual(read);
+  expect(requested[0].data.previousDenials[0].reason).toBe("Keine Zugangsdaten lesen.");
+  expect(requested[0].data.reviewedReads[0].content[0].text).toBe(code);
+  expect(JSON.stringify(requested[0].data)).not.toContain("obsolete-command");
+  expect(executedRequests).toEqual([read]);
+  expect(JSON.stringify(result.content)).toContain("int harmless;");
 });
 test("web denials and invalid expansions cannot execute or ask another reviewer", async () => {
   mode = "deny";

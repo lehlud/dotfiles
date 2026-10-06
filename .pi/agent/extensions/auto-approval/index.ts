@@ -189,6 +189,7 @@ export default function autoApproval(pi: ExtensionAPI) {
             if (roots.some((p) => path === p || path.startsWith(`${p}/`))) throw new Error("The agent cannot modify Pi installation, approval code, configuration, or credentials");
           }
           const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], localTools: workspace.localTools ?? [], webRuntime: isWebTool(name) ? { ...(workspace.webRuntime ?? { imageBundled: true }), readOnly: true, execution: webExecutionPlan(request) } : undefined, localToolStorage: workspace.localTools?.length ? { path: "/tmp/pi-tools", lifetime: "Pi session", updates: "private copies only" } : undefined, temporaryStorage: { path: "/tmp", lifetime: "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
+          phase = "review context preparation";
           const review = buildReview(request, ctx.sessionManager.getBranch(), config, ctx.cwd, protectedPaths, sandboxPlan, operatorGoal());
           audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: isWebTool(name) ? ctx.cwd : workspace.cwd, executionCwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
           phase = "independent review";

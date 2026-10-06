@@ -21,6 +21,17 @@ const boundary = () => ({ outcome: "completed", message: { role: "assistant", st
 const state = () => entries.filter((entry) => entry.customType === "auto-approval-goal").at(-1)?.data;
 const settle = () => hooks.turn_end(boundary(), ctx);
 
+test("goal completion accepts large user reports without the old action or goal byte caps", () => {
+  const prompt = "Diese Ergebnisse beachten: " + JSON.stringify({ tests: Array(2000).fill({ name: "Leerer Betreff", success: true, points: "-0.000000000000000" }) });
+  const goal = "Prüfe die Tests und ändere keine Referenz.";
+  const entries = [{ type: "message", message: { role: "user", content: prompt } }, { type: "message", message: { role: "assistant", content: "Die Fehlerdiagnose steht noch aus." } }];
+  const result = buildGoalReview(goal, entries, config, root);
+  const data = JSON.parse(result.text);
+  expect(Buffer.byteLength(result.text)).toBeGreaterThan(130000);
+  expect(data.operatorGoal).toBe(goal); expect(data.latestUserPrompt).toBe(prompt);
+  expect(data.assistantAnswers[0].text).toBe("Die Fehlerdiagnose steht noch aus.");
+});
+
 function footer(width: number) {
   initTheme("dark", false);
   const session = {
@@ -80,7 +91,7 @@ beforeEach(async () => {
     ui: { setStatus: (key: string, text?: string) => { if (text === undefined) statuses.delete(key); else statuses.set(key, text); }, notify: (text: string) => notices.push(text) },
     sessionManager: { getBranch: () => entries },
     modelRegistry: {
-      find: (provider: string, id: string) => ({ provider, id, api: "openai-responses" }),
+      find: (provider: string, id: string) => ({ provider, id, api: "openai-responses", contextWindow: 272000, maxTokens: 128000 }),
       hasConfiguredAuth: (model: any) => !providerUnavailable || model.provider !== "openai",
       streamSimple: (model: any, context: any, options: any) => {
         requests.push({ model, context, options });

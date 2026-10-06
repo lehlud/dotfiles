@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 import { PUBLIC_WRITING_GATE } from "../public-writing/rules.ts";
+import { checkActionSize, checkReviewSize, MAX_REVIEW_CONTEXT_BYTES, MAX_REVIEW_EVIDENCE_BYTES } from "./review-context.ts";
 
 export const sandboxRequestSchema = Type.Object({
   tools: Type.Optional(Type.Array(Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$" }), { minItems: 1, maxItems: 16, uniqueItems: true, description: "Local tool bundles, e.g. node for nvm/npm/npx or sqlmap. Host installations stay read-only; caches and updates use session-private /tmp. Network access must be requested separately." })),
@@ -162,11 +163,13 @@ function operatorPrompts(entries: readonly Entry[], limit: number): string[] {
 }
 
 export function buildReview(request: Request, entries: readonly Entry[], config: Config, cwd: string, protectedPaths: string[], sandboxPlan?: unknown, operatorGoal?: string) {
+  checkActionSize(request);
   const userPrompts = operatorPrompts(entries, config.recentUserPrompts);
   if (!userPrompts.length && operatorGoal) userPrompts.push(operatorGoal);
   if (!userPrompts.length) throw new Error("No actual user prompts available; cannot establish user intent");
   const denials = entries.filter((e) => e.type === "custom" && e.customType === "auto-approval-review")
-    .map((e) => e.data as { decision?: string }).filter((d) => d?.decision === "deny").slice(-6);
+    .map((e) => e.data as any).filter((d) => d?.decision === "deny").slice(-6)
+    .map((d) => ({ decision: d.decision, reason: d.reason, requestId: d.requestId, fingerprint: d.fingerprint, tool: d.action?.tool, technicalFailure: d.technicalFailure, technicalStage: d.technicalStage, ...(d.action ? { actionOmitted: true } : {}) }));
   const approvals = new Map<string, any>();
   const reviewedEvidence: { tool: string; arguments: Record<string, unknown>; path?: unknown; cwd: unknown; requestId: string; content: unknown[]; details: unknown }[] = [];
   for (const entry of entries) {
@@ -187,16 +190,19 @@ export function buildReview(request: Request, entries: readonly Entry[], config:
   const core = { userPrompts, latestUserPrompt: userPrompts.at(-1), operatorGoal, previousDenials: denials, cwd, protectedPaths, action: request, sandboxPlan };
   const selectedEvidence: typeof reviewedEvidence = [];
   const omittedReads: unknown[] = [];
+  let evidenceBytes = 0;
   for (const item of reviewedEvidence.slice(-8).reverse()) {
     const candidate = [...selectedEvidence, item];
-    if (Buffer.byteLength(JSON.stringify({ ...core, reviewedReads: candidate.filter((entry) => entry.tool === "read"), reviewedContext: candidate.filter((entry) => entry.tool !== "read") })) <= 95000) selectedEvidence.unshift(item);
+    const size = Buffer.byteLength(JSON.stringify(item));
+    if (evidenceBytes + size <= MAX_REVIEW_EVIDENCE_BYTES && Buffer.byteLength(JSON.stringify({ ...core, reviewedReads: candidate.filter((entry) => entry.tool === "read"), reviewedContext: candidate.filter((entry) => entry.tool !== "read") })) <= MAX_REVIEW_CONTEXT_BYTES - 4096) {
+      selectedEvidence.unshift(item);
+      evidenceBytes += size;
+    }
     else omittedReads.push({ tool: item.tool, path: item.path, requestId: item.requestId, reason: "Tool evidence exceeds the context budget; inspect smaller relevant ranges only if needed for a concrete security concern" });
   }
-  const evidence = JSON.stringify({ ...core, reviewedReads: selectedEvidence.filter((item) => item.tool === "read"), reviewedContext: selectedEvidence.filter((item) => item.tool !== "read"), omittedReadEvidence: omittedReads });
-  // Never silently truncate commands, file contents, or user constraints.
-  if (Buffer.byteLength(evidence) > 100_000) throw new Error("Review context too large; split the action without omitting user constraints");
   const requestId = randomUUID();
-  return { requestId, fingerprint: createHash("sha256").update(evidence).digest("hex"), text: JSON.stringify({ requestId, ...JSON.parse(evidence) }) };
+  const evidence = { ...core, reviewedReads: selectedEvidence.filter((item) => item.tool === "read"), reviewedContext: selectedEvidence.filter((item) => item.tool !== "read"), omittedReadEvidence: omittedReads };
+  return { requestId, fingerprint: createHash("sha256").update(JSON.stringify(evidence)).digest("hex"), text: checkReviewSize({ requestId, ...evidence }) };
 }
 
 export function constrainReviewPayload(payload: unknown, model: { provider: string; api?: string }, requestId: string): unknown | undefined {

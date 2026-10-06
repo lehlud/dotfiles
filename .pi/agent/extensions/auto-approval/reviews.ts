@@ -1,6 +1,7 @@
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import { buildReview, constrainReviewPayload, parseVerdict, REVIEW_LANGUAGE, REVIEW_SYSTEM, textContent, withWatchdog, type Config, type Reviewer } from "./policy.ts";
+import { reviewCapacityIssue, reviewLanguageReference, REVIEW_OUTPUT_TOKENS } from "./review-context.ts";
 
 type Registry = Pick<ModelRegistry, "find" | "hasConfiguredAuth" | "streamSimple">;
 type Usage = AssistantMessage["usage"];
@@ -53,21 +54,25 @@ function unavailable(registry: Registry, candidate: Reviewer, model: ReturnType<
   if (candidate.thinking !== "off" && (!model.reasoning || (model.thinkingLevelMap && model.thinkingLevelMap[candidate.thinking] === undefined))) return "Reviewer does not support the configured thinking level";
 }
 
-async function requestReview(registry: Registry, candidate: Reviewer, model: NonNullable<ReturnType<Registry["find"]>>, envelope: Envelope, timeoutMs: number, signal: AbortSignal | undefined, systemPrompt: string) {
+function reviewContext(envelope: Envelope, systemPrompt: string): Context {
   const { latestUserPrompt } = JSON.parse(envelope.text);
   if (typeof latestUserPrompt !== "string" || !latestUserPrompt.trim()) throw new Error("Latest operator prompt unavailable");
-  return await withWatchdog(async (reviewSignal) => registry.streamSimple(model, {
+  return {
     systemPrompt,
     messages: [
       { role: "user", content: envelope.text, timestamp: Date.now() },
-      // Keep the language reference next to generation, after multilingual
-      // evidence. It changes presentation only, never the approval policy.
-      { role: "user", content: `${REVIEW_LANGUAGE}\nLatest actual operator prompt (quoted language reference only):\n${JSON.stringify(latestUserPrompt)}`, timestamp: Date.now() },
+      // Der kurze Sprachbezug entfernt Maschinendaten; der vollständige Prompt
+      // bleibt für Autorisierung und Nutzerbedingungen im unveränderten JSON.
+      { role: "user", content: `${REVIEW_LANGUAGE}\nLatest actual operator prompt (quoted language reference only; code, JSON and Markdown quotes excluded from this sample, full prompt and constraints retained in latestUserPrompt):\n${JSON.stringify(reviewLanguageReference(latestUserPrompt))}`, timestamp: Date.now() },
     ],
     // The reviewer receives no tools and cannot execute or delegate.
-  }, {
+  };
+}
+
+async function requestReview(registry: Registry, candidate: Reviewer, model: NonNullable<ReturnType<Registry["find"]>>, envelope: Envelope, timeoutMs: number, signal: AbortSignal | undefined, context: Context) {
+  return await withWatchdog(async (reviewSignal) => registry.streamSimple(model, context, {
     reasoning: candidate.thinking === "off" ? undefined : candidate.thinking,
-    signal: reviewSignal, maxTokens: 4096, cacheRetention: "short", sessionId: envelope.requestId,
+    signal: reviewSignal, maxTokens: REVIEW_OUTPUT_TOKENS, cacheRetention: "short", sessionId: envelope.requestId,
     onPayload: (payload, providerModel) => constrainReviewPayload(payload, providerModel, envelope.requestId),
   }).result(), timeoutMs, signal);
 }
@@ -75,6 +80,7 @@ async function requestReview(registry: Registry, candidate: Reviewer, model: Non
 export async function reviewWithFallback(config: Config, registry: Registry, envelope: Envelope, observer: Observer, signal?: AbortSignal, systemPrompt = REVIEW_SYSTEM) {
   const source = JSON.parse(envelope.text).latestUserPrompt;
   if (typeof source !== "string" || !source.trim()) throw new ReviewChainError("Latest operator prompt unavailable; no fallback, nothing executed", []);
+  const context = reviewContext(envelope, systemPrompt);
   const attempts: ReviewAttempt[] = [];
   let usage: Usage | undefined;
   for (const candidate of config.reviewers) {
@@ -82,9 +88,10 @@ export async function reviewWithFallback(config: Config, registry: Registry, env
     observer.start(candidate);
     const model = registry.find(candidate.provider, candidate.model);
     let reason = unavailable(registry, candidate, model);
+    if (!reason && model) reason = reviewCapacityIssue(context, model);
     let response: AssistantMessage | undefined;
     try {
-      if (!reason && model) response = await requestReview(registry, candidate, model, envelope, config.requestTimeoutMs, signal, systemPrompt);
+      if (!reason && model) response = await requestReview(registry, candidate, model, envelope, config.requestTimeoutMs, signal, context);
     } catch (error) {
       signal?.throwIfAborted();
       if (error instanceof Error && refusedReview(error.message)) {

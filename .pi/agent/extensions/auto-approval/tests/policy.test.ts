@@ -1,9 +1,21 @@
 import { describe, test, expect } from "bun:test";
 import { buildReview, constrainReviewPayload, normalizeNetworkFlag, parseConfig, parseVerdict, sandboxRequestSchema, textContent, withWatchdog, type Config, type PortableConfig } from "../policy.ts";
 import { Check } from "typebox/value";
+import { MAX_REVIEW_CONTEXT_BYTES, reviewLanguageReference } from "../review-context.ts";
 const portable: PortableConfig = { reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }], recentUserPrompts: 2, requestTimeoutMs: 120000, sandbox: { backend: "bwrap" } };
 const config: Config = { ...portable, sandbox: { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/executor/runner" } };
 const request = { tool: "bash", arguments: { command: "printf ok" }, goal: "Test", justification: "Smoke test" };
+
+test("language-only samples exclude pasted JSON, code and quotes without changing raw intent", () => {
+  const report = JSON.stringify({ output: "Synthetic English text".repeat(10000), nested: ["escaped \\\"", { done: true }] });
+  const prompt = `Bitte diese Ergebnisse prüfen:\n${report}\n> English quotation\n\`\`\`sh\n# English code\n\`\`\`\nKeine Referenz ändern.`;
+  const sample = reviewLanguageReference(prompt);
+  expect(sample).toContain("Bitte diese Ergebnisse prüfen"); expect(sample).toContain("Keine Referenz ändern");
+  for (const excluded of ["Synthetic", "English quotation", "English code", "escaped"]) expect(sample).not.toContain(excluded);
+  const data = JSON.parse(buildReview(request, [{ type: "message", message: { role: "user", content: prompt } }], config, "/project", []).text);
+  expect(data.latestUserPrompt).toBe(prompt); expect(data.userPrompts).toEqual([prompt]);
+  expect(reviewLanguageReference("Bitte [diese Datei] lesen, {kein JSON}. ")).toBe("Bitte [diese Datei] lesen, {kein JSON}.");
+});
 
 test("page-only web results remain auditable evidence without dropping their first content block", () => {
   const action = { tool: "webfetch", arguments: { url: "https://example.com/" } };
@@ -103,7 +115,42 @@ describe("review policy", () => {
     expect(review().latestUserPrompt).toBe("Bitte die Tests prüfen.");
   });
   test("never silently truncates action or constraints", () => {
-    expect(() => buildReview({ ...request, arguments: { command: "x".repeat(100001) } }, [{ type: "message", message: { role: "user", content: "test" } }], config, "/tmp", [])).toThrow();
+    const entries = [{ type: "message", message: { role: "user", content: "test" } }];
+    const oversized = { ...request, arguments: { command: "x".repeat(MAX_REVIEW_CONTEXT_BYTES + 1) } };
+    expect(() => buildReview(oversized, entries, config, "/tmp", [])).toThrow("Nothing was truncated");
+    expect(() => buildReview({ ...request, arguments: { command: "x".repeat(100001) } }, entries, config, "/tmp", [])).toThrow("executor request limit");
+    const supported = { ...request, arguments: { command: "x".repeat(98000) } };
+    expect(JSON.parse(buildReview(supported, entries, config, "/tmp", []).text).action).toEqual(supported);
+    expect(() => buildReview(request, [{ type: "message", message: { role: "user", content: "x".repeat(MAX_REVIEW_CONTEXT_BYTES) } }], config, "/tmp", [])).toThrow("userPrompts=");
+  });
+  test("large raw user context and audited code remain complete beyond the old byte cap", () => {
+    const prompt = 'Prüfe diese Ergebnisse und ändere keine Referenz: ' + JSON.stringify({ tests: Array(2000).fill({ name: "Leerer Betreff", success: true, points: "-0.000000000000000" }) });
+    const audit = { toolCallId: "read", requestId: "id", fingerprint: "hash", decision: "approve", action: { tool: "read", arguments: { path: "snail/reference/snail.c" } } };
+    const entries = [
+      { type: "message", message: { role: "user", content: prompt } },
+      { type: "custom", customType: "auto-approval-review", data: audit },
+      { type: "message", message: { role: "toolResult", toolName: "approved_action", toolCallId: "read", content: [{ type: "text", text: "approved" }, { type: "text", text: "vollständiger geprüfter Quelltext" }], details: { approval: audit } } },
+    ];
+    const proposed = { tool: "read", arguments: { path: "snail/reference/snail.c", offset: 82, limit: 35 }, goal: "Inspect", justification: "Review test differences" };
+    const review = buildReview(proposed, entries, config, "/project", []);
+    const data = JSON.parse(review.text);
+    expect(Buffer.byteLength(review.text)).toBeGreaterThan(100000);
+    expect(data.userPrompts).toEqual([prompt]); expect(data.latestUserPrompt).toBe(prompt);
+    expect(data.action).toEqual(proposed);
+    expect(data.reviewedReads[0].content[0].text).toBe("vollständiger geprüfter Quelltext");
+  });
+  test("oversized old denial audits cannot poison a subsequent small read", () => {
+    const reason = "Keine Zugangsdaten lesen oder übertragen.";
+    const prompt = "Lies den Quelltext, aber keine Zugangsdaten.";
+    const entries = [
+      { type: "message", message: { role: "user", content: prompt } },
+      ...Array.from({ length: 6 }, (_, i) => ({ type: "custom", customType: "auto-approval-review", data: { requestId: `denied-${i}`, fingerprint: `hash-${i}`, decision: "deny", reason, action: { ...request, arguments: { command: "private-old-command".repeat(10000) } }, sandboxPlan: { bindings: ["unused".repeat(10000)] }, reviewer: { ignored: "x".repeat(10000) } } })),
+    ];
+    const data = JSON.parse(buildReview(request, entries, config, "/project", []).text);
+    expect(data.previousDenials).toHaveLength(6);
+    expect(data.previousDenials[0]).toEqual({ decision: "deny", reason, requestId: "denied-0", fingerprint: "hash-0", tool: "bash", actionOmitted: true });
+    expect(JSON.stringify(data)).not.toContain("private-old-command");
+    expect(data.userPrompts).toEqual([prompt]);
   });
   test("includes prior denials as untrusted evidence, not approvals", () => {
     const data = JSON.parse(buildReview(request, [

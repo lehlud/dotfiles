@@ -14,7 +14,8 @@ let attempts: ReviewAttempt[];
 let starts: string[];
 let finishes: number;
 let onResponse: (() => void) | undefined;
-beforeEach(() => { modes = {}; calls = []; attempts = []; starts = []; finishes = 0; onResponse = undefined; });
+let capacities: Record<string, number>;
+beforeEach(() => { modes = {}; calls = []; attempts = []; starts = []; finishes = 0; onResponse = undefined; capacities = {}; });
 const observer = {
   start: (candidate: { provider: string }) => { starts.push(candidate.provider); },
   finish: () => { finishes++; },
@@ -26,7 +27,7 @@ function message(provider: string) {
   return { stopReason, rawStopReason: mode === "filtered" ? "incomplete.content_filter" : undefined, usage, content: [{ type: "text", text: mode === "invalid" ? "not JSON" : JSON.stringify({ requestId: mode === "mismatch" ? "other-action" : envelope.requestId, decision: mode === "deny" || mode === "error_deny" ? "deny" : "approve", reason: "Synthetic verdict" }) }] };
 }
 const registry: any = {
-  find: (provider: string, id: string) => modes[provider] === "missing" ? undefined : { provider, id, reasoning: modes[provider] !== "unsupported", api: "openai-responses", thinkingLevelMap: { medium: "medium" } },
+  find: (provider: string, id: string) => modes[provider] === "missing" ? undefined : { provider, id, contextWindow: capacities[provider] ?? 272000, maxTokens: 128000, reasoning: modes[provider] !== "unsupported", api: "openai-responses", thinkingLevelMap: { medium: "medium" } },
   hasConfiguredAuth: (model: { provider: string }) => modes[model.provider] !== "auth",
   streamSimple: (model: any, context: any, options: any) => {
     calls.push({ model, context, options });
@@ -82,6 +83,30 @@ test("valid denial is binding even when the fallback would approve", async () =>
   const result = await run();
   expect(result.verdict.decision).toBe("deny"); expect(result.selectedReviewer).toEqual(primary);
   expect(calls).toHaveLength(1); expect(attempts).toHaveLength(0);
+});
+test("capacity preflight includes system, repeated language reference and output reserve", async () => {
+  capacities.openai = 8000;
+  const result = await run();
+  expect(result.selectedReviewer).toEqual(fallback);
+  expect(result.attempts[0].reason).toContain("context capacity unavailable");
+  expect(calls).toHaveLength(1); expect(calls[0].model.provider).toBe("openrouter");
+  capacities.openrouter = 8000; calls = [];
+  await expect(run()).rejects.toThrow("operator context and action were not truncated");
+  expect(calls).toHaveLength(0);
+});
+test("large operator context is sent intact to a capable model and a denial stays final", async () => {
+  const prompt = "Prüfe diese JSON-Ergebnisse, ohne Zugangsdaten zu lesen: " + "abcdef".repeat(20000);
+  const large = buildReview({ tool: "read", arguments: { path: "snail/reference/snail.c", offset: 82, limit: 35 }, goal: "Inspect", justification: "Test diagnosis" }, [{ type: "message", message: { role: "user", content: prompt } }], config, "/project", []);
+  modes.openai = "deny";
+  const gate = { ...registry, streamSimple(model: any, context: any, options: any) {
+    calls.push({ model, context, options });
+    return { result: async () => ({ ...message(model.provider), content: [{ type: "text", text: JSON.stringify({ requestId: large.requestId, decision: "deny", reason: "Nicht autorisiert." }) }] }) };
+  } };
+  const result = await reviewWithFallback(config, gate, large, observer);
+  expect(result.verdict.decision).toBe("deny"); expect(calls).toHaveLength(1);
+  expect(calls[0].context.messages[0].content).toBe(large.text);
+  expect(calls[0].context.messages[1].content).toContain("Language sample shortened");
+  expect(calls[0].context.messages[1].content.length).toBeLessThan(3500);
 });
 test("denial remains final when a provider error follows the complete verdict", async () => {
   modes.openai = "error_deny";
