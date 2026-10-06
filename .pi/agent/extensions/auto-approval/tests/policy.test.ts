@@ -42,7 +42,8 @@ describe("review policy", () => {
     expect(original.sandbox).toEqual({ tools: ["node"] });
     expect(normalizeNetworkFlag({ ...request, network: false }).sandbox?.network).toBe("none");
     expect(() => normalizeNetworkFlag({ ...request, network: false, sandbox: { network: "host" } })).toThrow("Conflicting");
-    expect(() => normalizeNetworkFlag({ ...request, tool: "read", network: true })).toThrow("shell actions");
+    expect(() => normalizeNetworkFlag({ ...request, tool: "read", network: true })).toThrow("shell and credential actions");
+    expect(normalizeNetworkFlag({ ...request, tool: "credential_exec", network: true }).sandbox?.network).toBe("host");
   });
   test("sandbox requests are strict and the reviewer gets all dimensions and resolved mounts", () => {
     const sandbox = { paths: [{ path: "/tmp/shared", access: "read" }], network: "host", environment: { BUILD_MODE: "test" }, executableSearchPaths: ["/tmp/bin"], limits: { executionTimeoutMs: 900000, tmpBytes: 536870912, cpus: 4, memoryMiB: 2048, pids: 256 } };

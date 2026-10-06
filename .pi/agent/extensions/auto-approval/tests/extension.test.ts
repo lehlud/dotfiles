@@ -25,9 +25,13 @@ mock.module("../isolation.ts", () => ({
     if (mode === "project" && workspaceValidationFails) throw new Error("ENOENT: no such file or directory, lstat '/Users/gunter/.agents/skills/avoid-wikipedia-ai-writing-signs/SKILL.md'");
     return mode === "web" ? { path: "/workspace", cwd: "/workspace", bindings: [], masked: [], temporaryDirectory } : { path: cwd, cwd, bindings: [cwd], masked: [], temporaryDirectory };
   },
-  executeIsolated: async (request: any, workspace: { path: string }, _config: unknown, signal?: AbortSignal) => {
+  executeIsolated: async (request: any, workspace: { path: string }, _config: unknown, signal?: AbortSignal, privateCredentialInput?: any) => {
     const cwd = workspace.path;
     executedRequests.push(structuredClone(request));
+    if (request.tool === "credential_exec") {
+      expect(privateCredentialInput.environment.SERVICE_TOKEN).toBe("synthetic-auth-only-after-review");
+      return { content: [{ type: "text", text: "authenticated result" }], details: { exitCode: 0 } };
+    }
     if (["websearch", "webfetch"].includes(request.tool)) return { content: [{ type: "text", text: "Readable public page." }], details: { finalUrl: "https://example.com/", hasMore: false } };
     if (request.tool === "writing_check") return writingCheckTool.execute("test-only", request.arguments, signal, undefined, ctx);
     const factories: any = { bash: createBashToolDefinition, read: createReadToolDefinition, write: createWriteToolDefinition, edit: createEditToolDefinition };
@@ -109,6 +113,51 @@ afterAll(async () => {
 const call = (args: any, signal?: AbortSignal) => actions.approved_action.execute("call", args, signal, undefined, ctx);
 const bash = (command: string) => ({ tool: "bash", arguments: { command }, goal: "Smoke test", justification: "Harmless isolated test" });
 const exists = async (path: string) => { try { await access(path); return true; } catch { return false; } };
+
+const credentialAction = () => ({ tool: "credential_exec", arguments: { profile: "service", argv: ["inspect"] }, network: true, goal: "Inspect authenticated service", justification: "User requested this authenticated operation" });
+async function configureCredentialFixture(secretPath: string) {
+  await writeFile(configPath, JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }));
+  await writeFile(localConfigPath, JSON.stringify({
+    sandbox: { executable: process.execPath, runnerExecutable: process.execPath },
+    credentialProfiles: [{ name: "service", executable: process.execPath, allowedArgv: [[{ literal: "inspect" }]], secrets: { SERVICE_TOKEN: { type: "file", path: secretPath } } }],
+  }));
+}
+test("a denied credential action does not read its secret or run its credential getter", async () => {
+  await configureCredentialFixture(join(agentRoot, "missing-credential"));
+  mode = "deny";
+  const result = await call(credentialAction());
+  expect(result.isError).toBe(true); expect(executedRequests).toHaveLength(0);
+  expect(result.details.reason).toBe("Nicht vom Nutzer gewollt");
+  expect(requested[0].data.sandboxPlan.credentials.profile).toBe("service");
+  expect(requested[0].data.sandboxPlan.bindings).toEqual([]);
+  expect(requested[0].data.sandboxPlan.temporaryStorage.lifetime).toBe("one action");
+});
+test("approved credential input is private, argv is snapshotted, and later actions receive no grant", async () => {
+  const path = join(agentRoot, "synthetic-credential");
+  await writeFile(path, "synthetic-auth-only-after-review", { mode: 0o600 });
+  await configureCredentialFixture(path);
+  const action = credentialAction();
+  responseHook = () => { action.arguments.argv[0] = "auth-token"; };
+  const result = await call(action);
+  expect(result.isError, JSON.stringify(result)).not.toBe(true);
+  expect(executedRequests[0].arguments.argv).toEqual(["inspect"]);
+  expect(JSON.stringify(requested.map((item) => item.data))).not.toContain("synthetic-auth-only-after-review");
+  expect(JSON.stringify(entries)).not.toContain("synthetic-auth-only-after-review");
+  expect(JSON.stringify(result)).not.toContain("synthetic-auth-only-after-review");
+  responseHook = undefined;
+  await call(bash("printf ordinary"));
+  expect(executedRequests[1].tool).toBe("bash"); expect(executedRequests[1].sandbox).toBeUndefined();
+});
+test("failed audit and abort before credential execution never resolve secrets", async () => {
+  await configureCredentialFixture(join(agentRoot, "missing-credential"));
+  auditFails = true;
+  expect((await call(credentialAction())).isError).toBe(true);
+  expect(executedRequests).toHaveLength(0);
+  auditFails = false;
+  const controller = new AbortController(); responseHook = () => controller.abort();
+  expect((await call(credentialAction(), controller.signal)).isError).toBe(true);
+  expect(executedRequests).toHaveLength(0);
+});
 
 test("only approved_action is active on session start and before each run", async () => {
   await hooks.session_start({}, ctx); expect(active).toEqual(["approved_action"]);

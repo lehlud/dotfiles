@@ -16,7 +16,7 @@ beforeAll(async () => {
   for (const name of ["index.ts", "execute.ts", "package.json", "bun.lock"]) await copyFile(join(import.meta.dir, "../../web-research", name), join(source, "../web-research", name));
   await mkdir(join(source, "../public-writing"), { recursive: true });
   for (const name of ["index.ts", "rules.ts", "package.json", "bun.lock"]) await copyFile(join(import.meta.dir, "../../public-writing", name), join(source, "../public-writing", name));
-  for (const name of ["package.json", "bun.lock", "config.ts", "policy.ts", "review-context.ts"]) await copyFile(join(import.meta.dir, "..", name), join(source, name));
+  for (const name of ["package.json", "bun.lock", "config.ts", "policy.ts", "credential-command.ts", "review-context.ts"]) await copyFile(join(import.meta.dir, "..", name), join(source, name));
   await writeFile(join(source, "runner.ts"), 'console.log("first executor");\n');
   await writeFile(join(agent, "auto-approval.json"), JSON.stringify(portable));
   await writeFile(join(agent, "auto-approval.device.json"), JSON.stringify({ sandbox: { executable: process.execPath } }));

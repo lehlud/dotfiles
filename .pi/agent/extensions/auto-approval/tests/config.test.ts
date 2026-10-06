@@ -102,3 +102,12 @@ test("native readiness rejects missing, non-executable and directory executors b
   await rm(join(bin, "bwrap"));
   await expect(assertSandboxReady(config)).rejects.toThrow("Sandbox executable unavailable");
 });
+
+test("credential profiles are device-owned, reloadable, uniquely named and absent from portable settings", async () => {
+  const profile = { name: "service", executable: "/usr/bin/service", allowedArgv: [[{ literal: "inspect" }]], secrets: { SERVICE_TOKEN: { type: "environment" as const, name: "SERVICE_TOKEN" } } };
+  await writeFile(join(directory, "auto-approval.device.json"), JSON.stringify({ credentialProfiles: [profile] }));
+  expect((await loadConfig(directory, { searchPath: bin })).credentialProfiles).toEqual([profile]);
+  expect(() => parseConfig(JSON.stringify({ ...portable, credentialProfiles: [profile] }))).toThrow();
+  await writeFile(join(directory, "auto-approval.device.json"), JSON.stringify({ credentialProfiles: [profile, profile] }));
+  await expect(loadConfig(directory, { searchPath: bin })).rejects.toThrow("must be unique");
+});

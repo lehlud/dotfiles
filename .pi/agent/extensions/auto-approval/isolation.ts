@@ -8,8 +8,9 @@ import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { Config, Request, SandboxRequest } from "./policy.ts";
 import { resolveLocalTools, toolRuntimeDirectory, type LocalTool } from "./local-tools.ts";
 import type { WebRuntime } from "../web-research/runtime.ts";
+import type { CredentialExecution } from "./credential-command.ts";
 export type SandboxConfig = Config["sandbox"];
-export type Workspace = { path: string; cwd: string; bindings: string[]; readOnlyBindings?: string[]; searchPaths?: string[]; localTools?: LocalTool[]; webRuntime?: WebRuntime; temporaryDirectory?: string; masked: { path: string; directory: boolean }[] };
+export type Workspace = { path: string; cwd: string; bindings: string[]; readOnlyBindings?: string[]; searchPaths?: string[]; localTools?: LocalTool[]; webRuntime?: WebRuntime; credentialExecutable?: string; temporaryDirectory?: string; masked: { path: string; directory: boolean }[] };
 const within = (root: string, path: string) => {
   const rel = relative(root, path);
   return rel === "" || (rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel));
@@ -281,6 +282,7 @@ export function sandboxArguments(workspace: Workspace, config: SandboxConfig, na
   }
   args.push(...localToolArguments(workspace, true));
   args.push(...webRuntimeArguments(workspace, true));
+  if (workspace.credentialExecutable) args.push("--ro-bind", workspace.credentialExecutable, "/opt/pi-credential/tool");
   // Projected parent directories are ephemeral and read-only. Only mounts persist.
   if (!workspace.bindings.includes(workspace.path)) args.push("--remount-ro", workspace.path);
   args.push("--chdir", workspace.cwd, ...(workspace.localTools?.length ? ["/bin/bash", "/opt/pi-tools/runtime/bootstrap.sh", ...workspace.localTools.map((tool) => tool.name), "--"] : []), "/executor/runner");
@@ -288,8 +290,10 @@ export function sandboxArguments(workspace: Workspace, config: SandboxConfig, na
 }
 
 /** Both backends are mandatory isolation. A launch failure never executes on the host. */
-export async function executeIsolated(request: Request, workspace: Workspace, config: SandboxConfig, signal?: AbortSignal): Promise<AgentToolResult<any>> {
+export async function executeIsolated(request: Request, workspace: Workspace, config: SandboxConfig, signal?: AbortSignal, credentialExecution?: CredentialExecution): Promise<AgentToolResult<any>> {
   signal?.throwIfAborted();
+  const input = JSON.stringify(credentialExecution ? { ...request, credentialExecution } : request);
+  if (Buffer.byteLength(input) > 100000) throw new Error("Executor input limit exceeded");
   const name = `pi-approved-${randomUUID()}`;
   const native = config.backend === "bwrap";
   const executable = native ? config.executable : config.dockerExecutable;
@@ -320,7 +324,7 @@ export async function executeIsolated(request: Request, workspace: Workspace, co
     });
     child.stderr.on("data", (chunk) => { if (stderr.length < 20000) stderr += chunk.toString(); });
     child.stdin.on("error", () => {});
-    if (signal?.aborted) abort(); else child.stdin.end(JSON.stringify(request));
+    if (signal?.aborted) abort(); else child.stdin.end(input);
     const code = await exited;
     if (failure) throw failure;
     if (code !== 0) throw new Error(`Mandatory ${native ? "bwrap" : "Docker"} sandbox failed (${code}); no local fallback. ${stderr.trim()}`);

@@ -104,6 +104,58 @@ Beispiel für einen notwendigen externen Read:
 
 Die Erweiterung erscheint sichtbar neben der normalen Tool-Anzeige und wird mit ihrem aufgelösten Plan protokolliert. Lange Shell-Befehle sind standardmäßig eingeklappt; `ctrl+o` zeigt den vollständigen Befehl. Geprüft und ausgeführt wird immer das unveränderte Original. Bestehende Schreibrechte werden durch zusätzliche Read-Mounts nicht automatisch erweitert. Hardlinks zwischen einem schreibbaren und einem nur lesbaren Mount werden zurückgewiesen. Die aktive Approval-Installation, ihre Konfiguration, bekannte Credential-Verzeichnisse und das gesamte Home bleiben geschützt. Der Executor und die unabhängige Prüfung können durch keinen Antrag abgeschaltet werden.
 
+## Authentifizierte CLI-Aufrufe
+
+`credential_exec` delegiert ein Betreiber-Anmeldeprofil an einen einzelnen geprüften CLI-Aufruf. Das Prüfmodell beurteilt den Nutzerauftrag, alle Argumente, das gewählte Profil, den Namen und Hash des Programms und die Auswirkungen beim Dienst. Private Quellpfade und Namen der ursprünglichen Host-Variablen bleiben im Gate; die Prüfung sieht die Quellenart und die benötigten CLI-Anmeldevariablen. Eine Ablehnung ruft keine Zugangsdaten ab. Auch eine fehlgeschlagene Protokollierung oder ein Abbruch vor der Ausführung verhindert den Abruf.
+
+Beispiel für einen vom Nutzer ausdrücklich beauftragten PR-Abschluss:
+
+```json
+{
+  "tool": "credential_exec",
+  "arguments": {
+    "profile": "github",
+    "argv": ["pr", "close", "123", "--repo", "owner/repo"]
+  },
+  "network": true,
+  "goal": "Den angegebenen PR schließen",
+  "justification": "Der Nutzer hat den Abschluss dieses PRs beauftragt; dafür ist seine GitHub-Anmeldung erforderlich."
+}
+```
+
+Das eingebaute Profil `github` verwendet ein systemweit installiertes, natives Linux-`gh`. Es unterstützt `pr`/`issue` mit `view`, `close`, `reopen` und `comment`, einer numerischen Nummer und einem expliziten `--repo OWNER/REPO` oder `-R OWNER/REPO`. Möglich sind außerdem passende `--comment`, `--body`, `--comments`, `--json` und bei Issue-Abschluss `--reason`. Andere Hosts, Auth-/API-/Plugin-Befehle, URLs statt Nummern, Browser, Editoren, Templates, jq-Filter und lokale Branch-Löschungen bleiben gesperrt.
+
+Erst nach protokollierter Freigabe wird `GH_TOKEN` oder `GITHUB_TOKEN` aus der Pi-Prozessumgebung übernommen. Fehlt beides, führt ein eigener Offline-Sandbox-Aufruf ausschließlich `gh auth token --hostname github.com` aus. Er erhält eine private Kopie von `hosts.yml` und gegebenenfalls `config.yml` aus `GH_CONFIG_DIR` beziehungsweise dem üblichen gh-Konfigurationsverzeichnis. gh darf diese Kopie migrieren; das Original wird weder eingebunden noch verändert. Erweiterungen und andere Dateien werden nicht kopiert. Der Token verlässt diesen Abruf ausschließlich über den privaten Executor-Kanal zum Gate. Ein ausschließlich im macOS-Schlüsselbund gespeicherter Login ist damit im Linux-Container nicht verfügbar: Dafür muss `gh` innerhalb von Lubox angemeldet werden oder Pi mit einem passenden Token gestartet werden. Es gibt keinen Host- oder Keychain-Fallback.
+
+Der eigentliche CLI-Aufruf startet ohne Shell, geerbte Umgebung, Projektdateien oder gemeinsame Session-`/tmp`-Daten. Das geprüfte Programm wird vor der Ausführung erneut gehasht und als schreibgeschützte Kopie eingebunden; eine zwischenzeitliche Aktualisierung erfordert eine neue Prüfung. Nur dieser Aufruf und seine eigenen Unterprozesse erhalten die ausgewählten Anmeldevariablen. Der Token wird per privatem stdin-Protokoll übertragen und erscheint weder in Prozessargumenten noch im Prüfkontext oder Audit. Die gewöhnliche CLI-Ausgabe maskiert ausgewählte Tokenwerte sowie deren URL-, JSON- und Base64-Darstellungen. Ausgabegrenzen, Timeout, Abbruch und Prozessgruppen-Aufräumen gelten weiterhin. Das eigene temporäre Dateisystem verschwindet nach dem Aufruf; die private Programmkopie und etwaige Login-Kopien werden ebenfalls entfernt. Folgende normale Aktionen erhalten keine Anmeldung.
+
+Weitere Dienste werden außerhalb von Pi in `auto-approval.device.json` eingerichtet. Ein Profil enthält keine Tokenwerte, sondern Quellen und vollständige erlaubte Argumentfolgen. Dieses Beispiel steht für eine separat installierte vertrauenswürdige Service-CLI:
+
+```json
+{
+  "credentialProfiles": [{
+    "name": "service",
+    "executable": "/usr/local/bin/service-cli",
+    "allowedArgv": [[
+      {"literal": "close"},
+      {"literal": "--project"},
+      {"literal": "example"},
+      {"literal": "--id"},
+      {"pattern": "[0-9]+"}
+    ]],
+    "secrets": {
+      "SERVICE_TOKEN": {"type": "environment", "name": "SERVICE_TOKEN"}
+    }
+  }]
+}
+```
+
+Alternativ verweist `{"type":"file","path":"/absolute/private/token"}` auf eine höchstens 16 KiB große, nur für ihren Eigentümer lesbare reguläre Datei ohne Symlink oder Hardlinks. Der Inhalt wird als Anmeldevariable übergeben; die Datei wird nicht eingebunden. Optionale `environment`-Werte dienen ausschließlich öffentlichen Einstellungen wie einer Region oder Dienstadresse. Geheimnisse gehören immer in `secrets`. Es werden keine beliebigen Credential-Getter-Befehle unterstützt. Dateiquellen und Profilprogramme werden bei normalen Sandbox-Aktionen zusätzlich geschützt.
+
+Jede `allowedArgv`-Folge muss sämtliche Argumente in genau dieser Reihenfolge abdecken. `literal` ist exakt, `pattern` muss den gesamten einzelnen Wert treffen. Die Betreiberregeln müssen Dienst, Ziele und erlaubte Operationen begrenzen; beliebige Shell-/Interpreter-, Plugin-, Debug- oder Credential-Ausgabe-Befehle sind ungeeignet. Die Ausgabe-Maskierung ersetzt keine vertrauenswürdige CLI und keine begrenzten Argumentregeln: Ein absichtlich bösartiges Programm könnte Secrets anders kodieren oder versenden. Das gewählte Programm erhält die tatsächliche Berechtigung des Tokens beim Dienst; das Prüfmodell muss deshalb jede konkrete Wirkung autorisieren.
+
+Die Profile bleiben gerätespezifisch, werden pro Aktion geladen und können nur vom Betreiber geändert werden. `github` kann durch ein ausdrücklich eingerichtetes gleichnamiges Profil ersetzt werden, etwa für anders begrenzte GitHub-Operationen. Der Modellaufruf darf keine zusätzlichen Mounts, Tool-Bundles, Suchpfade oder Umgebungsvariablen beantragen. Netzwerkzugriff muss für jeden Aufruf separat angefordert werden. Aktuell ist dieser Weg auf native Linux-ELF-Programme mit bwrap begrenzt; Shell-/macOS-Wrapper und das Docker-Backend werden vor der Modellprüfung abgewiesen. Für Werkzeuge, die Projektdateien oder Credential-Dateien direkt benötigen, muss zunächst eine passende begrenzte Integration gebaut werden.
+
 ## Lokale Tools und Netzwerkzugriff für einen Befehl
 
 Mit `sandbox.tools: ["node"]` erhält eine Aktion `nvm`, `node`, `npm`, `npx` und, sofern installiert, `corepack`. Vorhandene Node-Versionen werden schreibgeschützt eingebunden. Vor der Freigabe prüft die Erweiterung den ELF-Header und die CPU-Architektur jeder Version; die Sandbox prüft sie bei der Auswahl erneut, auch im privaten Cache. In einem vom macOS-Host eingebundenen Home werden Mach-O-Binaries, fremde CPU-Architekturen und Shell-Wrapper für solche Binaries ausgeschlossen. Das gilt auch für alte, noch nicht nach Plattform getrennte nvm-Verzeichnisse. Der macOS-nvm-Launcher wird nicht durchgereicht.

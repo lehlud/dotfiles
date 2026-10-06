@@ -26,6 +26,8 @@ import { webExecutionPlan } from "../web-research/execute.ts";
 import { writingCheckTool } from "../public-writing/index.ts";
 import { preparePromptContext } from "./prompt-compression.ts";
 import { checkActionSize } from "./review-context.ts";
+import { credentialCommandTool } from "./credential-command.ts";
+import { credentialProtectedPaths, credentialReviewPlan, executeWithCredentials, resolveCredentialPlan } from "./credential-access.ts";
 
 const TOOL_NAME = "approved_action";
 const factories = {
@@ -36,6 +38,7 @@ const factories = {
   websearch: (_cwd: string) => webTools.websearch,
   webfetch: (_cwd: string) => webTools.webfetch,
   writing_check: (_cwd: string) => writingCheckTool,
+  credential_exec: (_cwd: string) => credentialCommandTool,
 };
 type ToolName = keyof typeof factories;
 const toolNames = Object.keys(factories) as ToolName[];
@@ -49,7 +52,7 @@ const parameters = Type.Union(toolNames.map((name) => Type.Object({
   goal: Type.String({ minLength: 1, maxLength: 4000, description: "Current concrete goal, tied to the real user's request." }),
   justification: Type.String({ minLength: 1, maxLength: 4000, description: "Why this exact action is needed now; explain side effects and scope." }),
   sandbox: Type.Optional(sandboxRequestSchema),
-  ...(["bash", "powershell"].includes(name) ? { network: Type.Optional(Type.Boolean({ description: "Request one-command network access (true) or explicitly stay offline (false). Independent approval is required before execution; expires when this action ends." })) } : {}),
+  ...(["bash", "powershell", "credential_exec"].includes(name) ? { network: Type.Optional(Type.Boolean({ description: "Request one-command network access (true) or explicitly stay offline (false). Independent approval is required before execution; expires when this action ends." })) } : {}),
 }, { additionalProperties: false })));
 
 // Resolve symlinks even for not-yet-created paths. Unexpected filesystem errors
@@ -86,7 +89,7 @@ export default function autoApproval(pi: ExtensionAPI) {
   });
   const protectedPaths = [
     sourceDir, getAgentDir(), join(homedir(), ".docker"), join(homedir(), ".ssh"), join(homedir(), ".aws"),
-    join(homedir(), ".gnupg"), join(homedir(), ".codex"), join(homedir(), ".claude"),
+    join(homedir(), ".gnupg"), join(homedir(), ".codex"), join(homedir(), ".claude"), join(homedir(), ".config", "gh"),
     join(homedir(), ".local", "cache", "pi"),
     join(homedir(), ".local", "cache", "pi-web-research"),
     join(homedir(), ".local", "bin", "pi"),
@@ -118,7 +121,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     lock(ctx);
     return { message: {
       customType: "auto-approval-policy", display: false,
-      content: `Auto-Approval and its isolated executor are mandatory. No host operations are permitted. Actions run in an ephemeral sandbox, offline by default, with only authorized mounts writable. When the real user task requires access beyond the defaults, request it in approved_action.sandbox: paths with read/write access, network host, literal environment, executableSearchPaths or limits. Explain necessity; the reviewer evaluates the complete action and expansion together. Permissions expire at the end of that action. /tmp is writable and private to the current Pi session. Files there persist across approved actions and are deleted on quit, reload, or session replacement. /tmp/home and /tmp/pi are per-action runtime directories. Persistent /tmp does not support tmpBytes limits. Never change the operator configuration or bypass isolation. Pi code, credentials, container sockets, and host process namespace are protected. If isolation or workspace authorization fails, tell the user the exact config path and required operator change; NEVER use a local fallback. The workspace is detected automatically from the current directory or project Git root; a Git root at or above the home directory is ignored. The shared config is ~/.pi/agent/auto-approval.json; optional device paths and restricted home workspaceViews belong in ~/.pi/agent/auto-approval.device.json. /auto-approval shows both paths and the detected workspace. Use ONLY approved_action for every operation, including reads and file mutations. Supply the exact tool arguments, your current goal, and why the action is necessary now. An independent reviewer checks actual recent user prompts against the action. Rejections return their reason. Resolve the concern or ask the user; never retry through another tool, nested agent, shell escape, modified gate, or background process. There is no agent-accessible disable or manual bypass.`,
+      content: `Auto-Approval and its isolated executor are mandatory. No host operations are permitted. Actions run in an ephemeral sandbox, offline by default, with only authorized mounts writable. When the real user task requires access beyond the defaults, request it in approved_action.sandbox: paths with read/write access, network host, literal environment, executableSearchPaths or limits. Explain necessity; the reviewer evaluates the complete action and expansion together. Permissions expire at the end of that action. /tmp is writable and private to the current Pi session. Files there persist across approved actions and are deleted on quit, reload, or session replacement. /tmp/home and /tmp/pi are per-action runtime directories. Persistent /tmp does not support tmpBytes limits. Never change the operator configuration or bypass isolation. Pi code, credentials, container sockets, and host process namespace are protected. For necessary authenticated service operations, use tool credential_exec with arguments {profile, argv} and network: true. This separate argv-only route delegates an operator-owned login to one pinned CLI after approval; never read/mount login files or pass secrets through bash. The built-in github profile supports gh pr/issue view, close, reopen and comment with a numeric target and explicit --repo OWNER/REPO; no auth/api/plugins, shell, browser, editor, jq/template, or local branch deletion. Other profiles require operator configuration in auto-approval.device.json outside Pi. Credential actions get fresh temporary storage and no project files. An unavailable native Linux login must be repaired outside Pi; no macOS Keychain or host execution fallback. If isolation or workspace authorization fails, tell the user the exact config path and required operator change; NEVER use a local fallback. The workspace is detected automatically from the current directory or project Git root; a Git root at or above the home directory is ignored. The shared config is ~/.pi/agent/auto-approval.json; optional device paths and restricted home workspaceViews belong in ~/.pi/agent/auto-approval.device.json. /auto-approval shows both paths and the detected workspace. Use ONLY approved_action for every operation, including reads and file mutations. Supply the exact tool arguments, your current goal, and why the action is necessary now. An independent reviewer checks actual recent user prompts against the action. Rejections return their reason. Resolve the concern or ask the user; never retry through another tool, nested agent, shell escape, modified gate, or background process. There is no agent-accessible disable or manual bypass.`,
     } };
   });
   pi.on("tool_call", async (event) => {
@@ -134,13 +137,13 @@ export default function autoApproval(pi: ExtensionAPI) {
       try {
         const config = await loadConfig(getAgentDir());
         await assertSandboxReady(config);
-        ctx.ui.notify(`Auto-Approval ON\nReviewers (priority order):\n${config.reviewers.map((item, i) => `${i + 1}. ${reviewerLabel(item)}`).join("\n")}\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nLocal paths/views (optional): ${localConfigPath}\nChanges take effect on the next action. No bypass/off command.`, "info");
-      } catch (error) { ctx.ui.notify(`Auto-Approval LOCKED: ${String(error)}\nConfig: ${configPath}\nLocal paths/views (optional): ${localConfigPath}`, "error"); }
+        ctx.ui.notify(`Auto-Approval ON\nReviewers (priority order):\n${config.reviewers.map((item, i) => `${i + 1}. ${reviewerLabel(item)}`).join("\n")}\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nDevice paths/views/credential profiles (optional): ${localConfigPath}\nChanges take effect on the next action. No bypass/off command.`, "info");
+      } catch (error) { ctx.ui.notify(`Auto-Approval LOCKED: ${String(error)}\nConfig: ${configPath}\nDevice paths/views/credential profiles (optional): ${localConfigPath}`, "error"); }
     },
   });
   pi.registerTool({
     name: TOOL_NAME, label: "Reviewed action", exposure: "model-only", executionMode: "sequential",
-    description: "Submit one exact operation for independent approval and, only if approved, immediate execution. websearch uses DDGS (query, optional maxResults/region/timeLimit); webfetch reads one URL as clean plain text (url, optional maxChars/offset). Web operations request per-action network access before review. writing_check semantically reviews public prose in its original language (text, audience public/operator, optional format/context); it runs offline, and a denial reports editorial findings. Optional sandbox requests additional paths/read-write rights, network, literal environment variables, executable search paths, local tools or limits for this action only; explain necessity in justification. Use sandbox.tools: [node] for nvm/node/npm/npx or [sqlmap] for the local sqlmap launcher. Installed code stays read-only; version choices, caches and auto-updates persist only in session-private /tmp. Include tools on each action that needs them. npm install or tool downloads require the shell flag network: true (or sandbox.network: host), independently reviewed before execution. Network permission applies only to this new process and its descendants; existing processes stay isolated. The reviewer checks every expansion against the real user request. No blanket approvals. Every operation needs goal and justification. arguments follows the selected tool's schema.",
+    description: "Submit one exact operation for independent approval and, only if approved, immediate execution. websearch uses DDGS (query, optional maxResults/region/timeLimit); webfetch reads one URL as clean plain text (url, optional maxChars/offset). Web operations request per-action network access before review. writing_check semantically reviews public prose in its original language (text, audience public/operator, optional format/context); it runs offline, and a denial reports editorial findings. Optional sandbox requests additional paths/read-write rights, network, literal environment variables, executable search paths, local tools or limits for this action only; explain necessity in justification. Use sandbox.tools: [node] for nvm/node/npm/npx or [sqlmap] for the local sqlmap launcher. Installed code stays read-only; version choices, caches and auto-updates persist only in session-private /tmp. Include tools on each action that needs them. npm install or tool downloads require the shell flag network: true (or sandbox.network: host), independently reviewed before execution. Network permission applies only to this new process and its descendants; existing processes stay isolated. The reviewer checks every expansion against the real user request. No blanket approvals. credential_exec delegates an operator-owned credential profile to one pinned native CLI: arguments {profile, argv}, network: true. The built-in github profile supports gh pr/issue view, close, reopen and comment with a numeric target and --repo OWNER/REPO. Credentials are resolved only after approval, never shown to the agent, and only this isolated argv-only command receives them. It has no project files or shared /tmp. Other profiles must be configured outside Pi in auto-approval.device.json. Every operation needs goal and justification. arguments follows the selected tool's schema.",
     promptSnippet: "Request independent approval and execution of one operation",
     parameters,
     ...createApprovalRenderers(definitions),
@@ -178,9 +181,13 @@ export default function autoApproval(pi: ExtensionAPI) {
           // override, never expose ctx.executeTool(), and never use commandPrefix.
           const tool = factories[name](ctx.cwd) as ToolDefinition<any, any>;
           if (!Check(tool.parameters, request.arguments)) throw new Error("Invalid underlying tool arguments");
-          const privateTmp = await sessionTemporaryDirectory();
+          const credential = name === "credential_exec";
+          phase = "credential profile validation";
+          const credentialPlan = credential ? await resolveCredentialPlan(request, config) : undefined;
+          const activeProtectedPaths = [...protectedPaths, ...credentialProtectedPaths(config)];
+          const privateTmp = credential ? undefined : await sessionTemporaryDirectory();
           phase = "workspace validation";
-          const workspace = await validateWorkspace(ctx.cwd, config.sandbox, protectedPaths, request.sandbox, privateTmp, isWebTool(name) ? "web" : "project");
+          const workspace = await validateWorkspace(ctx.cwd, config.sandbox, activeProtectedPaths, request.sandbox, privateTmp, isWebTool(name) || credential ? "web" : "project");
           if (isWebTool(name) && config.sandbox.backend === "bwrap") {
             phase = "web runtime preparation";
             workspace.webRuntime = await resolveWebRuntime();
@@ -188,10 +195,10 @@ export default function autoApproval(pi: ExtensionAPI) {
           if (name === "write" || name === "edit") {
             phase = "protected path validation";
             const path = await canonicalPath(sandboxHostPath(workspace, String(request.arguments.path)));
-            const roots = await protectedRoots;
+            const roots = [...await protectedRoots, ...await Promise.all(credentialProtectedPaths(config).map(canonicalPath))];
             if (roots.some((p) => path === p || path.startsWith(`${p}/`))) throw new Error("The agent cannot modify Pi installation, approval code, configuration, or credentials");
           }
-          const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], localTools: workspace.localTools ?? [], webRuntime: isWebTool(name) ? { ...(workspace.webRuntime ?? { imageBundled: true }), readOnly: true, execution: webExecutionPlan(request) } : undefined, localToolStorage: workspace.localTools?.length ? { path: "/tmp/pi-tools", lifetime: "Pi session", updates: "private copies only" } : undefined, temporaryStorage: { path: "/tmp", lifetime: "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
+          const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], localTools: workspace.localTools ?? [], credentials: credentialPlan ? credentialReviewPlan(credentialPlan) : undefined, webRuntime: isWebTool(name) ? { ...(workspace.webRuntime ?? { imageBundled: true }), readOnly: true, execution: webExecutionPlan(request) } : undefined, localToolStorage: workspace.localTools?.length ? { path: "/tmp/pi-tools", lifetime: "Pi session", updates: "private copies only" } : undefined, temporaryStorage: { path: "/tmp", lifetime: credential ? "one action" : "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
           phase = "prompt compression";
           const branch = ctx.sessionManager.getBranch();
           const prepared = await preparePromptContext(branch, config, ctx.modelRegistry, getAgentDir(), {
@@ -202,8 +209,8 @@ export default function autoApproval(pi: ExtensionAPI) {
             failed(attempt) { pi.appendEntry("auto-approval-compressor-failure", { toolCallId: id, attempt }); },
           }, signal, operatorGoal());
           phase = "review context preparation";
-          const review = buildReview(request, branch, config, ctx.cwd, protectedPaths, sandboxPlan, operatorGoal(), prepared);
-          audit = { ...audit, action: request, reviewer: config, promptContext: prepared.records.map(({ original: _original, ...record }) => record), workspace: workspace.path, cwd: isWebTool(name) ? ctx.cwd : workspace.cwd, executionCwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
+          const review = buildReview(request, branch, config, ctx.cwd, [...protectedPaths, "[Additional operator-owned credential sources and executables: privately protected]"], sandboxPlan, operatorGoal(), prepared);
+          audit = { ...audit, action: request, reviewer: config, promptContext: prepared.records.map(({ original: _original, ...record }) => record), workspace: workspace.path, cwd: isWebTool(name) || credential ? ctx.cwd : workspace.cwd, executionCwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
           phase = "independent review";
           reviewer = config.reviewers.map(reviewerLabel).join(" → ");
           const checked = await reviewWithFallback(config, ctx.modelRegistry, review, {
@@ -238,6 +245,10 @@ export default function autoApproval(pi: ExtensionAPI) {
           };
           ctx.ui.setStatus("auto-approval", `approved: ${name}`);
           executionStarted = true;
+          if (credentialPlan) {
+            const result = await executeWithCredentials(request, credentialPlan, config, signal);
+            return { ...result, content: [{ type: "text" as const, text: decisionSummary }, ...result.content], details: { approval: audit, result: result.details }, usage };
+          }
           if (isWebTool(name)) {
             const result = await executeIsolated(request, workspace, config.sandbox, signal);
             return { ...result, details: { approval: audit, approvalSummary: decisionSummary, result: result.details }, usage };

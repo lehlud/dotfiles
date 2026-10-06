@@ -50,7 +50,8 @@ export async function resolveConfig(portable: PortableConfig, local: LocalConfig
     if (paths.executable || paths.runnerExecutable || paths.workspaceViews) throw new Error("bwrap paths and workspaceViews are incompatible with the configured Docker backend");
     sandbox = { backend: "docker", image: portable.sandbox.image, dockerExecutable: paths.dockerExecutable ?? await findProgram("docker", searchPath) };
   }
-  const resolved = { ...portable, sandbox };
+  if (local.credentialProfiles && new Set(local.credentialProfiles.map((profile) => profile.name)).size !== local.credentialProfiles.length) throw new Error("Credential profile names must be unique");
+  const resolved = { ...portable, sandbox, ...(local.credentialProfiles ? { credentialProfiles: local.credentialProfiles } : {}) };
   if (!Check(resolvedConfigSchema, resolved)) throw new Error("Invalid resolved auto-approval configuration");
   return resolved;
 }
