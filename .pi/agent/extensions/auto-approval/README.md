@@ -22,6 +22,8 @@ Fehlt noch Arbeit, erhält das Arbeitsmodell die Begründung und setzt automatis
 - `/goal resume` setzt ein pausiertes Ziel fort.
 - `/goal stop` ist der ausdrückliche Betreiberabbruch und behauptet keine Zielerfüllung. Auch Escape, Ctrl+C und Beenden bleiben möglich.
 
+Beim Fortsetzen erhält das Arbeitsmodell das gespeicherte Ziel und die zuletzt gültige Rückmeldung der unabhängigen Zielprüfung. Pausengründe und Bedienhinweise wie `/goal resume` bleiben Statusinformationen für den Betreiber. Während ein Ziel läuft, enthält jede Modellanfrage genau eine aktuelle Goal-Steuernachricht; ältere Steuernachrichten werden nur aus diesem Anfragekontext entfernt. Der gespeicherte Verlauf, echte Nutzertexte und Nachrichten anderer Erweiterungen bleiben erhalten. Das gilt auch für bereits vorhandene Sessions.
+
 Prüfausfälle, ungültige Urteile und unterbrochene Modellläufe pausieren das Ziel. Nach einem Neustart, Neuladen oder Session-Wechsel wird ein gespeichertes, unerfülltes Ziel ebenfalls pausiert wiederhergestellt. Es startet erst mit `/goal resume` erneut; das private `/tmp` wurde beim Session-Shutdown gelöscht. Eine Navigation im Session-Baum übernimmt den Zielzustand des gewählten Zweigs ohne automatischen Neustart.
 
 Ziel, Prüfversuche, Entscheidungsmodell, Request-ID, Evidence-Fingerprint und Verbrauch werden im Session-Protokoll gespeichert. Die ursprüngliche `/goal`-Anweisung bleibt den Aktionsprüfern als Nutzerauftrag erhalten, auch wenn weitere Modellrunden keinen neuen Nutzerprompt haben. Spätere Nutzerkorrekturen gelten weiterhin. Es gibt keine feste Rundenzahl oder Laufzeitgrenze für ein Ziel; bis zur Bestätigung oder Unterbrechung können laufend Modellkosten entstehen.

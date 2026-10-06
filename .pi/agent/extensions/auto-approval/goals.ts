@@ -6,8 +6,10 @@ import { assertSandboxReady, loadConfig } from "./config.ts";
 import { buildGoalReview, GOAL_REVIEW_SYSTEM } from "./goal-review.ts";
 import { reviewWithFallback, reviewerLabel, ReviewChainError } from "./reviews.ts";
 
-type Goal = { id: string; text: string; status: "running" | "paused" | "complete" | "stopped"; checks: number; reason: string };
+type Goal = { id: string; text: string; status: "running" | "paused" | "complete" | "stopped"; checks: number; reason: string; feedback?: string };
+type GoalReview = { goalId?: string; superseded?: boolean; verdict?: { decision?: string; reason?: string } };
 const STATE_ENTRY = "auto-approval-goal";
+const INSTRUCTION_TYPE = "auto-approval-goal-instruction";
 // Pi sorts footer statuses by key; keep the target visible before review status.
 const STATUS_KEY = "00-goal";
 function goalTitle(text: string) {
@@ -15,8 +17,8 @@ function goalTitle(text: string) {
   return stripTerminalSequences(truncateToWidth(plain, 100, "…"));
 }
 
-const message = (text: string) => ({ customType: "auto-approval-goal-instruction", content: text, display: false });
-const instruction = (current: Goal) => `Operator goal: ${current.text}\nContinue until the independent goal reviewer confirms completion. Provide concrete evidence and required validation. All operations still require approved_action; respect denials and operator corrections. Missing work: ${current.reason}`;
+const message = (text: string) => ({ customType: INSTRUCTION_TYPE, content: text, display: false });
+const instruction = (current: Goal) => `Operator goal: ${current.text}\nContinue this existing task from the saved conversation until the independent goal reviewer confirms completion. Provide concrete evidence and required validation. All operations still require approved_action; respect denials and operator corrections. If the session was replaced or reloaded, recheck required temporary artifacts before reuse.${current.feedback ? `\nMissing work identified by the goal reviewer: ${current.feedback}` : ""}`;
 
 class GoalController {
   goal: Goal | undefined;
@@ -38,9 +40,19 @@ class GoalController {
   restore(_event: unknown, ctx: ExtensionContext) {
     this.reviewController?.abort();
     ctx.ui.setStatus("goal", undefined); // Clear the old status key after reload.
-    const last = ctx.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === STATE_ENTRY).at(-1);
+    const branch = ctx.sessionManager.getBranch();
+    const last = branch.filter((entry) => entry.type === "custom" && entry.customType === STATE_ENTRY).at(-1);
     const saved = last?.type === "custom" ? last.data as Goal | undefined : undefined;
     this.goal = saved && typeof saved.text === "string" && typeof saved.id === "string" && Number.isInteger(saved.checks) && ["running", "paused", "complete", "stopped"].includes(saved.status) ? { ...saved } : undefined;
+    // Older checkpoints mixed UI pause reasons into the model's missing-work
+    // instruction. Recover real feedback from the goal's independent audit.
+    if (this.goal) {
+      const id = this.goal.id;
+      const audits = branch.flatMap((entry) => entry.type === "custom" && entry.customType === "auto-approval-goal-review" && (entry.data as GoalReview)?.goalId === id ? [entry.data as GoalReview] : []);
+      const audit = audits.filter((entry) => !entry.superseded).at(-1);
+      if (audit) this.goal.feedback = audit.verdict?.decision === "deny" && typeof audit.verdict.reason === "string" ? audit.verdict.reason : undefined;
+      else if (typeof this.goal.feedback !== "string") this.goal.feedback = undefined;
+    }
     if (this.goal?.status === "running") this.record({ ...this.goal, status: "paused", reason: "Session restored; use /goal resume and recheck temporary artifacts after session shutdown" }, ctx);
     this.display(ctx);
   }
@@ -69,7 +81,7 @@ class GoalController {
       await assertSandboxReady(await loadConfig(getAgentDir()));
       if (text === "resume") {
         if (this.goal?.status !== "paused") throw new Error("No paused goal to resume.");
-        this.record({ ...this.goal, status: "running", reason: this.goal.reason }, ctx);
+        this.record({ ...this.goal, status: "running", reason: "Resumed by operator; completion not yet verified" }, ctx);
       } else {
         if (this.goal && ["running", "paused"].includes(this.goal.status)) throw new Error("A goal already exists. Resume it or stop it before replacing it.");
         if (text.length > 8000) throw new Error("Goal is too long (maximum 8000 characters).");
@@ -79,7 +91,7 @@ class GoalController {
       }
       started = true;
       this.pi.sendMessage(message(instruction(this.goal!)), { triggerTurn: true });
-      ctx.ui.notify(`Goal started: ${this.goal!.text}`, "info");
+      ctx.ui.notify(`Goal ${text === "resume" ? "resumed" : "started"}: ${this.goal!.text}`, "info");
     } catch (error) {
       if (started) this.pause(ctx, "Start failed; use /goal resume after resolving the error");
       ctx.ui.notify(`Goal: ${String(error)}`, "error");
@@ -112,7 +124,7 @@ class GoalController {
       // the goal. Pi drains the queued input without an extra extension turn.
       if (superseded) return;
       const complete = checked.verdict.decision === "approve";
-      this.record({ ...current, checks: current.checks + 1, status: complete ? "complete" : "running", reason: checked.verdict.reason }, ctx);
+      this.record({ ...current, checks: current.checks + 1, status: complete ? "complete" : "running", reason: checked.verdict.reason, feedback: complete ? undefined : checked.verdict.reason }, ctx);
       ctx.ui.notify(`Goal ${complete ? "confirmed" : "incomplete"}: ${checked.verdict.reason}`, "info");
       if (!complete) return { continue: true, entries: [{ type: "custom_message", ...message(instruction(this.goal!)) }] };
     } catch (error) {
@@ -132,6 +144,13 @@ export function registerGoals(pi: ExtensionAPI) {
   pi.on("session_tree", (event, ctx) => controller.restore(event, ctx));
   pi.on("session_shutdown", (_event, ctx) => { controller.reviewController?.abort(); controller.goal = undefined; controller.display(ctx); });
   pi.on("turn_end", (event, ctx) => controller.check(event, ctx));
+  pi.on("context", (event) => {
+    if (controller.goal?.status !== "running") return;
+    // Replace obsolete control hints only in the request, never in the saved
+    // transcript. One current instruction also avoids repeating the target.
+    const messages = event.messages.filter((entry) => entry.role !== "custom" || entry.customType !== INSTRUCTION_TYPE);
+    return { messages: [...messages, { role: "custom", ...message(instruction(controller.goal)), timestamp: Date.now() }] };
+  });
   pi.registerCommand("goal", {
     description: "Run until independent goal verification: /goal <target>, status, resume, stop",
     handler: (args, ctx) => controller.command(args, ctx),

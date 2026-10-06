@@ -187,6 +187,58 @@ test("restoring a session or tree keeps an unfinished goal paused until operator
   entries = []; await hooks.session_tree({}, ctx); expect(operatorGoal()).toBeUndefined();
   await command("status", ctx); expect(notices.at(-1)).toContain("No goal");
 });
+test("resume sends the saved task without treating pause controls as missing work", async () => {
+  await command("Implement and verify the parser", ctx);
+  await hooks.turn_end({ ...boundary(), outcome: "aborted" }, ctx);
+  expect(state().reason).toContain("/goal resume");
+  await command("resume", ctx);
+  expect(sent.at(-1).message.content).toContain("Implement and verify the parser");
+  expect(sent.at(-1).message.content).not.toContain("/goal resume");
+  expect(sent.at(-1).message.content).not.toContain("Run interrupted");
+  expect(state().reason).not.toContain("/goal resume");
+});
+test("resume retains actual denied work across a pause and legacy checkpoint restoration", async () => {
+  await command("Implement and verify the parser", ctx); verdicts = ["deny"];
+  await settle();
+  await hooks.turn_end({ ...boundary(), outcome: "aborted" }, ctx);
+  // Existing sessions have no dedicated reviewer-feedback field.
+  delete state().feedback;
+  await hooks.session_start({}, ctx);
+  await command("resume", ctx);
+  expect(sent.at(-1).message.content).toContain("Run the missing validation");
+  expect(sent.at(-1).message.content).not.toContain("/goal resume");
+});
+test("legacy feedback recovery ignores superseded verdicts and other goals", async () => {
+  await command("Implement and verify the parser", ctx); verdicts = ["deny"];
+  await settle();
+  const goalId = state().id;
+  entries.push({ type: "custom", customType: "auto-approval-goal-review", data: { goalId, superseded: true, verdict: { decision: "deny", reason: "Outdated reviewer feedback" } } });
+  entries.push({ type: "custom", customType: "auto-approval-goal-review", data: { goalId: "other-goal", verdict: { decision: "deny", reason: "Unrelated reviewer feedback" } } });
+  await hooks.session_start({}, ctx);
+  await command("resume", ctx);
+  expect(sent.at(-1).message.content).toContain("Run the missing validation");
+  expect(sent.at(-1).message.content).not.toContain("Outdated reviewer feedback");
+  expect(sent.at(-1).message.content).not.toContain("Unrelated reviewer feedback");
+});
+test("active context replaces only owned goal instructions without changing stored history", async () => {
+  await command("Implement the parser", ctx);
+  const messages = [
+    { role: "custom", customType: "auto-approval-goal-instruction", content: "Missing work: use /goal resume", timestamp: 1 },
+    { role: "user", content: "My documentation mentions /goal resume.", timestamp: 2 },
+    { role: "custom", customType: "other-extension", content: "Keep this message", timestamp: 3 },
+    { role: "custom", customType: "auto-approval-goal-instruction", content: "Outdated target", timestamp: 4 },
+  ];
+  const original = structuredClone(messages);
+  const context = await hooks.context({ messages }, ctx);
+  const instructions = context.messages.filter((value: any) => value.customType === "auto-approval-goal-instruction");
+  expect(instructions).toHaveLength(1);
+  expect(instructions[0].content).toContain("Implement the parser");
+  expect(instructions[0].content).not.toContain("/goal resume");
+  expect(context.messages[0]).toEqual(messages[1]); expect(context.messages[1]).toEqual(messages[2]);
+  expect(messages).toEqual(original);
+  await command("stop", ctx);
+  expect(await hooks.context({ messages }, ctx)).toBeUndefined();
+});
 test("a new goal cannot silently replace or pause an existing goal", async () => {
   await command("Verify the fixture", ctx); await command("Different goal", ctx);
   expect(state().text).toBe("Verify the fixture"); expect(state().status).toBe("running"); expect(sent).toHaveLength(1);
