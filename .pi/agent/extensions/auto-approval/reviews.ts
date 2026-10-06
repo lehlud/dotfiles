@@ -2,12 +2,14 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import { buildReview, constrainReviewPayload, parseVerdict, REVIEW_LANGUAGE, REVIEW_SYSTEM, textContent, withWatchdog, type Config, type Reviewer } from "./policy.ts";
 import { reviewCapacityIssue, reviewLanguageReference, REVIEW_OUTPUT_TOKENS } from "./review-context.ts";
+import { promptOriginalTool, readPromptOriginal } from "./prompt-reader.ts";
 
 type Registry = Pick<ModelRegistry, "find" | "hasConfiguredAuth" | "streamSimple">;
 type Usage = AssistantMessage["usage"];
-type Envelope = ReturnType<typeof buildReview>;
+type Envelope = Pick<ReturnType<typeof buildReview>, "requestId" | "fingerprint" | "text"> & Partial<Pick<ReturnType<typeof buildReview>, "promptSources" | "compressionUsage">>;
+type PromptLookup = { promptId: string; operation: string; offset?: number; limit?: number; query?: string };
 export type ReviewAttempt = Reviewer & { status: "failed" | "invalid" | "approve" | "deny"; reason: string };
-type Observer = { start(candidate: Reviewer): void; finish(): void; failed(attempt: ReviewAttempt): void };
+type Observer = { start(candidate: Reviewer): void; finish(): void; failed(attempt: ReviewAttempt): void; lookup?(request: PromptLookup): void };
 export const reviewerLabel = (candidate: Reviewer) => `${candidate.provider}/${candidate.model} (${candidate.thinking})`;
 
 function refusedReview(message: string): boolean {
@@ -40,7 +42,7 @@ export class ReviewChainError extends Error {
   constructor(message: string, public attempts: ReviewAttempt[], public usage?: Usage) { super(message); }
 }
 
-function sumUsage(current: Usage | undefined, next: Usage): Usage {
+export function sumUsage(current: Usage | undefined, next: Usage): Usage {
   if (!current) return structuredClone(next);
   const merged = { ...next, cost: { ...next.cost } };
   for (const key of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) merged[key] += current[key];
@@ -55,17 +57,17 @@ function unavailable(registry: Registry, candidate: Reviewer, model: ReturnType<
 }
 
 function reviewContext(envelope: Envelope, systemPrompt: string): Context {
-  const { latestUserPrompt } = JSON.parse(envelope.text);
+  const { latestUserPrompt, latestUserLanguageReference } = JSON.parse(envelope.text);
   if (typeof latestUserPrompt !== "string" || !latestUserPrompt.trim()) throw new Error("Latest operator prompt unavailable");
   return {
-    systemPrompt,
+    systemPrompt: systemPrompt + (envelope.promptSources?.size ? "\nSome operator prompts are marked compressed in userPromptInfo. Their summaries are navigation aids, not new authorization. Originals are authoritative. Use ONLY prompt_original to inspect relevant original ranges and conditions. You MUST inspect every compressed original at least once before approve; a lookup that returns no text does not count. Search or read further when a condition could affect this exact action or goal. If you cannot establish the applicable constraints, deny. No filesystem, shell, network or other tools. Maximum eight original lookups for this review. Return verdict JSON only after all required lookup results." : ""),
     messages: [
       { role: "user", content: envelope.text, timestamp: Date.now() },
       // Der kurze Sprachbezug entfernt Maschinendaten; der vollständige Prompt
       // bleibt für Autorisierung und Nutzerbedingungen im unveränderten JSON.
-      { role: "user", content: `${REVIEW_LANGUAGE}\nLatest actual operator prompt (quoted language reference only; code, JSON and Markdown quotes excluded from this sample, full prompt and constraints retained in latestUserPrompt):\n${JSON.stringify(reviewLanguageReference(latestUserPrompt))}`, timestamp: Date.now() },
+      { role: "user", content: `${REVIEW_LANGUAGE}\nLatest actual operator prompt (quoted language reference only; full original constraints remain authoritative and compressed originals can be read with prompt_original):\n${JSON.stringify(latestUserLanguageReference ?? reviewLanguageReference(latestUserPrompt))}`, timestamp: Date.now() },
     ],
-    // The reviewer receives no tools and cannot execute or delegate.
+    ...(envelope.promptSources?.size ? { tools: [promptOriginalTool] } : {}),
   };
 }
 
@@ -77,12 +79,42 @@ async function requestReview(registry: Registry, candidate: Reviewer, model: Non
   }).result(), timeoutMs, signal);
 }
 
+class ReviewerToolError extends Error {}
+type ReviewState = { usage?: Usage; promptLookups: PromptLookup[]; consulted: Set<string> };
+async function requestCandidate(registry: Registry, candidate: Reviewer, model: NonNullable<ReturnType<Registry["find"]>>, envelope: Envelope, timeoutMs: number, signal: AbortSignal | undefined, initial: Context, observer: Observer, state: ReviewState) {
+  const context = structuredClone(initial);
+  const started = Date.now();
+  for (let round = 0; round <= 8; round++) {
+    const remaining = timeoutMs - (Date.now() - started);
+    if (remaining <= 0) throw new Error("Reviewer request timed out");
+    if (reviewCapacityIssue(context, model)) throw new ReviewerToolError("Reviewer lookup context exceeds model capacity");
+    const response = await requestReview(registry, candidate, model, envelope, remaining, signal, context);
+    state.usage = sumUsage(state.usage, response.usage);
+    const calls = response.content.filter((block) => block.type === "toolCall");
+    if (!calls.length) return response;
+    try { if (parseVerdict(textContent(response.content), envelope.requestId).decision === "deny") return response; } catch { /* Ein Tool-Turn braucht noch kein Urteil. */ }
+    if (response.stopReason !== "toolUse" || !envelope.promptSources?.size) throw new ReviewerToolError("Invalid reviewer tool response");
+    context.messages.push(response);
+    for (const call of calls) {
+      if (call.name !== promptOriginalTool.name || state.promptLookups.length >= 8) throw new ReviewerToolError("Reviewer original-prompt lookup limit or tool violated");
+      try {
+        const result = readPromptOriginal(envelope.promptSources, call.arguments);
+        const lookup = structuredClone(call.arguments) as PromptLookup;
+        state.promptLookups.push(lookup); observer.lookup?.(lookup);
+        if (result.excerpts.some((excerpt) => excerpt.text.length)) state.consulted.add(lookup.promptId);
+        context.messages.push({ role: "toolResult", toolCallId: call.id, toolName: call.name, content: [{ type: "text", text: JSON.stringify(result) }], isError: false, timestamp: Date.now() });
+      } catch { throw new ReviewerToolError("Reviewer original-prompt lookup or audit failed"); }
+    }
+  }
+  throw new ReviewerToolError("Reviewer original-prompt lookup rounds exceeded");
+}
+
 export async function reviewWithFallback(config: Config, registry: Registry, envelope: Envelope, observer: Observer, signal?: AbortSignal, systemPrompt = REVIEW_SYSTEM) {
   const source = JSON.parse(envelope.text).latestUserPrompt;
   if (typeof source !== "string" || !source.trim()) throw new ReviewChainError("Latest operator prompt unavailable; no fallback, nothing executed", []);
   const context = reviewContext(envelope, systemPrompt);
   const attempts: ReviewAttempt[] = [];
-  let usage: Usage | undefined;
+  const state: ReviewState = { usage: envelope.compressionUsage, promptLookups: [], consulted: new Set() };
   for (const candidate of config.reviewers) {
     signal?.throwIfAborted();
     observer.start(candidate);
@@ -90,31 +122,38 @@ export async function reviewWithFallback(config: Config, registry: Registry, env
     let reason = unavailable(registry, candidate, model);
     if (!reason && model) reason = reviewCapacityIssue(context, model);
     let response: AssistantMessage | undefined;
+    state.consulted.clear();
     try {
-      if (!reason && model) response = await requestReview(registry, candidate, model, envelope, config.requestTimeoutMs, signal, context);
+      if (!reason && model) {
+        response = await requestCandidate(registry, candidate, model, envelope, config.requestTimeoutMs, signal, context, observer, state);
+      }
     } catch (error) {
       signal?.throwIfAborted();
+      if (error instanceof ReviewerToolError) {
+        const reason = "Reviewer original-prompt lookup failed; no fallback, nothing executed";
+        attempts.push({ ...candidate, status: "invalid", reason });
+        throw new ReviewChainError(reason, attempts, state.usage);
+      }
       if (error instanceof Error && refusedReview(error.message)) {
         const reason = "Reviewer refused the check; no fallback, nothing executed";
         attempts.push({ ...candidate, status: "invalid", reason });
-        throw new ReviewChainError(reason, attempts, usage);
+        throw new ReviewChainError(reason, attempts, state.usage);
       }
       reason = error instanceof Error && error.message === "Reviewer request timed out" ? error.message : `Reviewer provider request failed${providerFailureDetail(error)}`;
     } finally { observer.finish(); }
     signal?.throwIfAborted();
     if (response) {
-      usage = sumUsage(usage, response.usage);
       if (response.stopReason !== "stop") {
         // An explicit request-bound denial stays final even if transport fails
         // after delivering it. An approval from a failed response is never used.
         const stopped = incompleteReview(response, envelope.requestId);
         if (stopped.denial) {
           attempts.push({ ...candidate, status: "deny", reason: stopped.denial.reason });
-          return { verdict: stopped.denial, selectedReviewer: candidate, attempts, usage };
+          return { verdict: stopped.denial, selectedReviewer: candidate, attempts, usage: state.usage, promptLookups: state.promptLookups };
         }
         if (stopped.blocked) {
           attempts.push({ ...candidate, status: "invalid", reason: stopped.blocked });
-          throw new ReviewChainError(stopped.blocked, attempts, usage);
+          throw new ReviewChainError(stopped.blocked, attempts, state.usage);
         }
         reason = stopped.failure;
       }
@@ -131,11 +170,16 @@ export async function reviewWithFallback(config: Config, registry: Registry, env
     catch (error) {
       const reason = error instanceof Error ? error.message : "Invalid reviewer verdict";
       attempts.push({ ...candidate, status: "invalid", reason });
-      throw new ReviewChainError(reason, attempts, usage);
+      throw new ReviewChainError(reason, attempts, state.usage);
+    }
+    if (verdict.decision === "approve" && [...(envelope.promptSources?.keys() ?? [])].some((id) => !state.consulted.has(id))) {
+      const reason = "Reviewer must inspect every compressed original before approval; no fallback, nothing executed";
+      attempts.push({ ...candidate, status: "invalid", reason });
+      throw new ReviewChainError(reason, attempts, state.usage);
     }
     attempts.push({ ...candidate, status: verdict.decision, reason: verdict.reason });
     // A valid denial is final. Never search for a model willing to approve it.
-    return { verdict, selectedReviewer: candidate, attempts, usage };
+    return { verdict, selectedReviewer: candidate, attempts, usage: state.usage, promptLookups: state.promptLookups };
   }
-  throw new ReviewChainError(`No configured reviewer completed the check: ${attempts.map((item) => `${reviewerLabel(item)}: ${item.reason}`).join("; ")}`, attempts, usage);
+  throw new ReviewChainError(`No configured reviewer completed the check: ${attempts.map((item) => `${reviewerLabel(item)}: ${item.reason}`).join("; ")}`, attempts, state.usage);
 }

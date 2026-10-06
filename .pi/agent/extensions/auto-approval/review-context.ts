@@ -52,9 +52,9 @@ export function reviewLanguageReference(prompt: string): string {
   return reference.length <= 2048 ? reference : `${reference.slice(0, 1024)}\n[Language sample shortened; full constraints remain in latestUserPrompt.]\n${reference.slice(-1024)}`;
 }
 
-export function reviewCapacityIssue(context: { systemPrompt?: string; messages: { content: unknown }[] }, model: { contextWindow: number; maxTokens: number }): string | undefined {
+export function reviewCapacityIssue(context: { systemPrompt?: string; messages: { content: unknown }[]; tools?: unknown[] }, model: { contextWindow: number; maxTokens: number }): string | undefined {
   if (!Number.isFinite(model.contextWindow) || model.contextWindow <= 0 || !Number.isFinite(model.maxTokens) || model.maxTokens < REVIEW_OUTPUT_TOKENS) return "Reviewer context/output capacity unavailable";
-  const texts = [context.systemPrompt ?? "", ...context.messages.map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))];
+  const texts = [context.systemPrompt ?? "", JSON.stringify(context.tools ?? []), ...context.messages.map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))];
   // ASCII-JSON wird mit drei Bytes je Token geschätzt; Nicht-ASCII zählt byteweise.
   // Der Provider prüft das echte Tokenlimit; alle Nachrichten werden vollständig gesendet.
   const estimatedInput = texts.reduce((sum, text) => {

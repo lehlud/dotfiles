@@ -24,6 +24,8 @@ import { isWebTool, webTools } from "../web-research/index.ts";
 import { resolveWebRuntime, reviewedWebRequest } from "../web-research/runtime.ts";
 import { webExecutionPlan } from "../web-research/execute.ts";
 import { writingCheckTool } from "../public-writing/index.ts";
+import { preparePromptContext } from "./prompt-compression.ts";
+import { checkActionSize } from "./review-context.ts";
 
 const TOOL_NAME = "approved_action";
 const factories = {
@@ -167,6 +169,7 @@ export default function autoApproval(pi: ExtensionAPI) {
           const validRequest: boolean = Check(parameters, snapshot);
           if (!validRequest || !snapshot.goal.trim() || !snapshot.justification.trim()) throw new Error("Invalid action, goal, or justification");
           const request = reviewedWebRequest(normalizeNetworkFlag(snapshot));
+          checkActionSize(request);
           phase = "sandbox configuration";
           const config = await loadConfig(getAgentDir());
           await assertSandboxReady(config);
@@ -189,9 +192,18 @@ export default function autoApproval(pi: ExtensionAPI) {
             if (roots.some((p) => path === p || path.startsWith(`${p}/`))) throw new Error("The agent cannot modify Pi installation, approval code, configuration, or credentials");
           }
           const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], localTools: workspace.localTools ?? [], webRuntime: isWebTool(name) ? { ...(workspace.webRuntime ?? { imageBundled: true }), readOnly: true, execution: webExecutionPlan(request) } : undefined, localToolStorage: workspace.localTools?.length ? { path: "/tmp/pi-tools", lifetime: "Pi session", updates: "private copies only" } : undefined, temporaryStorage: { path: "/tmp", lifetime: "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
+          phase = "prompt compression";
+          const branch = ctx.sessionManager.getBranch();
+          const prepared = await preparePromptContext(branch, config, ctx.modelRegistry, getAgentDir(), {
+            start(label) { onUpdate?.({ content: [{ type: "text", text: `Prompt compression · ${label}` }], details: { phase: "compressing" } }); },
+            saved(record) {
+              if (!branch.some((entry) => entry.type === "custom" && entry.customType === "auto-approval-prompt-compression" && (entry.data as any)?.promptId === record.promptId && (entry.data as any)?.text === record.text)) pi.appendEntry("auto-approval-prompt-compression", record);
+            },
+            failed(attempt) { pi.appendEntry("auto-approval-compressor-failure", { toolCallId: id, attempt }); },
+          }, signal, operatorGoal());
           phase = "review context preparation";
-          const review = buildReview(request, ctx.sessionManager.getBranch(), config, ctx.cwd, protectedPaths, sandboxPlan, operatorGoal());
-          audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: isWebTool(name) ? ctx.cwd : workspace.cwd, executionCwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
+          const review = buildReview(request, branch, config, ctx.cwd, protectedPaths, sandboxPlan, operatorGoal(), prepared);
+          audit = { ...audit, action: request, reviewer: config, promptContext: prepared.records.map(({ original: _original, ...record }) => record), workspace: workspace.path, cwd: isWebTool(name) ? ctx.cwd : workspace.cwd, executionCwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
           phase = "independent review";
           reviewer = config.reviewers.map(reviewerLabel).join(" → ");
           const checked = await reviewWithFallback(config, ctx.modelRegistry, review, {
@@ -207,11 +219,15 @@ export default function autoApproval(pi: ExtensionAPI) {
               const text = `Reviewer unavailable · ${reviewerLabel(attempt)}\n${attempt.reason}`;
               onUpdate?.({ content: [{ type: "text", text }], details: { phase: "reviewing", reviewer, attempt } });
             },
+            lookup(request) {
+              pi.appendEntry("auto-approval-prompt-lookup", { requestId: review.requestId, fingerprint: review.fingerprint, request });
+              onUpdate?.({ content: [{ type: "text", text: `Reviewer original prompt · ${request.operation} · ${request.promptId.slice(0, 12)}` }], details: { phase: "reviewing", reviewer, promptLookup: request } });
+            },
           }, signal);
           usage = checked.usage;
           const verdict = checked.verdict;
           signal?.throwIfAborted();
-          audit = { ...audit, ...verdict, selectedReviewer: checked.selectedReviewer, reviewAttempts: checked.attempts, reviewDurationMs };
+          audit = { ...audit, ...verdict, selectedReviewer: checked.selectedReviewer, reviewAttempts: checked.attempts, promptLookups: checked.promptLookups, reviewDurationMs };
           decisionSummary = reviewSummary(verdict.decision === "approve", verdict.reason, reviewDurationMs, reviewer);
           // Record the exact decision before execution; audit failure blocks execution.
           pi.appendEntry("auto-approval-review", audit);

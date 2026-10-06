@@ -83,6 +83,9 @@ beforeEach(async () => {
         requested.push({ model, context, options, data });
         return { result: async () => {
           responseHook?.();
+          if (mode === "approve" && context.tools?.length && !context.messages.some((message: any) => message.role === "toolResult")) return {
+            stopReason: "toolUse", usage, content: [...new Set(data.userPromptInfo.filter((info: any) => info.compressed).map((info: any) => info.promptId))].map((promptId, i) => ({ type: "toolCall", id: `lookup-${i}`, name: "prompt_original", arguments: { promptId, operation: "head", limit: 1000 } })),
+          };
           return {
             stopReason: mode === "error" ? "error" : "stop", usage,
             content: [{ type: "text", text: mode === "invalid" ? "not JSON" : JSON.stringify({
@@ -246,12 +249,16 @@ test("large pasted reports and denial audits still permit an independently revie
   await writeFile(join(root, "reference.c"), "int harmless;\n");
   const read = { tool: "read", arguments: { path: "reference.c", offset: 1, limit: 1 }, goal: "Prüfen", justification: "Fehlerdiagnose" };
   const result = await call(read);
-  expect(result.isError).not.toBe(true); expect(requested).toHaveLength(1);
-  expect(requested[0].data.userPrompts.at(-1)).toBe(prompt);
-  expect(requested[0].data.action).toEqual(read);
-  expect(requested[0].data.previousDenials[0].reason).toBe("Keine Zugangsdaten lesen.");
-  expect(requested[0].data.reviewedReads[0].content[0].text).toBe(code);
-  expect(JSON.stringify(requested[0].data)).not.toContain("obsolete-command");
+  expect(result.isError).not.toBe(true);
+  const review = requested.filter((item) => item.data.action).at(-1);
+  expect(review.data.userPromptInfo.at(-1).compressed).toBe(true);
+  expect(review.data.userPrompts.at(-1)).toBe("Passt zur Aufgabe");
+  expect(review.data.action).toEqual(read);
+  expect(review.data.previousDenials[0].reason).toBe("Keine Zugangsdaten lesen.");
+  expect(review.data.reviewedReads[0].content[0].text).toBe(code);
+  expect(JSON.stringify(review.data)).not.toContain("obsolete-command");
+  expect(review.context.messages.find((message: any) => message.role === "toolResult").content[0].text).toContain("Prüfe den Quelltext ohne Änderungen");
+  expect(entries.some((entry) => entry.customType === "auto-approval-prompt-compression" && entry.data.compressed)).toBe(true);
   expect(executedRequests).toEqual([read]);
   expect(JSON.stringify(result.content)).toContain("int harmless;");
 });

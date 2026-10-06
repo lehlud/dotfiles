@@ -1,0 +1,137 @@
+import { beforeEach, afterAll, expect, test } from "bun:test";
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile, symlink } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { preparePromptContext, PROMPT_COMPRESSION_THRESHOLD } from "../prompt-compression.ts";
+import { buildReview, type Config } from "../policy.ts";
+import { readPromptOriginal } from "../prompt-reader.ts";
+import { reviewWithFallback, ReviewChainError } from "../reviews.ts";
+
+const root = await mkdtemp(join(tmpdir(), "pi-prompt-compression-"));
+const config: Config = { reviewers: [{ provider: "fixture", model: "small", thinking: "off" }, { provider: "fallback", model: "small", thinking: "off" }], recentUserPrompts: 6, requestTimeoutMs: 5000, sandbox: { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/executor" } };
+const usage = { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12, cost: { input: 0.01, output: 0.002, cacheRead: 0, cacheWrite: 0, total: 0.012 } };
+let calls: any[], saved: any[], mode: "approve" | "deny" | "invalid", missing: boolean, sequence: number;
+beforeEach(() => { calls = []; saved = []; mode = "approve"; missing = false; sequence = 0; });
+afterAll(async () => { await rm(root, { recursive: true, force: true }); });
+const registry: any = {
+  find: (provider: string, id: string) => missing && provider === "fixture" ? undefined : ({ provider, id, reasoning: false, contextWindow: 272000, maxTokens: 4096 }),
+  hasConfiguredAuth: () => true,
+  streamSimple(model: any, context: any) {
+    calls.push({ model, context });
+    const data = JSON.parse(context.messages[0].content);
+    return { result: async () => ({ role: "assistant", stopReason: "stop", usage, content: [{ type: "text", text: mode === "invalid" ? "bad JSON" : JSON.stringify({ requestId: data.requestId, decision: mode === "deny" ? "deny" : "approve", reason: mode === "deny" ? "Die Bedingungen passen nicht verlustfrei in die Zusammenfassung." : "Quelltext prüfen. Keine Referenz ändern oder Zugangsdaten lesen. Testbericht als Beleg verwenden." }) }] }) };
+  },
+};
+const branch = (text: string) => [{ type: "message", message: { role: "user", content: text } }];
+const observer = { saved: (record: any) => saved.push(record) };
+const proposed = { tool: "read", arguments: { path: "reference.c" }, goal: "Prüfen", justification: "Fehler verstehen" };
+const original = "Quelltext prüfen. Keine Referenz ändern und keine Zugangsdaten lesen.\n" + "Testdaten ".repeat(2000);
+
+test("legacy raw prompts compress on demand, persist privately and reuse across instances", async () => {
+  const agent = join(root, "reuse");
+  const entries = branch(original);
+  const first = await preparePromptContext(entries, config, registry, agent, observer);
+  expect(first.records[0].compressed).toBe(true); expect(first.records[0].original).toBe(original);
+  expect(entries[0].message.content).toBe(original); expect(saved[0].original).toBeUndefined();
+  const cache = join(agent, "cache", "approval-prompts");
+  expect((await stat(cache)).mode & 0o077).toBe(0);
+  expect((await stat(join(cache, (await readdir(cache))[0]))).mode & 0o077).toBe(0);
+  const count = calls.length;
+  const second = await preparePromptContext(structuredClone(entries), config, registry, agent, observer);
+  expect(second.records[0].cacheHit).toBe(true); expect(calls).toHaveLength(count);
+  expect(second.usage).toBeUndefined(); expect(first.usage?.totalTokens).toBe(12);
+  const persisted = { type: "custom", customType: "auto-approval-prompt-compression", data: saved[0] };
+  const restored = await preparePromptContext([...entries, persisted], config, registry, join(root, "restored"));
+  expect(restored.records[0].cacheHit).toBe(true); expect(calls).toHaveLength(count);
+  const review = buildReview(proposed, entries, config, "/project", [], undefined, undefined, second);
+  expect(JSON.parse(review.text).userPromptInfo[0].compressed).toBe(true);
+  expect(readPromptOriginal(review.promptSources, { promptId: second.records[0].promptId, operation: "head", limit: 100 }).excerpts[0].text).toContain("Keine Referenz");
+  await preparePromptContext(branch(original + " Neue Bedingung."), config, registry, agent);
+  expect(calls.length).toBeGreaterThan(count);
+});
+
+test("every short prompt is marked original and no compression model is called", async () => {
+  const entries = branch("Nur die Datei lesen.");
+  const prepared = await preparePromptContext(entries, config, registry, join(root, "short"));
+  const data = JSON.parse(buildReview(proposed, entries, config, "/project", [], undefined, undefined, prepared).text);
+  expect(data.userPrompts).toEqual(["Nur die Datei lesen."]);
+  expect(data.userPromptInfo[0].compressed).toBe(false); expect(calls).toHaveLength(0);
+  expect(() => buildReview(proposed, branch("Anderer Auftrag"), config, "/project", [], undefined, undefined, prepared)).toThrow("actual operator branch");
+});
+
+test("chunked compression stays bounded and sums usage, denial preserves raw intent without fallback", async () => {
+  const text = original.repeat(5);
+  const prepared = await preparePromptContext(branch(text), config, registry, join(root, "chunks"));
+  expect(prepared.records[0].compressed).toBe(true); expect(calls).toHaveLength(3);
+  expect(prepared.usage?.totalTokens).toBe(36);
+  mode = "deny"; calls = [];
+  const denied = await preparePromptContext(branch(original), config, registry, join(root, "denied"));
+  expect(denied.records[0].compressed).toBe(false); expect(denied.records[0].text).toBe(original);
+  expect(calls).toHaveLength(1); expect(calls[0].model.provider).toBe("fixture");
+});
+
+test("provider absence permits fallback, malformed summaries and cancellation never do", async () => {
+  missing = true;
+  await preparePromptContext(branch(original), config, registry, join(root, "fallback"));
+  expect(calls[0].model.provider).toBe("fallback");
+  missing = false; mode = "invalid"; calls = [];
+  await expect(preparePromptContext(branch(original), config, registry, join(root, "invalid"))).rejects.toBeInstanceOf(ReviewChainError);
+  expect(calls).toHaveLength(1);
+  const cancelled = new AbortController(); cancelled.abort(); calls = [];
+  await expect(preparePromptContext(branch(original), config, registry, join(root, "cancelled"), {}, cancelled.signal)).rejects.toThrow();
+  expect(calls).toHaveLength(0);
+});
+
+test("original lookups stay within selected IDs and bounded text, including a huge JSON line", () => {
+  const id = "a".repeat(64), sources = new Map([[id, "Anfang\n" + "x".repeat(50000) + "Keine Referenz ändern.\nEnde"]]);
+  expect(readPromptOriginal(sources, { promptId: id, operation: "head", limit: 6 }).excerpts[0].text).toBe("Anfang");
+  expect(readPromptOriginal(sources, { promptId: id, operation: "tail", limit: 4 }).excerpts[0].text).toBe("Ende");
+  const grep = readPromptOriginal(sources, { promptId: id, operation: "grep", query: "Keine Referenz", limit: 1000 });
+  expect(grep.excerpts[0].text).toContain("Keine Referenz"); expect(grep.excerpts[0].text.length).toBeLessThanOrEqual(1000);
+  expect(readPromptOriginal(sources, { promptId: id, operation: "read", offset: grep.excerpts[0].offset, limit: 1000 }).excerpts[0].text).toBe(grep.excerpts[0].text);
+  expect(() => readPromptOriginal(sources, { promptId: "b".repeat(64), operation: "head" })).toThrow("selected branch");
+  expect(() => readPromptOriginal(sources, { promptId: id, operation: "grep", query: "x", path: "/etc/passwd" })).toThrow("Invalid");
+  expect(() => readPromptOriginal(sources, { promptId: id, operation: "read", limit: 8001 })).toThrow("Invalid");
+});
+
+test("reviewer can discover an omitted prohibition in the original and deny without fallback", async () => {
+  const prepared = await preparePromptContext(branch(original), config, registry, join(root, "review"));
+  prepared.records[0].text = "Testbericht prüfen.";
+  const envelope = buildReview(proposed, branch(original), config, "/project", [], undefined, undefined, prepared);
+  const gate: any = { ...registry, streamSimple(model: any, context: any) {
+    calls.push({ model, context }); sequence++;
+    const content = sequence === 1 ? [{ type: "toolCall", id: "lookup", name: "prompt_original", arguments: { promptId: prepared.records[0].promptId, operation: "grep", query: "Keine Referenz" } }] : [{ type: "text", text: JSON.stringify({ requestId: envelope.requestId, decision: "deny", reason: "Referenzänderungen sind im Original untersagt." }) }];
+    return { result: async () => ({ role: "assistant", stopReason: sequence === 1 ? "toolUse" : "stop", usage, content }) };
+  } };
+  calls = [];
+  const result = await reviewWithFallback(config, gate, envelope, { start() {}, finish() {}, failed() {} });
+  expect(result.verdict.decision).toBe("deny"); expect(calls).toHaveLength(2);
+  expect(calls[1].context.messages.at(-1).content[0].text).toContain("Keine Referenz");
+  expect(result.usage?.totalTokens).toBe(36); expect(result.promptLookups).toHaveLength(1);
+});
+
+test("approval without original inspection and arbitrary reviewer tools fail without fallback", async () => {
+  const prepared = await preparePromptContext(branch(original), config, registry, join(root, "no-bypass"));
+  const envelope = buildReview(proposed, branch(original), config, "/project", [], undefined, undefined, prepared);
+  calls = [];
+  await expect(reviewWithFallback(config, registry, envelope, { start() {}, finish() {}, failed() {} })).rejects.toThrow("inspect every compressed original");
+  expect(calls).toHaveLength(1);
+  const hostile: any = { ...registry, streamSimple() { return { result: async () => ({ role: "assistant", stopReason: "toolUse", usage, content: [{ type: "toolCall", id: "attack", name: "bash", arguments: { command: "touch forbidden" } }] }) }; } };
+  await expect(reviewWithFallback(config, hostile, envelope, { start() {}, finish() {}, failed() {} })).rejects.toThrow("no fallback");
+});
+
+test("private cache cannot follow planted symlinks outside protected agent storage", async () => {
+  const agent = join(root, "unsafe"), elsewhere = join(root, "elsewhere");
+  await mkdir(agent); await mkdir(elsewhere); await symlink(elsewhere, join(agent, "cache"));
+  await expect(preparePromptContext(branch(original), config, registry, agent)).rejects.toThrow("escapes");
+  expect(calls).toHaveLength(0);
+});
+test("a malformed private cache is regenerated without changing the original prompt", async () => {
+  const agent = join(root, "corrupt"), entries = branch(original);
+  const prepared = await preparePromptContext(entries, config, registry, agent);
+  await writeFile(join(agent, "cache", "approval-prompts", `${prepared.records[0].cacheKey}.json`), "{bad JSON", { mode: 0o600 });
+  calls = [];
+  const replacement = await preparePromptContext(entries, config, registry, agent);
+  expect(replacement.records[0].cacheHit).toBe(false); expect(calls).toHaveLength(1);
+  expect(replacement.records[0].original).toBe(original);
+});

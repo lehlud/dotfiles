@@ -5,6 +5,7 @@ import { stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui"
 import { assertSandboxReady, loadConfig } from "./config.ts";
 import { buildGoalReview, GOAL_REVIEW_SYSTEM } from "./goal-review.ts";
 import { reviewWithFallback, reviewerLabel, ReviewChainError } from "./reviews.ts";
+import { preparePromptContext } from "./prompt-compression.ts";
 
 type Goal = { id: string; text: string; status: "running" | "paused" | "complete" | "stopped"; checks: number; reason: string; feedback?: string };
 type GoalReview = { goalId?: string; superseded?: boolean; verdict?: { decision?: string; reason?: string } };
@@ -109,12 +110,21 @@ class GoalController {
     let envelope: ReturnType<typeof buildGoalReview> | undefined;
     try {
       const config = await loadConfig(getAgentDir());
-      envelope = buildGoalReview(current.text, ctx.sessionManager.getBranch(), config, ctx.cwd, current.id);
+      const branch = ctx.sessionManager.getBranch();
+      const prepared = await preparePromptContext(branch, config, ctx.modelRegistry, getAgentDir(), {
+        start: (label) => this.display(ctx, `compressing · ${label}`),
+        saved: (record) => {
+          if (!branch.some((entry) => entry.type === "custom" && entry.customType === "auto-approval-prompt-compression" && (entry.data as any)?.promptId === record.promptId && (entry.data as any)?.text === record.text)) this.pi.appendEntry("auto-approval-prompt-compression", record);
+        },
+        failed: (attempt) => this.pi.appendEntry("auto-approval-compressor-failure", { goalId: current.id, attempt }),
+      }, signal, current.text);
+      envelope = buildGoalReview(current.text, branch, config, ctx.cwd, current.id, prepared);
       const requestId = envelope.requestId;
       const checked = await reviewWithFallback(config, ctx.modelRegistry, envelope, {
         start: (candidate) => this.display(ctx, `checking · ${reviewerLabel(candidate)}`),
         finish() {},
         failed: (attempt) => this.pi.appendEntry("auto-approval-goal-reviewer-failure", { goalId: current.id, requestId, attempt }),
+        lookup: (request) => this.pi.appendEntry("auto-approval-prompt-lookup", { goalId: current.id, requestId, request }),
       }, signal, GOAL_REVIEW_SYSTEM);
       signal.throwIfAborted();
       if (this.goal !== current) return;
