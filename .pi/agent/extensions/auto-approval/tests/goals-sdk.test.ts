@@ -6,12 +6,14 @@ import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime,
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { registerGoals } from "../goals.ts";
 import { textContent } from "../policy.ts";
+import { registerSteering, STEERING_TYPE } from "../steering.ts";
 
-async function fixture(directory: string) {
+async function fixture(directory: string, steering = false) {
   await writeFile(join(directory, "auto-approval.json"), JSON.stringify({ reviewers: [{ provider: "goal-sdk-fixture", model: "reviewer", thinking: "off" }], recentUserPrompts: 2, requestTimeoutMs: 1000, sandbox: { backend: "bwrap" } }));
   await writeFile(join(directory, "auto-approval.device.json"), JSON.stringify({ sandbox: { executable: process.execPath, runnerExecutable: process.execPath } }));
   const runtime = await ModelRuntime.create({ authPath: join(directory, "auth.json"), modelsPath: join(directory, "models.json"), modelsStorePath: join(directory, "models-store.json"), allowModelNetwork: false });
   const contexts: any[] = [];
+  let release: (() => void) | undefined, workingTurns = 0;
   runtime.registerProvider("goal-sdk-fixture", {
     api: "goal-sdk-fixture", apiKey: "test-fixture", baseUrl: "https://example.invalid",
     models: ["working", "reviewer"].map((id) => ({ id, name: id, reasoning: false, input: ["text"], contextWindow: 65536, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })),
@@ -19,9 +21,14 @@ async function fixture(directory: string) {
       const stream = createAssistantMessageEventStream();
       contexts.push({ model: model.id, messages: structuredClone(context.messages) });
       const data = model.id === "reviewer" ? JSON.parse(textContent(context.messages.find((entry) => entry.role === "user")!.content)) : undefined;
-      const text = data ? JSON.stringify({ requestId: data.requestId, decision: "approve", reason: "Das Ergebnis liegt vor." }) : "Das gespeicherte Ziel wurde fortgesetzt.";
+      const incomplete = steering && data && !data.assistantAnswers.some((entry: any) => entry.text.includes("MAIN-VALIDATION-COMPLETE"));
+      const turn = data ? 0 : ++workingTurns;
+      const text = data ? JSON.stringify({ requestId: data.requestId, decision: incomplete ? "deny" : "approve", reason: incomplete ? "Die ursprüngliche Validierung fehlt noch." : "Das Ergebnis liegt vor." }) : steering ? ["", "Hauptarbeit läuft.", "Kommentarkorrektur fertig.", "MAIN-VALIDATION-COMPLETE: Hauptprüfung abgeschlossen."][turn] : "Das gespeicherte Ziel wurde fortgesetzt.";
       const message: any = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [{ type: "text", text }], timestamp: Date.now(), stopReason: "stop", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
-      queueMicrotask(() => { stream.push({ type: "done", reason: "stop", message }); });
+      queueMicrotask(async () => {
+        if (steering && turn === 1) await new Promise<void>((done) => { release = done; });
+        stream.push({ type: "done", reason: "stop", message });
+      });
       return stream;
     },
   });
@@ -32,11 +39,11 @@ async function fixture(directory: string) {
   sessionManager.appendCustomMessageEntry("auto-approval-goal-instruction", "Operator goal: obsolete\nMissing work: use /goal resume", false);
   sessionManager.appendCustomMessageEntry("unrelated-fixture", "KEEP-UNRELATED-CONTEXT", false);
   const settingsManager = SettingsManager.inMemory();
-  const resourceLoader = new DefaultResourceLoader({ cwd: directory, agentDir: directory, settingsManager, noExtensions: true, noSkills: true, noThemes: true, noContextFiles: true, noPromptTemplates: true, extensionFactories: [(pi) => { registerGoals(pi); }] });
+  const resourceLoader = new DefaultResourceLoader({ cwd: directory, agentDir: directory, settingsManager, noExtensions: true, noSkills: true, noThemes: true, noContextFiles: true, noPromptTemplates: true, extensionFactories: [(pi) => { registerSteering(pi, registerGoals(pi)); }] });
   await resourceLoader.reload();
   const model = new ModelRegistry(runtime).find("goal-sdk-fixture", "working")!;
   const { session } = await createAgentSession({ cwd: directory, agentDir: directory, modelRuntime: runtime, model, thinkingLevel: "off", sessionManager, settingsManager, resourceLoader, noTools: "all" });
-  return { session, contexts };
+  return { session, contexts, release: () => release?.() };
 }
 
 test("real Pi SDK resumes a legacy goal with one task instruction and no raw command", async () => {
@@ -62,6 +69,39 @@ test("real Pi SDK resumes a legacy goal with one task instruction and no raw com
     expect(session.sessionManager.getBranch().some((entry) => entry.type === "message" && entry.message.role === "user")).toBe(false);
   } finally {
     session.dispose();
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 10000);
+
+test("real steering keeps a goal running after a correction until the original work passes review", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-goal-steering-sdk-"));
+  const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = directory;
+  const state = await fixture(directory, true);
+  const notices: string[] = [];
+  try {
+    await state.session.bindExtensions({ mode: "tui", uiContext: { setStatus() {}, notify: (text: string) => notices.push(text) } as any });
+    await state.session.prompt("/goal resume");
+    for (let i = 0; i < 1000 && !state.contexts.length; i++) await new Promise<void>((done) => setTimeout(done, 1));
+    expect(state.session.isStreaming).toBe(true);
+    await state.session.prompt("Unsere neuen Kommentare bitte auf Deutsch.", { streamingBehavior: "steer" });
+    state.release();
+    for (let i = 0; i < 1000 && !notices.some((text) => text.startsWith("Goal confirmed:")); i++) await new Promise<void>((done) => setTimeout(done, 1));
+    expect(notices.join("\n")).toContain("Goal incomplete:"); expect(notices.join("\n")).toContain("Goal confirmed:");
+    const work = state.contexts.filter((entry) => entry.model === "working");
+    expect(work).toHaveLength(3);
+    for (const entry of work.slice(1)) {
+      const text = JSON.stringify(entry.messages);
+      expect(text).toContain("Unsere neuen Kommentare bitte auf Deutsch.");
+      expect(text).toContain("Erkläre das gespeicherte Prüfergebnis.");
+      expect(text).toContain("Finishing a correction alone does not finish the whole task");
+    }
+    const goals = state.session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "auto-approval-goal");
+    expect(goals.some((entry: any) => entry.data.status === "running" && entry.data.checks === 2)).toBe(true);
+    expect((goals.at(-1) as any).data.status).toBe("complete");
+    expect(state.session.sessionManager.getBranch().some((entry) => entry.type === "custom_message" && entry.customType === STEERING_TYPE)).toBe(false);
+  } finally {
+    state.release(); await state.session.abort(); state.session.dispose();
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     await rm(directory, { recursive: true, force: true });
   }

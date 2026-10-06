@@ -28,6 +28,14 @@ Prüfausfälle, ungültige Urteile und unterbrochene Modellläufe pausieren das 
 
 Ziel, Prüfversuche, Entscheidungsmodell, Request-ID, Evidence-Fingerprint und Verbrauch werden im Session-Protokoll gespeichert. Die ursprüngliche `/goal`-Anweisung bleibt den Aktionsprüfern als Nutzerauftrag erhalten, auch wenn weitere Modellrunden keinen neuen Nutzerprompt haben. Spätere Nutzerkorrekturen gelten weiterhin. Es gibt keine feste Rundenzahl oder Laufzeitgrenze für ein Ziel; bis zur Bestätigung oder Unterbrechung können laufend Modellkosten entstehen.
 
+## Korrekturen während der Arbeit
+
+Eine als Steering eingereihte Nutzernachricht ergänzt die laufende Aufgabe. Das Modell erhält danach bei jeder Anfrage den Hinweis, die Korrektur einzuarbeiten und anschließend die noch offene Hauptarbeit samt Validierung fortzusetzen. Bei normalen Aufgaben wird der ursprüngliche Auftrag als zitierter Text mit höchstens 4.000 Zeichen erinnert; längere Aufträge werden ausdrücklich als Ausschnitt gekennzeichnet. Bei `/goal` bleibt dessen gespeichertes Ziel maßgeblich.
+
+Die tatsächliche Nutzernachricht und ihr gespeicherter Verlauf bleiben unverändert. Der Hinweis erscheint einmal im Modellkontext, wird nicht als zusätzliche Nutzernachricht gespeichert und erteilt keine Tool-Freigabe. Er gilt nur für den laufenden Auftrag und wird bei einer neuen Aufgabe oder einem Session-Wechsel zurückgesetzt. Ein ausdrücklicher Abbruch oder Aufgabenwechsel bleibt möglich. Follow-up-Nachrichten werden nicht automatisch als Steering behandelt.
+
+Normale Aufgaben erhalten diese Fortsetzungsanweisung ohne zusätzliche Modellrunden oder Abschlussprüfungen. Bei `/goal` prüft das unabhängige Modell weiterhin die gesamte Aufgabe einschließlich späterer Korrekturen: Die Fertigstellung einer Zwischenkorrektur genügt nicht, solange Hauptarbeit fehlt.
+
 ## Seitenkonversationen mit `/side`
 
 `/side` öffnet ein temporäres Gespräch zum Inhalt der Hauptkonversation. Mit `/side <Frage>` startet die erste Frage sofort. Das funktioniert auch, während das Hauptmodell noch arbeitet: Es wird weder angehalten noch auf eine andere Session gewechselt. Das aktive Ziel, genehmigte Befehle und das private Session-`/tmp` bleiben bestehen. Das Fenster zeigt, ob die Hauptkonversation arbeitet oder bereit ist.
