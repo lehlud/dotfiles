@@ -2,6 +2,8 @@
 
 Die Extension ersetzt den bisherigen `web-research`-Skill. Der Launcher lädt sie zusammen mit Auto-Approval. Das Modell nutzt die Operationen über `approved_action`; Suche und Seitenabruf erhalten jeweils erst nach der unabhängigen Prüfung Netzwerkzugriff. Direkte Werkzeuge und alternative Ausführungswege bleiben gesperrt.
 
+Webaktionen laufen in einem leeren, schreibgeschützten `/workspace`. Projekt- und Home-Dateien werden weder eingebunden noch durchsucht. Ein fehlender alter Skill oder ein problematischer Projektverweis kann deshalb keine Websuche blockieren. Zusätzliche Datei-, PATH- oder Tool-Freigaben sind für Webaktionen nicht vorgesehen und werden zurückgewiesen. Das private Session-`/tmp` bleibt verfügbar und wird weiterhin auf unzulässige Hardlinks geprüft. Die statischen Regeln für öffentliche Texte kommen aus der eigenen Extension; der gelöschte Wikipedia-Skill wird nicht benötigt.
+
 `websearch` verwendet [DDGS](https://github.com/deedy5/ddgs) und liefert Titel, URL und einen kurzen Text pro Treffer. Standard sind fünf Treffer, höchstens zehn. Optional: `region` (Standard `wt-wt`) und `timeLimit` (`d`, `w`, `m`, `y`). DDGS kann mehrere öffentliche Suchanbieter nutzen. Die Suchanfrage wird an diese Anbieter übertragen.
 
 ```json

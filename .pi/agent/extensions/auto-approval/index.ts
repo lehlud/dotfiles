@@ -146,6 +146,7 @@ export default function autoApproval(pi: ExtensionAPI) {
       const run = async () => {
         let usage;
         let executionStarted = false;
+        let phase = "request validation";
         let stopDisplay: (() => number) | undefined;
         let reviewDurationMs = 0;
         let reviewer = "—";
@@ -166,25 +167,32 @@ export default function autoApproval(pi: ExtensionAPI) {
           const validRequest: boolean = Check(parameters, snapshot);
           if (!validRequest || !snapshot.goal.trim() || !snapshot.justification.trim()) throw new Error("Invalid action, goal, or justification");
           const request = reviewedWebRequest(normalizeNetworkFlag(snapshot));
+          phase = "sandbox configuration";
           const config = await loadConfig(getAgentDir());
           await assertSandboxReady(config);
-          reviewer = config.reviewers.map(reviewerLabel).join(" → ");
           const name = request.tool as ToolName;
           // Private built-in definitions: never resolve a same-name extension/MCP
           // override, never expose ctx.executeTool(), and never use commandPrefix.
           const tool = factories[name](ctx.cwd) as ToolDefinition<any, any>;
           if (!Check(tool.parameters, request.arguments)) throw new Error("Invalid underlying tool arguments");
           const privateTmp = await sessionTemporaryDirectory();
-          const workspace = await validateWorkspace(ctx.cwd, config.sandbox, protectedPaths, request.sandbox, privateTmp);
-          if (isWebTool(name) && config.sandbox.backend === "bwrap") workspace.webRuntime = await resolveWebRuntime();
+          phase = "workspace validation";
+          const workspace = await validateWorkspace(ctx.cwd, config.sandbox, protectedPaths, request.sandbox, privateTmp, isWebTool(name) ? "web" : "project");
+          if (isWebTool(name) && config.sandbox.backend === "bwrap") {
+            phase = "web runtime preparation";
+            workspace.webRuntime = await resolveWebRuntime();
+          }
           if (name === "write" || name === "edit") {
+            phase = "protected path validation";
             const path = await canonicalPath(sandboxHostPath(workspace, String(request.arguments.path)));
             const roots = await protectedRoots;
             if (roots.some((p) => path === p || path.startsWith(`${p}/`))) throw new Error("The agent cannot modify Pi installation, approval code, configuration, or credentials");
           }
           const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], localTools: workspace.localTools ?? [], webRuntime: isWebTool(name) ? { ...(workspace.webRuntime ?? { imageBundled: true }), readOnly: true, execution: webExecutionPlan(request) } : undefined, localToolStorage: workspace.localTools?.length ? { path: "/tmp/pi-tools", lifetime: "Pi session", updates: "private copies only" } : undefined, temporaryStorage: { path: "/tmp", lifetime: "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
           const review = buildReview(request, ctx.sessionManager.getBranch(), config, ctx.cwd, protectedPaths, sandboxPlan, operatorGoal());
-          audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
+          audit = { ...audit, action: request, reviewer: config, workspace: workspace.path, cwd: isWebTool(name) ? ctx.cwd : workspace.cwd, executionCwd: workspace.cwd, backend: config.sandbox.backend ?? "docker", sandboxPlan, requestId: review.requestId, fingerprint: review.fingerprint };
+          phase = "independent review";
+          reviewer = config.reviewers.map(reviewerLabel).join(" → ");
           const checked = await reviewWithFallback(config, ctx.modelRegistry, review, {
             start(candidate) {
               reviewer = reviewerLabel(candidate);
@@ -231,8 +239,8 @@ export default function autoApproval(pi: ExtensionAPI) {
             try { pi.appendEntry("auto-approval-execution-error", failure); } catch { /* report the execution failure anyway */ }
             return { content: [{ type: "text" as const, text: `${decisionSummary}\nApproved action failed; it may have had side effects: ${reason}` }], details: failure, usage, isError: true };
           }
-          audit = { ...audit, decision: "deny", reason, reviewDurationMs, technicalFailure: true };
-          decisionSummary = reviewSummary(false, `Blocked; nothing executed: ${reason}`, reviewDurationMs, reviewer);
+          audit = { ...audit, decision: "deny", reason, reviewDurationMs, technicalFailure: true, technicalStage: phase };
+          decisionSummary = reviewSummary(false, `Blocked during ${phase}; nothing executed: ${reason}`, reviewDurationMs, reviewer);
           try { pi.appendEntry("auto-approval-review", audit); } catch { /* still fail closed */ }
           return { content: [{ type: "text" as const, text: decisionSummary }], details: audit, usage, isError: true };
         } finally {

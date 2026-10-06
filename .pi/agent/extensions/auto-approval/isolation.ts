@@ -99,9 +99,10 @@ export async function detectWorkspace(cwd: string, home = homedir()): Promise<{ 
   return { path: current, cwd: current };
 }
 
-/** Starting Pi selects the workspace; operator-configured views constrain home. */
-export async function validateWorkspace(cwd: string, config: SandboxConfig, protectedPaths: readonly string[], request?: SandboxRequest, privateTemporaryDirectory?: string): Promise<Workspace> {
-  const detected = await detectWorkspace(cwd);
+/** Projektaktionen prüfen die freigegebene Ansicht; Webaktionen brauchen keine Projektdateien. */
+export async function validateWorkspace(cwd: string, config: SandboxConfig, protectedPaths: readonly string[], request?: SandboxRequest, privateTemporaryDirectory?: string, mode: "project" | "web" = "project"): Promise<Workspace> {
+  if (mode === "web" && (request?.paths?.length || request?.executableSearchPaths?.length || request?.tools?.length)) throw new Error("Web research uses no project files, extra path mounts or local tools; remove those access requests");
+  const detected = mode === "web" ? { path: "/workspace", cwd: "/workspace" } : await detectWorkspace(cwd);
   const temporaryDirectory = privateTemporaryDirectory ? await realpath(privateTemporaryDirectory) : undefined;
   if (temporaryDirectory && !(await lstat(temporaryDirectory)).isDirectory()) throw new Error("Private /tmp backing storage must be a directory");
   if (temporaryDirectory && (within(detected.path, temporaryDirectory) || within(temporaryDirectory, detected.path))) throw new Error("Workspace overlaps private sandbox temporary storage");
@@ -109,9 +110,9 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
   const workspace = detected.path;
   const root = workspace;
   const protectedRoots = await Promise.all([...protectedPaths, ...backendPaths(config)].map((path) => realpath(path).catch(() => resolve(path))));
-  if (protectedRoots.some((path) => within(path, workspace))) throw new Error("Workspace is inside protected Pi, approval, or credential storage; choose a separate project directory");
-  let bindings = [workspace];
-  if (config.backend === "bwrap") {
+  if (mode === "project" && protectedRoots.some((path) => within(path, workspace))) throw new Error("Workspace is inside protected Pi, approval, or credential storage; choose a separate project directory");
+  let bindings = mode === "web" ? [] : [workspace];
+  if (mode === "project" && config.backend === "bwrap") {
     const view = config.workspaceViews?.find((entry) => resolve(entry.root) === root);
     if (view) {
       bindings = [];
@@ -127,7 +128,7 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
     } else if (workspace === await realpath(homedir())) {
       throw new Error("The home directory needs a restricted workspaceViews entry containing public files; edit ~/.pi/agent/auto-approval.device.json outside Pi. Project workspaces are detected automatically.");
     }
-  } else if (protectedRoots.some((path) => within(workspace, path))) {
+  } else if (mode === "project" && config.backend !== "bwrap" && protectedRoots.some((path) => within(workspace, path))) {
     throw new Error("Workspace overlaps Pi, its gate, or protected configuration");
   }
   if (config.backend === "bwrap" && request?.limits && [request.limits.memoryMiB, request.limits.cpus, request.limits.pids].some((value) => value !== undefined)) {
@@ -249,6 +250,7 @@ export function sandboxArguments(workspace: Workspace, config: SandboxConfig, na
     "--pids-limit", String(limits?.pids ?? 128), "--memory", `${limits?.memoryMiB ?? 1024}m`, "--cpus", String(limits?.cpus ?? 2),
     "--user", `${uid}:${gid}`,
     ...(workspace.temporaryDirectory ? ["--mount", `type=bind,src=${workspace.temporaryDirectory},dst=/tmp,bind-recursive=disabled`, "--tmpfs", `/tmp/home:${runtimeTmpfs}`, "--tmpfs", `/tmp/pi:${runtimeTmpfs}`] : ["--tmpfs", `/tmp:rw,nosuid,nodev,size=${limits?.tmpBytes ?? 268435456},mode=1777`]),
+    ...(!workspace.bindings.length ? ["--tmpfs", `${workspace.path}:ro,nosuid,nodev,noexec,size=16777216`] : []),
     "--env", "HOME=/tmp/home", "--env", "PI_CODING_AGENT_DIR=/tmp/pi",
     ...Object.entries(environment).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
     ...workspace.bindings.flatMap((path) => ["--mount", `type=bind,src=${path},dst=${path},bind-recursive=disabled${workspace.readOnlyBindings?.includes(path) ? ",readonly" : ""}`]),

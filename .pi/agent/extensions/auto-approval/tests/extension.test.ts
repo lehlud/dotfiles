@@ -12,16 +12,18 @@ const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 let validatedScopes: any[] = [];
 let executedRequests: any[] = [];
 let temporaryStores: string[] = [];
+let workspaceValidationFails = false;
 process.env.PI_CODING_AGENT_DIR = agentRoot;
 // Test-only module mock. Production has one mandatory Docker executor and no
 // injection flag or local execution backend. Unit tests exercise the gate.
 mock.module("../isolation.ts", () => ({
   detectWorkspace: async (cwd: string) => ({ path: cwd, cwd }),
   sandboxHostPath: (workspace: { cwd: string }, path: string) => resolve(workspace.cwd, path),
-  validateWorkspace: async (cwd: string, _config: unknown, _protected: unknown, scope: unknown, temporaryDirectory: string) => {
+  validateWorkspace: async (cwd: string, _config: unknown, _protected: unknown, scope: unknown, temporaryDirectory: string, mode = "project") => {
     validatedScopes.push(structuredClone(scope));
     temporaryStores.push(temporaryDirectory);
-    return { path: cwd, cwd, bindings: [cwd], masked: [], temporaryDirectory };
+    if (mode === "project" && workspaceValidationFails) throw new Error("ENOENT: no such file or directory, lstat '/Users/gunter/.agents/skills/avoid-wikipedia-ai-writing-signs/SKILL.md'");
+    return mode === "web" ? { path: "/workspace", cwd: "/workspace", bindings: [], masked: [], temporaryDirectory } : { path: cwd, cwd, bindings: [cwd], masked: [], temporaryDirectory };
   },
   executeIsolated: async (request: any, workspace: { path: string }, _config: unknown, signal?: AbortSignal) => {
     const cwd = workspace.path;
@@ -54,6 +56,7 @@ beforeEach(async () => {
   await writeFile(localConfigPath, JSON.stringify({ sandbox: { dockerExecutable: "/usr/bin/docker" } }));
   mode = "approve"; requested = []; hooks = {}; actions = {}; active = []; auditFails = false; responseHook = undefined; widgets = []; statuses = [];
   validatedScopes = []; executedRequests = []; temporaryStores = [];
+  workspaceValidationFails = false;
   entries = [{ type: "message", message: { role: "user", content: "Run a harmless smoke test in the temporary working directory. Do not change any approval settings." } }];
   const pi = {
     on: (name: string, callback: Function) => {
@@ -217,6 +220,20 @@ test("web operations review exact input and networking before isolated execution
   responseHook = undefined;
   await call(bash("printf offline-next"));
   expect(executedRequests[1].sandbox).toBeUndefined();
+});
+test("unrelated missing skill files cannot prevent web review; project failures name their actual stage", async () => {
+  workspaceValidationFails = true;
+  const search = await call({ tool: "websearch", arguments: { query: "Franz Lehnert" }, goal: "Research", justification: "Find public information" });
+  expect(search.isError).not.toBe(true);
+  expect(requested).toHaveLength(1); expect(executedRequests).toHaveLength(1);
+  expect(requested[0].data.sandboxPlan.bindings).toEqual([]);
+  expect(requested[0].data.action.arguments.query).toBe("Franz Lehnert");
+  expect(search.details.approval.cwd).toBe(root); expect(search.details.approval.executionCwd).toBe("/workspace");
+  const failed = await call(bash("printf project-check"));
+  expect(failed.isError).toBe(true); expect(failed.details.technicalStage).toBe("workspace validation");
+  expect(requested).toHaveLength(1); expect(executedRequests).toHaveLength(1);
+  expect(JSON.stringify(failed.content)).toContain("workspace validation");
+  expect(JSON.stringify(failed.content)).not.toContain("openai/gpt-6-luna");
 });
 test("web denials and invalid expansions cannot execute or ask another reviewer", async () => {
   mode = "deny";
