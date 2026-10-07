@@ -54,6 +54,17 @@ async function fixture(directory: string, diskLoaded = false, delayedReview = fa
             const name = serialized.match(/Your name: ([a-z]+)/)?.[1];
             if (!name) throw new Error("Agent has no bound random identity");
             const names = serialized.match(/Members: ([a-z]+(?:, [a-z]+)*)/)?.[1].split(", ") ?? [];
+            const policy = context.messages.map((entry) => textContent(entry.content)).find((text) => text.includes("Your name:")) ?? "";
+            if (!policy.includes("Coordination: ready")) {
+              const planId = policy.match(/Plan ID: ([^\n]+)/)?.[1];
+              const accepted = policy.match(/Pending acceptance: ([^\n]+)/)?.[1].split(", ") ?? [];
+              message.stopReason = "toolUse";
+              const args = !planId || planId === "none" ? { operation: "plan", assignments: names.map((member) => ({ name: member, task: `Implement and validate ${member}.txt`, resources: [`${member}.txt`] })) }
+                : accepted.includes(name) ? { operation: "accept", planId } : undefined;
+              message.content = args ? [{ type: "toolCall", id: `plan-${name}-${planId}`, name: "mailbox", arguments: args }] : [{ type: "text", text: "Waiting for work-split acceptance." }];
+              if (!args) message.stopReason = "stop";
+              stream.push({ type: "done", reason: message.stopReason, message }); return;
+            }
             const stage = stages.get(name) ?? 0; stages.set(name, stage + 1);
             contexts.push({ name, stage, messages: structuredClone(context.messages), tools: getCurrentTools(context.messages).map((tool) => tool.name) });
             if (stage === 0) {
@@ -86,7 +97,7 @@ async function fixture(directory: string, diskLoaded = false, delayedReview = fa
     additionalExtensionPaths: diskLoaded ? ["auto-approval", "conversations", "multiplex", "provider-recovery"].map((name) => resolve(import.meta.dir, "../..", name, "index.ts")) : [],
     extensionFactories: [...(diskLoaded ? [] : [autoApproval, conversations, multiplex, recovery]), (pi) => {
       pi.on("session_start", (_event, ctx) => { rootContext = ctx; });
-      pi.on("tool_result", (event) => { if (event.toolName === "mailbox" && !event.isError) mailboxResults.push(event); });
+      pi.on("tool_result", (event) => { if (event.toolName === "mailbox" && !event.isError && Array.isArray(event.details)) mailboxResults.push(event); });
       if (compactionFixture) pi.on("session_before_compact", async (event) => {
         await new Promise<void>((done) => { compactionReleases.push(done); });
         return { compaction: { summary: "TEAM-TASK remains active: preserve operator instructions and finish assigned files.", firstKeptEntryId: event.preparation.firstKeptEntryId, tokensBefore: event.preparation.tokensBefore } };
@@ -469,10 +480,77 @@ nativeTest("routine messages do not wake idle actors; explicit requests wake onl
     const after = state.contexts.length;
     for (let i = 0; i < 30; i++) await tick();
     expect(state.contexts).toHaveLength(after); expect(idle()).toBe(true);
-    expect(JSON.stringify(state.contexts.at(-1)!.messages)).toContain("Prioritize concrete work");
+    expect(JSON.stringify(state.contexts.at(-1)!.messages)).toContain("Before ANY external action");
   } finally {
     state?.releases.forEach((release) => release()); await main?.catch(() => {});
     await state?.session.prompt("/multiplex off").catch(() => {});
+    if (state) await sessionServices(state.root()).cleanup?.(); state?.session.dispose();
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60000);
+
+nativeTest("Escape cancels every actor from an individual view when the terminal actor is idle and pauses its goal", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-multiplex-escape-all-")), previous = process.env.PI_CODING_AGENT_DIR;
+  let state: Awaited<ReturnType<typeof fixture>> | undefined, terminal: ((data: string) => any) | undefined;
+  const statuses = new Map<string, string>();
+  try {
+    state = await fixture(directory);
+    await state.session.bindExtensions({ mode: "tui", uiContext: { setStatus: (key: string, value?: string) => { if (value) statuses.set(key, value); else statuses.delete(key); }, setWidget() {}, notify() {}, onTerminalInput(handler: any) { terminal = handler; return () => { terminal = undefined; }; } } as any });
+    await state.session.prompt("/multiplex 3");
+    await state.session.prompt("/goal TEAM-GOAL: Cancel all work on operator interruption.");
+    await until(() => state!.releases.length === 3);
+    const backend = sessionServices(state.root()).mailbox!.name;
+    state.releases[state.contexts.findIndex((context) => context.name === backend)]();
+    await until(() => state!.session.isIdle);
+    expect(sessionServices(state.root()).peersBusy?.()).toBe(true);
+    const selected = [...state.stages.keys()].find((name) => name !== backend)!;
+    await state.session.prompt(`/multiplex-view ${selected}`);
+    expect(terminal!("\x1b")).toEqual({ consume: true });
+    await until(() => !statuses.has("00-multiplex") && !sessionServices(state!.root()).mailbox);
+    for (let i = 0; i < 40; i++) await tick();
+    expect(statuses.get("01-goal")).toContain("paused");
+    expect(state.session.getActiveToolNames()).toEqual(["approved_action"]);
+    expect(await readdir(state.project)).toEqual([`${backend}.txt`]);
+    expect(state.reviews.filter((review) => !review.action)).toEqual([]);
+    const count = state.contexts.length;
+    state.releases.forEach((release) => release());
+    for (let i = 0; i < 30; i++) await tick();
+    expect(state.contexts).toHaveLength(count);
+    const records = state.session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === ACTIVITY_ENTRY).map((entry: any) => entry.data);
+    expect(records.some((record) => record.kind === "state" || record.kind === "thinking")).toBe(false);
+  } finally {
+    state?.releases.forEach((release) => release()); await state?.session.prompt("/goal stop").catch(() => {});
+    await state?.session.prompt("/multiplex off").catch(() => {});
+    if (state) await sessionServices(state.root()).cleanup?.(); state?.session.dispose();
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60000);
+
+nativeTest("Escape cancels all pending action reviews without starting queued execution or late actor work", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-multiplex-cancel-reviews-")), previous = process.env.PI_CODING_AGENT_DIR;
+  let state: Awaited<ReturnType<typeof fixture>> | undefined, main: Promise<void> | undefined, terminal: ((data: string) => any) | undefined;
+  try {
+    state = await fixture(directory, false, true);
+    await state.session.bindExtensions({ mode: "tui", uiContext: { setStatus() {}, setWidget() {}, notify() {}, onTerminalInput(handler: any) { terminal = handler; return () => { terminal = undefined; }; } } as any });
+    await state.session.prompt("/multiplex 3");
+    main = state.session.prompt("TEAM-TASK: Cancel the entire team while independent action reviews are open.");
+    await until(() => state!.releases.length === 3);
+    state.releases.forEach((release) => release());
+    await until(() => state!.reviewReleases.length === 3);
+    expect(state.session.isStreaming).toBe(true);
+    expect(terminal!("\x1b")).toEqual({ consume: true });
+    await main;
+    await until(() => !sessionServices(state!.root()).mailbox && !state!.session.isStreaming);
+    state.reviewReleases.forEach((release) => release());
+    for (let i = 0; i < 40; i++) await tick();
+    expect(state.reviews).toHaveLength(3); expect(await readdir(state.project)).toEqual([]);
+    expect(state.contexts.every((context) => context.stage === 0)).toBe(true);
+    expect(state.session.getActiveToolNames()).toEqual(["approved_action"]);
+  } finally {
+    state?.releases.forEach((release) => release()); state?.reviewReleases.forEach((release) => release());
+    await main?.catch(() => {}); await state?.session.prompt("/multiplex off").catch(() => {});
     if (state) await sessionServices(state.root()).cleanup?.(); state?.session.dispose();
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     await rm(directory, { recursive: true, force: true });

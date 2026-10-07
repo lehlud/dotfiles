@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Coordination } from "./coordination.ts";
 export { randomNames } from "./names.ts";
 
 export type Letter = { id: string; teamId: string; sequence: number; from: string; to: string; text: string; wake: boolean };
@@ -15,6 +16,7 @@ export const PEER_RESULT = "auto-approval-peer-result";
 /** Senders come from the bound session, never from tool arguments. */
 export class Mailboxes {
   readonly id = randomUUID();
+  readonly coordination: Coordination;
   private sinks = new Map<string, MailboxSink>();
   private histories = new Map<string, Letter[]>();
   private pending = new Map<string, number[]>();
@@ -22,7 +24,7 @@ export class Mailboxes {
   revision = 0;
   closed = false;
   readonly names: readonly string[];
-  constructor(names: readonly string[], private onSend?: (from: string, to: readonly string[], text: string) => void) { this.names = Object.freeze([...names]); }
+  constructor(names: readonly string[], private onSend?: (from: string, to: readonly string[], text: string) => void, onPlan?: (ready: boolean) => void) { this.names = Object.freeze([...names]); this.coordination = new Coordination(this.names, (ready) => { this.revision++; onPlan?.(ready); }); }
   bind(name: string, sink: MailboxSink) {
     if (this.closed || !this.names.includes(name) || this.sinks.has(name)) throw new Error("Invalid mailbox binding");
     this.sinks.set(name, sink); this.histories.set(name, []); this.pending.set(name, []);
@@ -58,7 +60,7 @@ export class Mailboxes {
       if (name !== from) sink[kind](structuredClone({ ...data, multiplexAgent: from }));
     }
   }
-  close() { this.closed = true; this.sinks.clear(); this.histories.clear(); this.pending.clear(); }
+  close() { this.coordination.close(); this.closed = true; this.sinks.clear(); this.histories.clear(); this.pending.clear(); }
 }
 
 export function letterMessage(letter: Letter) {

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { writingCheckTool } from "../../public-writing/index.ts";
+import { Coordination } from "../../multiplex/coordination.ts";
 import { sessionServices } from "../session-services.ts";
 
 const root = await mkdtemp(join(tmpdir(), "pi-approval-test-"));
@@ -664,4 +665,23 @@ test("approval and denial remain in activity results and audit without a prompt 
   expect(typeof denial.details.reviewDurationMs).toBe("number");
   expect(requested[0].context.systemPrompt).toContain("LAST actual operator prompt");
   expect(requested[0].context.systemPrompt).toContain("ONE short sentence");
+});
+
+
+test("team coordination blocks actions before review and pins assignment throughout execution", async () => {
+  const board = new Coordination(["otter", "maple"]);
+  sessionServices(ctx).mailbox = { name: "otter", active: () => true, audit() {}, beginAction: () => board.acquire("otter") };
+  const blocked = await call(bash("echo smoke"));
+  expect(blocked.isError).toBe(true); expect(requested).toHaveLength(0); expect(executedRequests).toHaveLength(0);
+  expect(blocked.details.technicalStage).toBe("team coordination");
+  const plan = board.propose("otter", [{ name: "otter", task: "Inspect the project", resources: ["discovery"] }, { name: "maple", task: "Wait for findings", resources: [], waiting: true }]);
+  await call(bash("echo smoke")); expect(requested).toHaveLength(0);
+  board.accept("maple", plan.id!);
+  const valid = await call(bash("echo smoke"));
+  expect(valid.isError).not.toBe(true); expect(executedRequests).toHaveLength(1);
+  expect(requested[0].data.sandboxPlan.teamAssignment).toMatchObject({ name: "otter", task: "Inspect the project", resources: ["discovery"] });
+  responseHook = () => board.close();
+  const closed = await call(bash("echo no-late-execution"));
+  expect(closed.isError).toBe(true); expect(executedRequests).toHaveLength(1);
+  sessionServices(ctx).mailbox = undefined;
 });

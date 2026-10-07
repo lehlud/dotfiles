@@ -84,3 +84,55 @@ binaryTest("compiled Pi peers authenticate senders, reject forgeries and keep ex
     await rm(directory, { recursive: true, force: true });
   }
 }, 30000);
+
+const interruptSource = `import {createAssistantMessageEventStream} from "@earendil-works/pi-ai";
+export default function(pi) {
+  pi.registerProvider("mailbox-binary-fixture", {
+    api:"mailbox-binary-fixture",apiKey:"synthetic",baseUrl:"https://example.invalid",
+    models:[{id:"working",name:"working",reasoning:false,input:["text"],contextWindow:131072,maxTokens:4096,cost:{input:0,output:0,cacheRead:0,cacheWrite:0}}],
+    streamSimple(model,context,options) {
+      const stream=createAssistantMessageEventStream();
+      const text=JSON.stringify(context.messages),name=text.match(/Your name: ([a-z]+)/)?.[1];
+      const backend=text.match(/Members: ([a-z]+)/)?.[1];
+      queueMicrotask(async()=>{
+        pi.appendEntry("interrupt-fixture",{name,backend,phase:"started"});
+        if(name!==backend) await new Promise(done=>{if(options?.signal?.aborted)done();else options?.signal?.addEventListener("abort",done,{once:true});});
+        const aborted=options?.signal?.aborted;
+        pi.appendEntry("interrupt-fixture",{name,backend,phase:aborted?"aborted":"idle"});
+        const message={role:"assistant",api:model.api,provider:model.provider,model:model.id,timestamp:Date.now(),stopReason:aborted?"aborted":"stop",content:[{type:"text",text:"BACKEND-IDLE"}],usage:{input:0,output:0,cacheRead:0,cacheWrite:0,totalTokens:0,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}}};
+        stream.push(aborted?{type:"error",reason:"aborted",error:message}:{type:"done",reason:"stop",message});
+      });
+      return stream;
+    }
+  });
+}`;
+
+binaryTest("compiled RPC abort interrupts every peer while the terminal actor is idle", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-multiplex-rpc-abort-"));
+  const agentDir = join(directory, "agent"), project = join(directory, "project"), fixture = join(directory, "provider.ts");
+  await mkdir(agentDir); await mkdir(project); await writeFile(fixture, interruptSource);
+  await writeFile(join(agentDir, "auto-approval.json"), JSON.stringify({ reviewers: [{ provider: "unavailable-reviewer", model: "none", thinking: "off" }], recentUserPrompts: 2, requestTimeoutMs: 1000, sandbox: { backend: "bwrap" } }));
+  await writeFile(join(agentDir, "auto-approval.device.json"), JSON.stringify({ sandbox: { runnerExecutable: join(homedir(), ".local/cache/pi-auto-approval/executor"), executable: Bun.which("bwrap") } }));
+  const extensions = ["auto-approval", "conversations", "multiplex", "provider-recovery"].flatMap((name) => ["--extension", resolve(import.meta.dir, "../..", name, "index.ts")]);
+  const child = Bun.spawn([binary, "--mode", "rpc", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", ...extensions, "--extension", fixture, "--no-approve", "--tools", "approved_action,mailbox", "--provider", "mailbox-binary-fixture", "--model", "working"], { cwd: project, env: { HOME: directory, PATH: "/usr/bin:/bin", PI_CODING_AGENT_DIR: agentDir }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const events: any[] = [], errors = new Response(child.stderr).text();
+  const reader = (async () => { let pending = ""; for await (const chunk of child.stdout) { pending += Buffer.from(chunk).toString(); const lines = pending.split("\n"); pending = lines.pop()!; for (const line of lines) { try { events.push(JSON.parse(line)); } catch {} } } })();
+  const until = async (check: () => boolean) => { for (let i = 0; i < 1000; i++) { if (check()) return; if (child.exitCode !== null) throw new Error(await errors); await Bun.sleep(10); } throw new Error("Compiled RPC cancellation fixture timed out"); };
+  const phases = (phase: string) => events.filter((event) => event.type === "entry_appended" && event.entry?.customType === "interrupt-fixture" && event.entry.data.phase === phase);
+  try {
+    child.stdin.write('{"id":"team","type":"prompt","message":"/multiplex 3"}\n');
+    await until(() => events.some((event) => event.id === "team" && event.type === "response"));
+    child.stdin.write('{"id":"work","type":"prompt","message":"Wait for an operator interrupt without any external actions."}\n');
+    await until(() => phases("started").length === 3 && phases("idle").length === 1);
+    expect(phases("aborted")).toEqual([]);
+    child.stdin.write('{"id":"stop","type":"ab'); await Bun.sleep(10); child.stdin.write('ort"}\n');
+    await until(() => phases("aborted").length === 2);
+    expect(events.find((event) => event.id === "stop" && event.type === "response")?.success).toBe(true);
+    expect(phases("aborted").every((event) => event.entry.data.name !== event.entry.data.backend)).toBe(true);
+    expect(events.some((event) => event.type === "extension_ui_request" && event.method === "setStatus" && event.statusKey === "00-multiplex" && event.statusText === undefined)).toBe(true);
+    await Bun.sleep(50); expect(phases("started")).toHaveLength(3);
+  } finally {
+    child.stdin.end(); child.kill(); await child.exited; await reader; await errors;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 30000);

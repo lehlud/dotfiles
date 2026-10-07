@@ -6,6 +6,7 @@ The next actual user prompt and subsequent corrections reach every member. Membe
 
 - `/multiplex 4`: four equal members in total.
 - `/multiplex` or `/multiplex status`: show names, team size and peer states.
+- `/multiplex interrupt`: cancel every member and pause its running goal.
 - `/multiplex off` or `/multiplex 0`: stop the team and cancel peer work.
 - Change the team size only while all members are idle.
 
@@ -13,7 +14,7 @@ The status bar shows `multiplex: n` once, before the goal when present, so team 
 
 ## Watching the whole team
 
-The default display is one shared feed for every agent. There is no main-transcript view. Replies, thinking, tool calls, output, failures and confirmed edits use an automatically bound `Agent · name` header. Each member has a distinct color in both the feed and overview; colors remain stable within the team and are saved with activity records. Native backend-session output is replaced by its attributed feed records without changing model messages or tool execution.
+The default display is one shared feed for every agent. There is no main-transcript view. Replies, tool calls, output, failures and confirmed edits use an automatically bound `Agent · name` header. Each member has a distinct color in both the feed and overview; colors remain stable within the team and are saved with activity records. Working, thinking and ready states appear only in the overview, including after restoring older logs; reasoning blocks are not duplicated in the feed. Native backend-session output is replaced by its attributed feed records without changing model messages or tool execution.
 
 The compact overview aligns the Agent, State and Activity columns. It uses one header and one row per member, as before, and clips to the terminal width. Every member remains in the table even when filtering the feed. Rows show ready, working, thinking, writing or running states and a short reply/tool preview. Streaming refreshes are coalesced over 80 ms; tool starts, completions and ready states update immediately. Approval explanations stay in the activity log.
 
@@ -29,9 +30,25 @@ Long text bodies collapse by default and expand with `ctrl+o`; individual activi
 
 Activity uses custom session entries saved in the session log, exposed to JSON/RPC consumers as `entry_appended` events. Rendered feed segments keep individual filtering free of gaps and retain hidden actors' activity for switching back to all. Observations never enter model context or mailboxes, grant operator authorization or request approval. Final peer results reach the shared task context through the separate peer-data channel without duplicate visible answers. Names come from runtime session bindings, not identity claims in prose. Reload restores saved feed records and colors. Stopping, replacing or closing a team removes its live overview, timers and subscriptions; saved activity remains available.
 
+## Agreeing work before actions
+
+A team must agree one work split before any external action, including initial reads and directory listings. Any equal member can propose the split through `mailbox plan`; the proposer accepts automatically, and every other member accepts the exact plan ID or withdraws a conflict. Each assignment contains its bound member name, a distinct concrete task, explicit resource ownership and optional `waiting: true`. Assign shared repository/roadmap discovery and each expensive shared check to one member. When existing context is insufficient for independent work, other members wait for that discovery instead of inspecting the same files again.
+
+Resources identify owned files/subtrees or named discovery/validation work. Duplicate tasks and overlapping resource scopes are rejected. These declarations describe coordination; they do not create filesystem mounts, grants or operator authorization. The assignment is included in the independent action review, and members must keep commands and edits within their agreed tasks. Any member can propose an updated split after current actions finish. A new split needs everyone's acceptance again. There is no permanent coordinator or privileged proposer.
+
+The runtime blocks external review/execution until all members accept and blocks actions by waiting members. It pins the accepted assignment through review and checks it again before execution; a closed team cannot execute an earlier approval. Proposals and final acceptance wake participants for the necessary planning work; intermediate acceptances do not broadcast acknowledgements. Mailbox transport and planning remain outside approval. Independent task execution begins after agreement.
+
+```json
+{"operation":"plan","assignments":[{"name":"otter","task":"Inspect roadmap and repository once","resources":["discovery"]},{"name":"maple","task":"Wait for discovery findings","resources":[],"waiting":true}]}
+{"operation":"accept","planId":"ID from the proposed split"}
+{"operation":"withdraw","planId":"ID of a conflicting split"}
+```
+
+`peers` includes the current split and pending acceptances. Every model request also receives the current coordination state, so members need not poll the inbox or repeat status messages.
+
 ## Messageboxes
 
-The `mailbox` tool provides only these internal operations:
+The `mailbox` tool provides planning plus these internal messaging operations:
 
 ```json
 {"operation":"peers"}
@@ -52,7 +69,7 @@ Members share project files but have independent conversation histories and priv
 
 A shared `/goal` and feedback from its independent reviewer also reach peers. Completion review waits for ongoing peer work to settle. New peer work, messages or action results during goal review invalidate its older verdict; completion is reviewed again using current evidence. Goal review includes the recorded action results of every member; no working agent gains authority over another. `/goal stop` also stops working peers when the terminal connection's agent is already idle.
 
-Exit, reload, session replacement or session-tree navigation stop the team and delete peer temporary data. Aborting the terminal connection's model run also stops the team. `/multiplex off` cancels work even when only peers are busy. Multiplex does not restart automatically after a session change. Peer transcripts live in memory; transferred results and decisions remain in the normal session log.
+Exit, reload, session replacement or session-tree navigation stop the team and delete peer temporary data. The default Escape interrupt cancels the whole team from either shared or individual views, even if the terminal-session member is already idle. The RPC `abort` command also cancels all peers. A running goal pauses for explicit `/goal resume`; queued starts are cancelled before resuming can create new work. RPC cancellation observes its JSON-lines transport without consuming or logging other commands, and the observer detaches on shutdown/reload. Aborting the terminal connection's active model run also stops the team. `/multiplex off` cancels work even when only peers are busy. Multiplex does not restart automatically after a session change. Peer transcripts live in memory; transferred results and decisions remain in the normal session log.
 
 The launcher loads this extension separately. Startup links its SDK dependencies to Auto-Approval's pinned dependencies. Tests use synthetic providers in the `../auto-approval` integration package without contacting real model providers.
 

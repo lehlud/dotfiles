@@ -10,9 +10,11 @@ export type SessionServices = {
     name: string;
     active(): boolean;
     audit(data: Record<string, unknown>): void;
+    beginAction?(): { scope?: { planId?: string; name: string; task: string; resources: string[]; waiting?: boolean }; assertCurrent(): void; release(): void };
   };
   peersBusy?: () => boolean;
   peerRevision?: () => number;
+  interruptGoal?: () => void;
   stopTeam?: () => Promise<void>;
 };
 // Compiled Pi loads each extension with an independent module cache. A shared

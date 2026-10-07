@@ -231,3 +231,23 @@ test("the backend session has no duplicate native rows, including after stopping
   expect(view.hidesTool("edit-one")).toBe(true); expect(view.hidesText(source[0].text)).toBe(true);
   expect(source[0].text).toBe("Backend member reply.");
 });
+
+test("state and thinking stay in the overview and legacy records never reappear in the feed", () => {
+  const { activity, records, frames } = fixture();
+  activity.observe("otter", { type: "agent_start" });
+  activity.observe("otter", { type: "message_update", message: { role: "assistant", content: [{ type: "thinking", thinking: "Working through evidence" }] }, assistantMessageEvent: { type: "thinking_delta" } } as any);
+  activity.refresh(true); expect(frames.at(-1)?.join("\n")).toContain("Thinking");
+  activity.observe("otter", { type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "Working through evidence" }] } } as any);
+  activity.observe("otter", { type: "agent_settled" });
+  expect(records.some((entry) => entry.data.kind === "state" || entry.data.kind === "thinking")).toBe(false);
+  expect(frames.at(-1)?.join("\n")).toContain("Ready");
+  const renderers = new Map<string, any>(), view = new FeedView();
+  registerActivityRenderer({ registerEntryRenderer: (type: string, renderer: any) => renderers.set(type, renderer) } as any, view);
+  for (const kind of ["state", "thinking", "native-hidden"]) {
+    const record: any = { teamId: "old", from: "otter", kind, text: "Working", body: "Old status", segment: "old" };
+    expect(renderers.get(ACTIVITY_ENTRY)({ data: { ...record, segment: undefined } }, { expanded: false }, theme)).toBeUndefined();
+    view.append(record);
+  }
+  const feed = renderers.get(FEED_ENTRY)({ data: { segment: "old" } }, { expanded: false }, theme);
+  expect(feed.render(100)).toEqual([]); activity.close();
+});

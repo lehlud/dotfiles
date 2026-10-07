@@ -31,6 +31,7 @@ class GoalController {
     this.pi.appendEntry(STATE_ENTRY, next);
     this.goal = next;
     sessionServices(ctx).operatorGoal = () => this.goal?.status === "running" ? this.goal.text : undefined;
+    sessionServices(ctx).interruptGoal = () => { this.reviewController?.abort(); this.pause(ctx, "Interrupted by operator; use /goal resume"); };
     sessionServices(ctx).operatorGoalId = () => this.goal?.id;
     sessionServices(ctx).goalInstruction = () => this.goal?.status === "running" ? instruction(this.goal) : undefined;
     this.display(ctx);
@@ -44,6 +45,7 @@ class GoalController {
   }
   restore(_event: unknown, ctx: ExtensionContext) {
     sessionServices(ctx).operatorGoal = () => this.goal?.status === "running" ? this.goal.text : undefined;
+    sessionServices(ctx).interruptGoal = () => { this.reviewController?.abort(); this.pause(ctx, "Interrupted by operator; use /goal resume"); };
     sessionServices(ctx).operatorGoalId = () => this.goal?.id;
     sessionServices(ctx).goalInstruction = () => this.goal?.status === "running" ? instruction(this.goal) : undefined;
     this.reviewController?.abort();

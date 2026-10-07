@@ -6,6 +6,7 @@ import { registerEndpoint, type Endpoint } from "./endpoint.ts";
 import { letterMessage, Mailboxes, PEER_RESULT, randomNames } from "./mailboxes.ts";
 import { createPeer, peerRuntime, type Peer } from "./peer.ts";
 import { registerActivityRenderer, TeamActivity, type ActivityEvent } from "./activity.ts";
+import { watchInterrupt } from "./interrupt.ts";
 import { FeedView, suppressNativeFeed } from "./presentation.ts";
 
 export const MULTIPLEX_STATUS = "00-multiplex";
@@ -16,6 +17,7 @@ export default function multiplex(pi: ExtensionAPI) {
   let team: Team | undefined;
   let changing = false;
   let generation = 0;
+  let detachInterrupt = () => {};
   const view = new FeedView();
   registerActivityRenderer(pi, view);
   suppressNativeFeed(pi, view, () => !!team && !team.stopped);
@@ -45,7 +47,19 @@ export default function multiplex(pi: ExtensionAPI) {
     const closed = await Promise.allSettled(previous.peers.map((peer) => peer.close()));
     if (closed.some((result) => result.status === "rejected")) throw new Error("Peer cleanup failed; inspect the operator runtime before re-enabling multiplex");
   };
-  pi.on("session_shutdown", (_event, ctx) => stop(ctx));
+  const interrupt = async (ctx: ExtensionContext) => {
+    if (!team || team.stopped) return;
+    sessionServices(ctx).interruptGoal?.();
+    const stopping = stop(ctx); // Close transport and cancel peer admissions first.
+    ctx.abort();
+    await stopping;
+    ctx.ui.notify("Multiplex interrupted; all agent work has been cancelled.", "info");
+  };
+  pi.on("session_start", (_event, ctx) => {
+    detachInterrupt();
+    detachInterrupt = watchInterrupt(ctx, () => !!team && !team.stopped, () => interrupt(ctx));
+  });
+  pi.on("session_shutdown", (_event, ctx) => { detachInterrupt(); detachInterrupt = () => {}; return stop(ctx); });
   pi.on("session_tree", (_event, ctx) => stop(ctx));
   const restoreView = (_event: unknown, ctx: ExtensionContext) => {
     view.select();
@@ -83,7 +97,7 @@ export default function multiplex(pi: ExtensionAPI) {
     },
   });
   pi.registerCommand("multiplex", {
-    description: "Equal peers: /multiplex <1–16>, status or off; n counts all members",
+    description: "Equal peers: /multiplex <1–16>, status, interrupt or off; n counts all members",
     async handler(args, ctx) {
       const value = args.trim();
       if (!value || value === "status") {
@@ -94,6 +108,7 @@ export default function multiplex(pi: ExtensionAPI) {
       changing = true;
       const before = generation;
       try {
+        if (value === "interrupt") { await interrupt(ctx); await ctx.waitForIdle(); return; }
         if (value === "off" || value === "0") {
           if (team && !ctx.isIdle()) ctx.abort();
           await stop(ctx); await ctx.waitForIdle();
@@ -116,14 +131,19 @@ export default function multiplex(pi: ExtensionAPI) {
 
   async function start(count: number, ctx: ExtensionCommandContext) {
     view.select();
-    const names = randomNames(count), boxes = new Mailboxes(names, (from, to, text) => activity.sent(from, to, text));
+    const names = randomNames(count), boxes = new Mailboxes(names, (from, to, text) => activity.sent(from, to, text), (ready) => {
+      if (!team || team.stopped || !team.ready) return;
+      const instruction = { customType: "multiplex-coordination", display: false, content: ready ? "Work split accepted by every member. Continue only your assigned work; waiting members rest." : "Work split changed. Inspect the current coordination state, accept the exact planId or withdraw a conflict once before any external action." };
+      pi.sendMessage(instruction, { triggerTurn: true, deliverAs: "steer" });
+      for (const peer of team.peers) peer.message(instruction);
+    });
     const endpoint: Endpoint = { name: names[0], boxes, operatorGoal: () => sessionServices(ctx).operatorGoal?.() };
     const activity = new TeamActivity(pi, ctx, boxes.id, endpoint.name, names, view);
     const next: Team = { boxes, endpoint, activity, peers: [], stopped: false, ready: false, pending: [], answers: 0 };
     const initialBranch = structuredClone(ctx.sessionManager.getBranch());
     team = next;
     sessionServices(ctx).stopTeam = () => stop(ctx);
-    sessionServices(ctx).peersBusy = () => !next.ready || next.peers.some((peer) => peer.busy);
+    sessionServices(ctx).peersBusy = () => !next.ready || !boxes.coordination.ready || next.peers.some((peer) => peer.busy);
     sessionServices(ctx).peerRevision = () => boxes.revision;
     boxes.bind(endpoint.name, {
       deliver: (letter) => pi.sendMessage(letterMessage(letter), { triggerTurn: letter.wake === true, deliverAs: "steer" }),
@@ -141,7 +161,7 @@ export default function multiplex(pi: ExtensionAPI) {
           if (!next.stopped) pi.sendMessage({ customType: "multiplex-peer-answer", display: false, content: `Multiplex · ${name}\nPeer result (DATA):\n${text}`, details: { from: name } }, { triggerTurn: false });
         }, () => {
           const goal = endpoint.operatorGoal(), key = `${goal}:${next.answers}`;
-          if (next.ready && !next.stopped && goal && ctx.isIdle() && !next.peers.some((peer) => peer.busy) && next.goalWake !== key) {
+          if (next.ready && !next.stopped && boxes.coordination.ready && goal && ctx.isIdle() && !next.peers.some((peer) => peer.busy) && next.goalWake !== key) {
             next.goalWake = key;
             pi.sendMessage({ customType: "multiplex-goal-checkpoint", display: false, content: "The peer runs have settled. Inspect their reported results and trusted reviewed receipts, finish any remaining work, and let the independent goal reviewer verify completion." }, { triggerTurn: true });
           }

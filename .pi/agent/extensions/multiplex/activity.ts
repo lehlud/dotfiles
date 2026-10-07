@@ -28,7 +28,7 @@ export function registerActivityRenderer(pi: ExtensionAPI, view = new FeedView()
   };
   pi.registerEntryRenderer<ActivityRecord>(ACTIVITY_ENTRY, (entry, options, theme) => {
     const record = entry.data;
-    if (!record || record.kind === "mailbox" || record.segment) return;
+    if (!record || ["mailbox", "state", "thinking", "native-hidden"].includes(record.kind) || record.segment) return;
     return view.filter(record.from, draw(record, options.expanded, theme));
   });
   pi.registerEntryRenderer<{ segment: string }>(FEED_ENTRY, (entry, options, theme) => {
@@ -38,7 +38,7 @@ export function registerActivityRenderer(pi: ExtensionAPI, view = new FeedView()
     return {
       render(width) {
         const lines: string[] = [];
-        for (const record of view.records(segment)) if (view.accepts(record.from)) {
+        for (const record of view.records(segment)) if (!["state", "thinking", "native-hidden"].includes(record.kind) && view.accepts(record.from)) {
           let component = components.get(record);
           if (!component) { component = draw(record, options.expanded, theme); components.set(record, component); }
           if (lines.length) lines.push("");
@@ -105,10 +105,8 @@ export class TeamActivity {
     }
     if (event.type === "agent_start") {
       state.status = "Working"; state.preview = "";
-      this.record(from, "state", "Working");
     } else if (event.type === "agent_settled") {
       state.status = "Ready"; state.tools.clear();
-      this.record(from, "state", "Ready");
     } else if (event.type === "message_update" && event.message.role === "assistant") {
       const thinking = event.assistantMessageEvent.type.startsWith("thinking_");
       state.status = thinking ? "Thinking" : event.assistantMessageEvent.type.startsWith("toolcall_") ? "Preparing tool" : "Writing";
@@ -117,8 +115,8 @@ export class TeamActivity {
     } else if (event.type === "message_end" && event.message.role === "assistant") {
       const text = plain(event.message.content), nativeTexts = from === this.backend ? this.view.rootText(event.message.content, true) : undefined;
       state.preview = text.slice(-240);
-      const thoughts = event.message.content.filter((part) => part.type === "thinking").map((part) => part.type === "thinking" ? part.thinking : "").join("\n");
-      if (thoughts) this.record(from, "thinking", "Thinking", thoughts, { nativeTexts });
+      if (!text && nativeTexts?.length) this.pi.appendEntry(ACTIVITY_ENTRY, { teamId: this.teamId, from, kind: "native-hidden", backend: true, nativeTexts });
+
       if (text) this.record(from, "message", "Reply", text, { nativeTexts });
       if (event.message.errorMessage) this.record(from, "error", "Model error", event.message.errorMessage);
     } else if (event.type === "tool_execution_start") {
@@ -138,6 +136,7 @@ export class TeamActivity {
       state.tools.delete(event.toolCallId); state.status = "Working";
       if (event.toolName === "mailbox") {
         if (event.isError) this.record(from, "error", "Messagebox · Failed", plain(event.result?.content));
+        else if (["plan", "accept", "withdraw"].includes(tool?.args.operation)) this.record(from, "coordination", `Work split · ${event.result?.details?.ready ? "Ready" : "Planning"}`, event.result?.details?.assignments?.map((item: any) => `${item.name}: ${item.task}${item.waiting ? " (waiting)" : ""}`).join("\n") ?? "No work split");
         else if (tool?.args.operation !== "send") this.record(from, "mailbox-query", "Messagebox", tool?.args.operation === "peers" ? `Members: ${event.result?.details?.members?.join(", ") ?? ""}` : `${event.result?.details?.length ?? 0} messages in inbox`);
       } else {
         const details = event.result?.details;

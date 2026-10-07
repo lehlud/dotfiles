@@ -67,7 +67,8 @@ export function mailboxRenderers(): ToolRenderers {
       const args = context.args as any, details = result.details as any;
       // Successful sends have one broker entry; inbox reads do not replay letters.
       if (args?.operation === "send") return empty();
-      const text = args?.operation === "peers" ? `Messagebox · Members\n${details?.members?.join(", ") ?? ""}`
+      const text = ["plan", "accept", "withdraw"].includes(args?.operation) ? `Coordination · ${details?.ready ? "Ready" : "Planning"}
+${details?.assignments?.map((item: any) => `${item.name}: ${item.task}${item.waiting ? " (waiting)" : ""}`).join("\n") ?? "No work split"}` : args?.operation === "peers" ? `Messagebox · Members\n${details?.members?.join(", ") ?? ""}`
         : `Messagebox · Inbox · ${Array.isArray(details) ? details.length : 0} messages`;
       return new Text(messageBody(text, options.expanded), 0, 0);
     },
