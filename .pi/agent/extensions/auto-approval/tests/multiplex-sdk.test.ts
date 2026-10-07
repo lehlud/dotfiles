@@ -274,7 +274,15 @@ nativeTest("a multiplex goal reaches every peer and completion waits for their r
     await state.session.prompt("/goal TEAM-GOAL: Produce separate, independently reviewed results.");
     await until(() => state!.releases.length === 2);
     expect(state.contexts.every((context) => JSON.stringify(context.messages).includes("TEAM-GOAL"))).toBe(true);
-    expect(statuses.get("00-goal")).toStartWith("multiplex: 2 · goal:");
+    expect(statuses.get("01-goal")).toStartWith("goal:");
+    expect(statuses.get("00-multiplex")).toBe("multiplex: 2");
+    initTheme("dark", false);
+    const footer = new FooterComponent(state.session, { getGitBranch: () => undefined, getAvailableProviderCount: () => 1, getExtensionStatuses: () => statuses } as any);
+    const wide = footer.render(160).map(stripTerminalSequences).join(" ");
+    expect(wide.match(/multiplex:/g)).toHaveLength(1);
+    expect(wide).not.toContain("0 checks");
+    expect(wide).not.toContain(sessionServices(state.root()).mailbox!.name);
+    expect(footer.render(40).map(stripTerminalSequences).join(" ")).toContain("multiplex: 2 goal:");
     expect(notices.some((text) => text.startsWith("Goal confirmed:"))).toBe(false);
     // The visible member finishes first; the peer remains in its request.
     const visible = sessionServices(state.root()).mailbox!.name;
@@ -287,9 +295,9 @@ nativeTest("a multiplex goal reaches every peer and completion waits for their r
     const completion = state.reviews.filter((review) => !review.action);
     expect(completion).toHaveLength(1); expect(completion[0].reviewedContext).toHaveLength(2);
     expect(completion[0].operatorGoal).toContain("TEAM-GOAL");
-    expect(statuses.get("00-goal")).toContain("complete");
+    expect(statuses.get("01-goal")).toContain("complete");
     await state.session.prompt("/multiplex off");
-    expect(statuses.get("00-goal")).toStartWith("goal:");
+    expect(statuses.get("01-goal")).toStartWith("goal:");
   } finally {
     state?.releases.forEach((release) => release());
     await state?.session.prompt("/goal stop").catch(() => {});
@@ -316,7 +324,7 @@ nativeTest("goal stop also cancels peers when the visible member has already set
     expect(sessionServices(state.root()).peersBusy?.()).toBe(true);
     await state.session.prompt("/goal stop");
     expect(statuses.has("00-multiplex")).toBe(false);
-    expect(statuses.get("00-goal")).toContain("stopped");
+    expect(statuses.get("01-goal")).toContain("stopped");
     expect(state.reviews.filter((review) => !review.action)).toEqual([]);
     expect(await readdir(state.project)).toEqual([`${visible}.txt`]);
   } finally {

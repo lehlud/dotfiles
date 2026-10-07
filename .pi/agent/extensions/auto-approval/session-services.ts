@@ -13,8 +13,6 @@ export type SessionServices = {
   };
   peersBusy?: () => boolean;
   peerRevision?: () => number;
-  teamSize?: number;
-  refreshGoalStatus?: (ctx: ExtensionContext) => void;
   stopTeam?: () => Promise<void>;
 };
 // Compiled Pi loads each extension with an independent module cache. A shared

@@ -103,7 +103,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     pi.setActiveTools([TOOL_NAME, ...(sessionServices(ctx).mailbox?.active() ? ["mailbox"] : [])]);
     // Clear a widget left by an older version after /reload.
     ctx.ui.setWidget("auto-approval", undefined);
-    ctx.ui.setStatus("auto-approval", "approval: on");
+    ctx.ui.setStatus("auto-approval", undefined);
   }
   pi.on("session_start", async (_event, ctx) => {
     sessionServices(ctx).cleanup = cleanup;
@@ -111,9 +111,8 @@ export default function autoApproval(pi: ExtensionAPI) {
     try {
       const config = await loadConfig(getAgentDir());
       await assertSandboxReady(config);
-      ctx.ui.setStatus("auto-approval", `approval: ${config.reviewers.map(reviewerLabel).join(" → ")}`);
     } catch (error) {
-      ctx.ui.setStatus("auto-approval", "approval: LOCKED (configuration/runtime unavailable)");
+      ctx.ui.setStatus("auto-approval", "approval: LOCKED");
       ctx.ui.notify(`Auto-Approval LOCKED: ${String(error)}`, "error");
     }
   });
@@ -227,7 +226,7 @@ export default function autoApproval(pi: ExtensionAPI) {
             },
             start(candidate) {
               reviewer = reviewerLabel(candidate);
-              stopDisplay = startReviewDisplay(ctx, reviewer, name).stop;
+              stopDisplay = startReviewDisplay(ctx, reviewer).stop;
               activeDisplays.add(stopDisplay);
               onUpdate?.({ content: [{ type: "text", text: `⠋ Auto-Approval · ${reviewer} · ${name}` }], details: { phase: "reviewing", reviewer } });
             },
@@ -255,7 +254,6 @@ export default function autoApproval(pi: ExtensionAPI) {
             content: [{ type: "text" as const, text: decisionSummary }],
             details: audit, usage, isError: true,
           };
-          ctx.ui.setStatus("auto-approval", `approved: ${name}`);
           executionStarted = true;
           if (credentialPlan) {
             const result = await executeWithCredentials(request, credentialPlan, config, signal, workspace);
@@ -288,7 +286,7 @@ export default function autoApproval(pi: ExtensionAPI) {
           return { content: [{ type: "text" as const, text: decisionSummary }], details: audit, usage, isError: true };
         } finally {
           finishDisplay();
-          ctx.ui.setStatus("auto-approval", "approval: on");
+          ctx.ui.setStatus("auto-approval", undefined);
         }
       };
       const result = queue.then(run, run);

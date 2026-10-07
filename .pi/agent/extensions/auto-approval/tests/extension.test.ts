@@ -55,12 +55,14 @@ let auditFails: boolean;
 let responseHook: (() => void) | undefined;
 let widgets: (string[] | undefined)[];
 let statuses: string[];
+let currentApprovalStatus: string | undefined;
 let ctx: ExtensionToolContext;
 
 beforeEach(async () => {
   await writeFile(configPath, JSON.stringify(config));
   await writeFile(localConfigPath, JSON.stringify({ sandbox: { dockerExecutable: "/usr/bin/docker" } }));
   mode = "approve"; requested = []; hooks = {}; actions = {}; active = []; auditFails = false; responseHook = undefined; widgets = []; statuses = [];
+  currentApprovalStatus = undefined;
   validatedScopes = []; executedRequests = []; temporaryStores = [];
   workspaceValidationFails = false;
   entries = [{ type: "message", message: { role: "user", content: "Run a harmless smoke test in the temporary working directory. Do not change any approval settings." } }];
@@ -79,7 +81,7 @@ beforeEach(async () => {
   } as unknown as ExtensionAPI;
   ctx = {
     cwd: root,
-    ui: { setStatus: (_key: string, text?: string) => { if (text) statuses.push(text); }, setWidget: (_key: string, lines?: string[]) => widgets.push(lines), notify: () => {} },
+    ui: { setStatus: (_key: string, text?: string) => { currentApprovalStatus = text; if (text) statuses.push(text); }, setWidget: (_key: string, lines?: string[]) => widgets.push(lines), notify: () => {} },
     sessionManager: { getBranch: () => entries, getSessionId: () => "test-session", getSessionFile: () => undefined },
     modelRegistry: {
       find: (provider: string, id: string) => ({ provider, id, api: "openai-responses", contextWindow: 272000, maxTokens: 128000, reasoning: true, thinkingLevelMap: { medium: "medium", low: "low" } }),
@@ -555,6 +557,9 @@ test("explicit authenticated fallback is executed once and audited with the orig
   const failure = entries.find((entry) => entry.customType === "auto-approval-reviewer-failure");
   expect(failure.data.requestId).toBe(audit.requestId); expect(failure.data.fingerprint).toBe(audit.fingerprint);
   expect(requested[0].model.provider).toBe("openrouter"); expect(requested[0].model.id).toBe("openai/gpt-6-luna");
+  expect(statuses.some((status) => status.includes("approval: openrouter/openai/gpt-6-luna"))).toBe(true);
+  expect(statuses.some((status) => status.includes("→") || status.includes("(medium)"))).toBe(false);
+  expect(currentApprovalStatus).toBeUndefined();
   ctx.modelRegistry.hasConfiguredAuth = () => true;
   await call(bash("printf back-to-priority-one"));
   expect(requested[1].model.provider).toBe("openai");
@@ -635,14 +640,24 @@ test("reviewed argument snapshot cannot be mutated during review", async () => {
 });
 
 test("approval and denial remain in activity results and audit without a prompt widget", async () => {
+  await writeFile(configPath, JSON.stringify({ ...config, reviewers: [...config.reviewers, { provider: "unused-backup", model: "fallback", thinking: "medium" }] }));
   await hooks.session_start({}, ctx);
   expect(widgets).toEqual([undefined]);
+  expect(currentApprovalStatus).toBeUndefined(); expect(statuses).toEqual([]);
+  responseHook = () => {
+    expect(currentApprovalStatus).toContain("approval: openai/gpt-6-luna");
+    expect(currentApprovalStatus).not.toContain("unused-backup");
+    expect(currentApprovalStatus).not.toContain("medium");
+    expect(currentApprovalStatus).not.toContain("→");
+  };
   const approval = await call(bash("printf transparent"));
+  expect(currentApprovalStatus).toBeUndefined();
   expect(JSON.stringify(approval.content)).toContain("Passt zur Aufgabe");
   expect(statuses.some((s) => s.includes("⠋") && s.includes("gpt-6-luna"))).toBe(true);
   expect(typeof approval.details.approval.reviewDurationMs).toBe("number");
   mode = "deny";
   const denial = await call(bash("printf denied"));
+  expect(currentApprovalStatus).toBeUndefined();
   expect(JSON.stringify(denial.content)).toContain("Nicht vom Nutzer gewollt");
   expect(widgets).toEqual([undefined]);
   expect(entries.at(-1).data.reason).toBe("Nicht vom Nutzer gewollt");

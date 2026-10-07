@@ -4,7 +4,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
 import { assertSandboxReady, loadConfig } from "../auto-approval/config.ts";
 import { buildGoalReview, GOAL_REVIEW_SYSTEM } from "./goal-review.ts";
-import { reviewWithFallback, reviewerLabel, ReviewChainError } from "../auto-approval/reviews.ts";
+import { reviewWithFallback, ReviewChainError } from "../auto-approval/reviews.ts";
 import { preparePromptContext } from "../auto-approval/prompt-compression.ts";
 import { sessionServices } from "../auto-approval/session-services.ts";
 
@@ -12,8 +12,8 @@ type Goal = { id: string; text: string; status: "running" | "paused" | "complete
 type GoalReview = { goalId?: string; superseded?: boolean; verdict?: { decision?: string; reason?: string } };
 const STATE_ENTRY = "auto-approval-goal";
 const INSTRUCTION_TYPE = "auto-approval-goal-instruction";
-// Pi sorts footer statuses by key; keep the target visible before review status.
-const STATUS_KEY = "00-goal";
+// Pi sorts footer statuses by key: team size, target, then transient review.
+const STATUS_KEY = "01-goal";
 function goalTitle(text: string) {
   const plain = stripTerminalSequences(text).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/gu, " ").trim();
   return stripTerminalSequences(truncateToWidth(plain, 100, "…"));
@@ -26,14 +26,13 @@ class GoalController {
   goal: Goal | undefined;
   reviewController: AbortController | undefined;
   constructor(private pi: ExtensionAPI) {}
-  display = (ctx: ExtensionContext, status?: string) => ctx.ui.setStatus(STATUS_KEY, this.goal ? `${sessionServices(ctx).teamSize ? `multiplex: ${sessionServices(ctx).teamSize} · ` : ""}goal: ${goalTitle(this.goal.text)} · ${status ?? this.goal.status} · ${this.goal.checks} checks` : undefined);
+  display = (ctx: ExtensionContext, status?: string) => ctx.ui.setStatus(STATUS_KEY, this.goal ? `goal: ${goalTitle(this.goal.text)} · ${status ?? this.goal.status}` : undefined);
   record(next: Goal, ctx: ExtensionContext) {
     this.pi.appendEntry(STATE_ENTRY, next);
     this.goal = next;
     sessionServices(ctx).operatorGoal = () => this.goal?.status === "running" ? this.goal.text : undefined;
     sessionServices(ctx).operatorGoalId = () => this.goal?.id;
     sessionServices(ctx).goalInstruction = () => this.goal?.status === "running" ? instruction(this.goal) : undefined;
-    sessionServices(ctx).refreshGoalStatus = (current) => this.display(current);
     this.display(ctx);
   }
   pause(ctx: ExtensionContext, reason: string) {
@@ -47,9 +46,9 @@ class GoalController {
     sessionServices(ctx).operatorGoal = () => this.goal?.status === "running" ? this.goal.text : undefined;
     sessionServices(ctx).operatorGoalId = () => this.goal?.id;
     sessionServices(ctx).goalInstruction = () => this.goal?.status === "running" ? instruction(this.goal) : undefined;
-    sessionServices(ctx).refreshGoalStatus = (current) => this.display(current);
     this.reviewController?.abort();
     ctx.ui.setStatus("goal", undefined); // Clear the old status key after reload.
+    ctx.ui.setStatus("00-goal", undefined);
     const branch = ctx.sessionManager.getBranch();
     const last = branch.filter((entry) => entry.type === "custom" && entry.customType === STATE_ENTRY).at(-1);
     const saved = last?.type === "custom" ? last.data as Goal | undefined : undefined;
@@ -126,7 +125,7 @@ class GoalController {
       peerRevision = sessionServices(ctx).peerRevision?.();
       const branch = ctx.sessionManager.getBranch();
       const prepared = await preparePromptContext(branch, config, ctx.modelRegistry, getAgentDir(), {
-        start: (label) => this.display(ctx, `compressing · ${label}`),
+        start: () => this.display(ctx, "compressing"),
         saved: (record) => {
           if (!branch.some((entry) => entry.type === "custom" && entry.customType === "auto-approval-prompt-compression" && (entry.data as any)?.promptId === record.promptId && (entry.data as any)?.text === record.text)) this.pi.appendEntry("auto-approval-prompt-compression", record);
         },
@@ -135,7 +134,7 @@ class GoalController {
       envelope = buildGoalReview(current.text, branch, config, ctx.cwd, current.id, prepared);
       const requestId = envelope.requestId;
       const checked = await reviewWithFallback(config, ctx.modelRegistry, envelope, {
-        start: (candidate) => this.display(ctx, `checking · ${reviewerLabel(candidate)}`),
+        start: () => this.display(ctx, "checking"),
         finish() {},
         failed: (attempt) => this.pi.appendEntry("auto-approval-goal-reviewer-failure", { goalId: current.id, requestId, attempt }),
         lookup: (request) => this.pi.appendEntry("auto-approval-prompt-lookup", { goalId: current.id, requestId, request }),

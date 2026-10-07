@@ -9,7 +9,7 @@ The next actual user prompt and subsequent corrections reach every member. Membe
 - `/multiplex off` or `/multiplex 0`: stop the team and cancel peer work.
 - Change the team size only while all members are idle.
 
-The status bar shows `multiplex: n` and the main transcript's member name. During a `/goal`, the team size also appears at the start of the goal status so it remains visible on narrow terminals. `/side` remains a separate explanatory conversation; side questions do not become team assignments.
+The status bar shows `multiplex: n` once, before the goal when present, so team size remains visible on narrow terminals. Member names are shown in the live overview and `/multiplex status`. `/side` remains a separate explanatory conversation; side questions do not become team assignments.
 
 ## Watching the whole team
 

@@ -8,6 +8,8 @@ Built-in prompts, interface messages, source comments and extension documentatio
 
 Restart Pi after extension changes. `/auto-approval` shows reviewers, sandbox backend, working directory, detected workspace and complete configuration path.
 
+The footer shows only the reviewer currently handling an action, with a spinner, while review is active. It clears after review or action completion; an unavailable configuration retains `approval: LOCKED`. Idle state, unused fallback models, thinking levels, action names and elapsed review times do not occupy the footer. Complete reviewer choices, fallback failures, timings and decisions remain in the activity log and audit.
+
 Technical failures before independent review identify the failing preflight stage. The model display remains `—` because no reviewer was called. Web search and page fetch use an empty, read-only sandbox workspace without project mounts or project validation. They need no legacy skill files; private session `/tmp`, resource validation and independent network approval remain active.
 
 `~/.pi/agent/auto-approval.json` is synchronized through the public dotfiles repository. It contains model and review settings and the sandbox backend, but no device paths or workspace permissions. Optional local paths and permissions belong in `auto-approval.device.json`, which Git excludes. With another `PI_CODING_AGENT_DIR`, both files live there. Configuration is reloaded for every action.

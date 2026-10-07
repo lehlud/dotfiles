@@ -6,7 +6,7 @@ This extension owns conversation control: `/goal`, `/side` and steering. It has 
 
 `/goal <objective>` starts the current working model with a concrete objective. When the model finishes its response, the configured reviewer checks completion using the answer and recorded results of approved actions. A claim by the working model alone is insufficient for code changes or runtime checks.
 
-The goal appears in the bottom status bar, including during completion review and while paused. It precedes approval status so it remains visible on narrow terminals. Long or multiline goals are shortened to one display line; `/goal status` shows the full text. Exit and session replacement clear the status, which can then be restored from the selected session.
+The goal and its current state appear in the bottom status bar, including during completion review and while paused. Team size, when present, appears once before the goal; approval status follows it only during action review. Long or multiline goals are shortened to one display line. Review counts and the full objective remain available through `/goal status`; they are omitted from the compact footer. Exit and session replacement clear the status, which can then be restored from the selected session.
 
 When work remains, the working model receives the reviewer's reason and continues automatically. Only a positive review marks the goal complete. A negative goal verdict does not try another reviewer; fallbacks apply only to technical unavailability. Every external action still requires its own approval and sandbox execution.
 

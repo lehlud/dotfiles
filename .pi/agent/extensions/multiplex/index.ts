@@ -26,8 +26,7 @@ export default function multiplex(pi: ExtensionAPI) {
   pi.on("tool_execution_end", observe);
   const attach = registerEndpoint(pi, () => team?.ready && !team.stopped ? team.endpoint : undefined);
   const display = (ctx: ExtensionContext) => {
-    ctx.ui.setStatus(MULTIPLEX_STATUS, team && !team.stopped ? `multiplex: ${team.boxes.names.length} · ${team.endpoint.name}` : undefined);
-    sessionServices(ctx).refreshGoalStatus?.(ctx);
+    ctx.ui.setStatus(MULTIPLEX_STATUS, team && !team.stopped ? `multiplex: ${team.boxes.names.length}` : undefined);
   };
   const stop = async (ctx: ExtensionContext) => {
     generation++;
@@ -36,7 +35,6 @@ export default function multiplex(pi: ExtensionAPI) {
     previous.stopped = true; previous.activity.close(); previous.boxes.close(); team = undefined;
     sessionServices(ctx).peersBusy = undefined;
     sessionServices(ctx).peerRevision = undefined;
-    sessionServices(ctx).teamSize = undefined;
     sessionServices(ctx).stopTeam = undefined;
     display(ctx); attach(ctx);
     pi.setActiveTools(["approved_action"]);
@@ -132,7 +130,6 @@ export default function multiplex(pi: ExtensionAPI) {
       }
       if (next.stopped) throw new Error("Team startup interrupted");
       next.ready = true;
-      sessionServices(ctx).teamSize = count;
       attach(ctx); pi.setActiveTools(["approved_action", "mailbox"]); display(ctx);
       for (const event of next.pending.splice(0)) for (const peer of next.peers) peer.prompt(event);
       const instruction = sessionServices(ctx).goalInstruction?.();

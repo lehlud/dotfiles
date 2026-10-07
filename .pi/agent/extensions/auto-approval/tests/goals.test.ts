@@ -52,14 +52,16 @@ test("the real narrow footer keeps the target visible during approval and goal c
     expect([...statuses.values()].join(" ")).toContain("checking");
   };
   verdicts = ["deny", "approve"];
-  await settle(); expect([...statuses.values()].join(" ")).toContain("running · 1 checks");
-  await settle(); expect([...statuses.values()].join(" ")).toContain("complete · 2 checks");
+  await settle(); expect(statuses.get("01-goal")).toBe("goal: Repair the build · running");
+  await settle(); expect(statuses.get("01-goal")).toBe("goal: Repair the build · complete");
+  await command("status", ctx); expect(notices.at(-1)).toContain("Checks: 2");
 });
 
 test("footer summaries preserve Unicode, bound long input and clear across sessions", async () => {
   const target = "日本語の目標\n\t" + "修正 👩🏽‍💻 ".repeat(100) + "\x1b[31m\x1b[2J";
   statuses.set("goal", "legacy goal");
-  await hooks.session_start({}, ctx); expect(statuses.has("goal")).toBe(false);
+  statuses.set("00-goal", "legacy combined status");
+  await hooks.session_start({}, ctx); expect(statuses.has("goal")).toBe(false); expect(statuses.has("00-goal")).toBe(false);
   await command(target, ctx);
   expect(state().text).toBe(target);
   const line = [...statuses.values()][0];
