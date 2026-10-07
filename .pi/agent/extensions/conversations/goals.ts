@@ -120,8 +120,10 @@ class GoalController {
     this.reviewController = controller;
     const signal = ctx.signal ? AbortSignal.any([controller.signal, ctx.signal]) : controller.signal;
     let envelope: ReturnType<typeof buildGoalReview> | undefined;
+    let peerRevision: number | undefined;
     try {
       const config = await loadConfig(getAgentDir());
+      peerRevision = sessionServices(ctx).peerRevision?.();
       const branch = ctx.sessionManager.getBranch();
       const prepared = await preparePromptContext(branch, config, ctx.modelRegistry, getAgentDir(), {
         start: (label) => this.display(ctx, `compressing · ${label}`),
@@ -140,11 +142,18 @@ class GoalController {
       }, signal, GOAL_REVIEW_SYSTEM);
       signal.throwIfAborted();
       if (this.goal !== current) return;
-      const superseded = ctx.hasPendingMessages();
+      const peerChanged = sessionServices(ctx).peerRevision?.() !== peerRevision;
+      const peersBusy = sessionServices(ctx).peersBusy?.() ?? false;
+      const superseded = ctx.hasPendingMessages() || peerChanged || peersBusy;
       this.pi.appendEntry("auto-approval-goal-review", { goalId: current.id, requestId: envelope.requestId, fingerprint: envelope.fingerprint, ...checked, superseded });
       // New operator input must run before a verdict on older context can settle
       // the goal. Pi drains the queued input without an extra extension turn.
-      if (superseded) return;
+      if (superseded) {
+        // Schon beendete Peer-Arbeit löst nach dem veralteten Urteil eine neue
+        // Runde aus; laufende Peers wecken die Zielprüfung beim Abschluss.
+        if (!ctx.hasPendingMessages() && peerChanged && !peersBusy) return { continue: true, entries: [{ type: "custom_message", ...message(instruction(current)) }] };
+        return;
+      }
       const complete = checked.verdict.decision === "approve";
       this.record({ ...current, checks: current.checks + 1, status: complete ? "complete" : "running", reason: checked.verdict.reason, feedback: complete ? undefined : checked.verdict.reason }, ctx);
       ctx.ui.notify(`Goal ${complete ? "confirmed" : "incomplete"}: ${checked.verdict.reason}`, "info");

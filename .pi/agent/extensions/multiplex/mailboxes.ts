@@ -23,6 +23,7 @@ export class Mailboxes {
   private histories = new Map<string, Letter[]>();
   private pending = new Map<string, number[]>();
   private sequence = 0;
+  revision = 0;
   closed = false;
   readonly names: readonly string[];
   constructor(names: readonly string[]) { this.names = Object.freeze([...names]); }
@@ -37,6 +38,7 @@ export class Mailboxes {
     if (recipients.some((name) => !this.sinks.has(name))) throw new Error("Unknown recipient");
     if (recipients.some((name) => this.pending.get(name)!.length >= 256 || this.sinks.get(name)!.canDeliver?.() === false)) throw new Error("Recipient message queue is full; wait for processing");
     const letters = recipients.map((recipient) => ({ id: randomUUID(), sequence: ++this.sequence, from, to: recipient, text }));
+    if (letters.length) this.revision++;
     for (const letter of letters) {
       const history = this.histories.get(letter.to)!;
       history.push(letter);
@@ -52,6 +54,7 @@ export class Mailboxes {
   }
   share(from: string, kind: "audit" | "result", data: Record<string, unknown>) {
     if (this.closed || !this.sinks.has(from)) return;
+    this.revision++;
     for (const [name, sink] of this.sinks) {
       if (name !== from) sink[kind](structuredClone({ ...data, multiplexAgent: from }));
     }

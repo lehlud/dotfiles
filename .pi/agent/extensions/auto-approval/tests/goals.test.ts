@@ -8,6 +8,7 @@ import { buildReview, REVIEW_SYSTEM, type Config } from "../policy.ts";
 import { WRITING_RULEBOOK } from "../../public-writing/rules.ts";
 import { FooterComponent, initTheme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { sessionServices } from "../session-services.ts";
 
 const root = await mkdtemp(join(tmpdir(), "pi-goal-test-"));
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -183,6 +184,29 @@ test("explicit operator stop during verification cannot be overwritten by a late
   await command("Verify the fixture", ctx);
   duringReview = () => { void command("stop", ctx); };
   expect(await settle()).toBeUndefined(); expect(state().status).toBe("stopped"); expect(operatorGoal()).toBeUndefined();
+});
+test("peer work starting during verification supersedes approval until the peers settle", async () => {
+  let busy = false;
+  sessionServices(ctx).peersBusy = () => busy;
+  await command("Verify the peer results", ctx);
+  duringReview = () => { busy = true; };
+  expect(await settle()).toBeUndefined(); expect(state().status).toBe("running");
+  expect(state().checks).toBe(0);
+  expect(entries.filter((entry) => entry.customType === "auto-approval-goal-review").at(-1).data.superseded).toBe(true);
+  busy = false; duringReview = undefined;
+  await settle(); expect(state().status).toBe("complete");
+});
+test("peer evidence changing during verification requires a new completion snapshot even after it settles", async () => {
+  let revision = 10;
+  sessionServices(ctx).peerRevision = () => revision;
+  await command("Verify the current peer results", ctx);
+  duringReview = () => { revision++; };
+  const result = await settle();
+  expect(result.continue).toBe(true); expect(state().status).toBe("running"); expect(state().checks).toBe(0);
+  expect(entries.filter((entry) => entry.customType === "auto-approval-goal-review").at(-1).data.superseded).toBe(true);
+  expect(notices.some((text) => text.startsWith("Goal confirmed:"))).toBe(false);
+  duringReview = undefined;
+  await settle(); expect(state().status).toBe("complete");
 });
 test("audit failure blocks both completion and continuation", async () => {
   await command("Verify the fixture", ctx); auditFails = true;

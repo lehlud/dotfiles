@@ -12,6 +12,7 @@ export type SessionServices = {
     audit(data: Record<string, unknown>): void;
   };
   peersBusy?: () => boolean;
+  peerRevision?: () => number;
   teamSize?: number;
   refreshGoalStatus?: (ctx: ExtensionContext) => void;
   stopTeam?: () => Promise<void>;

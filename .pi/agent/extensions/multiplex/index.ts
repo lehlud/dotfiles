@@ -25,6 +25,7 @@ export default function multiplex(pi: ExtensionAPI) {
     if (!previous) return;
     previous.stopped = true; previous.boxes.close(); team = undefined;
     sessionServices(ctx).peersBusy = undefined;
+    sessionServices(ctx).peerRevision = undefined;
     sessionServices(ctx).teamSize = undefined;
     sessionServices(ctx).stopTeam = undefined;
     display(ctx); attach(ctx);
@@ -92,6 +93,7 @@ export default function multiplex(pi: ExtensionAPI) {
     team = next;
     sessionServices(ctx).stopTeam = () => stop(ctx);
     sessionServices(ctx).peersBusy = () => !next.ready || next.peers.some((peer) => peer.busy);
+    sessionServices(ctx).peerRevision = () => boxes.revision;
     boxes.bind(endpoint.name, {
       deliver: (letter) => pi.sendMessage(letterMessage(letter), { triggerTurn: true, deliverAs: "steer" }),
       audit: (data) => pi.appendEntry("auto-approval-review", data),
