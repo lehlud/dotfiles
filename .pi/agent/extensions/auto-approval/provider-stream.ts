@@ -1,7 +1,7 @@
 import { createAssistantMessageEventStream, type AssistantMessage, type Context, type Model, type Provider } from "@earendil-works/pi-ai";
 import type { ModelRegistry, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parseVerdict, textContent } from "./policy.ts";
-import { providerAvailability, ProviderHeldError, RecoveryAuditError, transientProviderError, type AvailabilityNotice } from "./provider-availability.ts";
+import { providerAvailability, ProviderHeldError, RecoveryAuditError, providerRefusal, transientProviderError, type AvailabilityNotice } from "./provider-availability.ts";
 import { sumUsage } from "./usage.ts";
 
 const wrappedKey = Symbol.for("pi.auto-approval.provider-stream.v1");
@@ -14,7 +14,7 @@ export function finalReviewDenial(response: AssistantMessage, context: Context):
   } catch { return false; }
 }
 export function unavailableResponse(response: AssistantMessage, context: Context): boolean {
-  return response.stopReason === "error" && !finalReviewDenial(response, context) && transientProviderError(response.errorMessage);
+  return response.stopReason === "error" && !finalReviewDenial(response, context) && !providerRefusal(`${response.rawStopReason ?? ""} ${response.errorMessage ?? ""}`) && transientProviderError(response.errorMessage);
 }
 type Stream = Provider["streamSimple"];
 type Wrapped = { notice?: (event: AvailabilityNotice) => void; finish?: (model: Model<any>) => void };
@@ -40,7 +40,7 @@ export function resilientStream(original: Stream, availability = providerAvailab
         usage = sumUsage(usage, response.usage); last = response;
         return response;
       } catch (error) {
-        if (partial && finalReviewDenial(partial, immutable)) { last = { ...partial, stopReason: "error" }; usage = sumUsage(usage, last.usage); return last; }
+        if (partial && (finalReviewDenial(partial, immutable) || providerRefusal(`${partial.rawStopReason ?? ""} ${partial.errorMessage ?? ""}`))) { last = { ...partial, stopReason: "error" }; usage = sumUsage(usage, last.usage); return last; }
         throw error;
       }
     };
@@ -48,6 +48,10 @@ export function resilientStream(original: Stream, availability = providerAvailab
       try {
         const response = await availability.run(model, work, (value) => unavailableResponse(value, immutable), options?.signal, notice);
         const message = { ...response, usage: usage ?? response.usage };
+        if (message.stopReason === "error" && providerRefusal(`${message.rawStopReason ?? ""} ${message.errorMessage ?? ""}`)) {
+          message.rawStopReason = "refusal";
+          message.errorMessage = "Provider safety check refused the request; no automatic retry or fallback. Check the provider's supported access configuration.";
+        }
         if (unavailableResponse(response, immutable)) message.errorMessage = new ProviderHeldError(300000).message;
         if (message.stopReason === "error" || message.stopReason === "aborted") stream.push({ type: "error", reason: message.stopReason, error: message });
         else if (message.stopReason === "pending") stream.end(message);
@@ -55,7 +59,7 @@ export function resilientStream(original: Stream, availability = providerAvailab
       } catch (error) {
         const aborted = options?.signal?.aborted;
         const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), content: [], usage: usage ?? zeroUsage(), stopReason: aborted ? "aborted" : "error", errorMessage: error instanceof ProviderHeldError || error instanceof RecoveryAuditError ? error.message : aborted ? "Model request cancelled" : "Model request failed without a transport recovery route" };
-        if (error instanceof Error && /refusal|(?:reviewer|model|policy|request).*(?:refus|block)|content.filter|safety/i.test(error.message)) { message.rawStopReason = "refusal"; message.errorMessage = "Reviewer refused the check; no fallback, nothing executed"; }
+        if (!aborted && providerRefusal(error)) { message.rawStopReason = "refusal"; message.errorMessage = "Provider safety check refused the request; no automatic retry or fallback. Check the provider's supported access configuration."; }
         // Do not retain incomplete tool calls after a transport failure.
         if (last && finalReviewDenial(last, immutable)) message.content = last.content;
         stream.push({ type: "error", reason: message.stopReason as "error" | "aborted", error: message });

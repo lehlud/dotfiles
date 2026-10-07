@@ -1,3 +1,4 @@
+import { Check } from "typebox/value";
 import { test, expect, beforeEach, afterEach, afterAll, mock } from "bun:test";
 import { createBashToolDefinition, createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition } from "@earendil-works/pi-coding-agent";
 import { chmod, mkdir, mkdtemp, writeFile, readFile, rm, access, stat, symlink } from "node:fs/promises";
@@ -695,4 +696,23 @@ test("team coordination blocks actions before review and pins assignment through
   responseHook = undefined;
   expect((await call(bash("echo after-team-close"))).isError).not.toBe(true);
   expect(requested.at(-1).data.previousDenials.every((denial: any) => denial.technicalStage !== "team coordination")).toBe(true);
+});
+
+test("portable action schema accepts encoded objects but strict review receives their unchanged contents", async () => {
+  expect(actions.approved_action.parameters.type).toBe("object");
+  const request = bash("printf encoded-object"), encoded = { ...request, arguments: JSON.stringify(request.arguments) };
+  expect(Check(actions.approved_action.parameters, encoded)).toBe(true);
+  expect((await call(encoded)).isError).not.toBe(true);
+  expect(requested[0].data.action.arguments).toEqual(request.arguments);
+  expect(executedRequests[0].arguments).toEqual(request.arguments);
+  expect(encoded.arguments).toBe(JSON.stringify(request.arguments));
+});
+test("encoded arguments cannot weaken tool-specific validation or skip a denial", async () => {
+  for (const argumentsValue of ["printf unreviewed", "null", "[]", "42", JSON.stringify({ path: "wrong-tool" })]) {
+    expect((await call({ ...bash("unused"), arguments: argumentsValue })).isError).toBe(true);
+  }
+  expect(requested).toEqual([]); expect(executedRequests).toEqual([]);
+  mode = "deny";
+  expect((await call({ ...bash("printf denied"), arguments: JSON.stringify({ command: "printf denied" }) })).isError).toBe(true);
+  expect(requested).toHaveLength(1); expect(executedRequests).toEqual([]);
 });

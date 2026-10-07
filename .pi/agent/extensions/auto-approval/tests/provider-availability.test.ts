@@ -80,3 +80,29 @@ test("request-bound denial, invalid JSON, refusals and partial denial followed b
     expect(calls).toBe(1); if (response.content.some((block) => block.type === "text" && block.text === denial)) expect(response.stopReason).toBe("error");
   }
 });
+
+test("cybersecurity refusals are final even when a transport status appears in the same error", async () => {
+  const refusal = "HTTP 503: This content was flagged for possible cybersecurity risk. Check access_programs.cyber. synthetic-private-data";
+  expect(transientProviderError(refusal)).toBe(false);
+  for (const fail of [() => source("error", "incomplete answer", refusal), () => { throw new Error(refusal); }]) {
+    let calls = 0;
+    const response = await resilientStream((() => { calls++; return fail(); }) as any, gate)(model, context).result();
+    expect(calls).toBe(1); expect(delays).toEqual([]);
+    expect(response.stopReason).toBe("error"); expect(response.rawStopReason).toBe("refusal");
+    expect(response.errorMessage).toContain("Provider safety check refused");
+    expect(response.errorMessage).not.toContain("synthetic-private-data");
+    expect(isRetryableAssistantError(response)).toBe(false);
+  }
+});
+
+test("raw refusal markers prevent retries even if a transport throw follows the refusal", async () => {
+  const response: any = { ...(await source("error", "", "HTTP 503").result()), rawStopReason: "refusal" };
+  for (const fail of [() => {
+    const stream = createAssistantMessageEventStream(); stream.push({ type: "error", reason: "error", error: response }); return stream;
+  }, () => ({ async *[Symbol.asyncIterator]() { yield { type: "start", partial: response }; throw new Error("HTTP 503"); } })]) {
+    let calls = 0;
+    const result = await resilientStream((() => { calls++; return fail(); }) as any, gate)(model, context).result();
+    expect(calls).toBe(1); expect(delays).toEqual([]); expect(result.rawStopReason).toBe("refusal");
+    expect(isRetryableAssistantError(result)).toBe(false);
+  }
+});

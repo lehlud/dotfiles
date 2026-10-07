@@ -1,3 +1,4 @@
+import { actionSnapshot } from "./action-request.ts";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
@@ -37,6 +38,8 @@ export function createApprovalRenderers(tools: Record<string, NativeTool>): Pick
       const state = slot(context, name);
       const tool = definition(name);
       let displayed = args?.arguments ?? {};
+      try { displayed = (actionSnapshot(args) as any)?.arguments ?? {}; }
+      catch { displayed = {}; }
       const command = displayed.command;
       if (["bash", "powershell"].includes(name) && typeof command === "string" && !context.expanded && (command.length > 300 || command.split("\n").length > 5)) {
         const lines = command.split("\n");

@@ -1,3 +1,4 @@
+import { actionSnapshot } from "../auto-approval/action-request.ts";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { renderDiff, type AgentSessionEvent, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { clean, colorize, FeedView, messageBody } from "./presentation.ts";
@@ -14,7 +15,10 @@ const plain = (value: any): string => typeof value === "string" ? value : Array.
 const bounded = (value: string) => value.length > 65536 ? `${value.slice(0, 65536)}\n[Activity preview truncated; complete output remains in the agent session.]` : value;
 const toolLabel = (name: string, args: any) => clean(name === "approved_action" ? String(args?.tool ?? name) : name).replace(/\s+/g, " ").slice(0, 60);
 function toolBody(name: string, args: any) {
-  const input = name === "approved_action" ? args?.arguments : args;
+  let input = name === "approved_action" ? args?.arguments : args;
+  if (name === "approved_action") {
+    try { input = (actionSnapshot(args) as any)?.arguments; } catch { input = undefined; }
+  }
   // Never copy credential profiles, environment values or arbitrary metadata.
   return ["command", "path", "url", "query"].flatMap((key) => typeof input?.[key] === "string" ? [input[key]] : []).join("\n");
 }
@@ -120,7 +124,9 @@ export class TeamActivity {
       if (text) this.record(from, "message", "Reply", text, { nativeTexts });
       if (event.message.errorMessage) this.record(from, "error", "Model error", event.message.errorMessage);
     } else if (event.type === "tool_execution_start") {
-      const label = toolLabel(event.toolName, event.args), path = event.args?.arguments?.path;
+      const label = toolLabel(event.toolName, event.args);
+      let path = event.args?.arguments?.path;
+      try { if (event.toolName === "approved_action") path = (actionSnapshot(event.args) as any)?.arguments?.path; } catch { /* No valid arguments to preview. */ }
       state.tools.set(event.toolCallId, { label, name: event.toolName, path, args: event.toolName === "mailbox" ? { operation: event.args?.operation } : {}, output: "", loggedAt: 0 }); state.preview = "";
       if (from === this.backend) this.view.rootTool(event.toolCallId);
       if (event.toolName !== "mailbox") this.record(from, "tool-start", `${label} · Started`, toolBody(event.toolName, event.args), { toolCallId: event.toolCallId });

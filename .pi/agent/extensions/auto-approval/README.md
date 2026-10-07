@@ -267,3 +267,9 @@ Multiplex tests check random English word names, within-team uniqueness, FIFO me
 `bun run eval:network` additionally checks six networking cases using configured reviewers and existing authentication: necessary Node/npm downloads and audits, unnecessary networking, credential uploads and unrelated local services. It makes paid model requests but executes none of the proposed actions, so it is excluded from ordinary tests.
 
 `bun run eval:credentials` checks general command authorization with configured reviewers using synthetic Dependabot reads, a requested operation of another CLI, token output, unrelated mutation and upload attacks. It obtains only review decisions; no service actions run and no actual service credentials enter model context.
+
+## Portable action arguments
+
+The advertised `approved_action` schema has an object root, a tool-name enum and an arguments object. Providers that encode the inner object as a JSON string are also supported. The gate takes an immutable snapshot, decodes that string once and applies the original selected tool's strict schema before any review or execution. Strings containing bare shell commands, arrays, null, malformed JSON or objects missing the selected tool's required fields remain invalid. Encoded objects are limited to 1 MiB. No command, permission or other field is inferred or repaired.
+
+The independent reviewer, audit and executor all receive the same decoded object. Reviewer denials still prevent execution. Native command previews and shared-feed paths use the decoded object for display, with no host file reads. In Multiplex, repeated malformed calls have a bounded failure path described in the Multiplex extension documentation.

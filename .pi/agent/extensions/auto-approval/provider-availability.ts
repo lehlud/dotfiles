@@ -16,9 +16,14 @@ export class ProviderHeldError extends Error {
 export class RecoveryAuditError extends Error {
   constructor() { super("Provider recovery audit failed; no fallback, nothing executed"); }
 }
+/** Policy refusals are final, including provider-side cybersecurity checks. */
+export function providerRefusal(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return /refusal|(?:reviewer|model|policy|request).*(?:refus|block)|content.filter|safety|content.*flagged.*cybersecurity|cybersecurity.*(?:risk|check.*fail)/i.test(message);
+}
 export function transientProviderError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  if (/refusal|(?:reviewer|model|policy|request).*(?:refus|block)|content.filter|safety|context.*(?:length|window|overflow)|invalid.*schema|schema.*invalid|unsupported.*param|401|403|api.?key|authentication|quota|billing|out of budget/i.test(message)) return false;
+  if (providerRefusal(message) || /context.*(?:length|window|overflow)|invalid.*schema|schema.*invalid|unsupported.*param|401|403|api.?key|authentication|quota|billing|out of budget/i.test(message)) return false;
   return /\b5\d\d\b|ECONN|EPIPE|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/i.test(message)
     || isRetryableAssistantError({ stopReason: "error", errorMessage: message } as any);
 }

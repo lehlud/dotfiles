@@ -9,7 +9,7 @@ const fallback = { provider: "openrouter", model: "openai/gpt-6-luna", thinking:
 const config: Config = { reviewers: [primary, fallback], recentUserPrompts: 6, requestTimeoutMs: 120000, sandbox: { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/executor/runner" } };
 const envelope = buildReview({ tool: "bash", arguments: { command: "printf synthetic" }, goal: "Smoke test", justification: "Synthetic test" }, [{ type: "message", message: { role: "user", content: "Run a harmless synthetic smoke test" } }], config, "/tmp", []);
 const usage = { input: 2, output: 3, cacheRead: 1, cacheWrite: 0, totalTokens: 6, cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0, total: 0.31 } };
-type Mode = "approve" | "deny" | "missing" | "auth" | "unsupported" | "error" | "error_deny" | "length" | "filtered" | "aborted" | "throw" | "throw_refusal" | "timeout" | "invalid" | "mismatch";
+type Mode = "approve" | "deny" | "missing" | "auth" | "unsupported" | "error" | "error_deny" | "length" | "filtered" | "aborted" | "throw" | "throw_refusal" | "cyber_refusal" | "throw_cyber_refusal" | "timeout" | "invalid" | "mismatch";
 let modes: Record<string, Mode>;
 let calls: any[];
 let attempts: ReviewAttempt[];
@@ -27,8 +27,8 @@ const observer = {
 };
 function message(provider: string) {
   const mode = modes[provider];
-  const stopReason = mode === "length" || mode === "aborted" ? mode : ["error", "error_deny", "filtered"].includes(mode) ? "error" : "stop";
-  return { stopReason, rawStopReason: mode === "filtered" ? "incomplete.content_filter" : undefined, usage, content: [{ type: "text", text: mode === "invalid" ? "not JSON" : JSON.stringify({ requestId: mode === "mismatch" ? "other-action" : envelope.requestId, decision: mode === "deny" || mode === "error_deny" ? "deny" : "approve", reason: "Synthetic verdict" }) }] };
+  const stopReason = mode === "length" || mode === "aborted" ? mode : ["error", "error_deny", "filtered", "cyber_refusal"].includes(mode) ? "error" : "stop";
+  return { stopReason, errorMessage: mode === "cyber_refusal" ? "HTTP 503: This content was flagged for possible cybersecurity risk. Check access_programs.cyber." : undefined, rawStopReason: mode === "filtered" ? "incomplete.content_filter" : undefined, usage, content: [{ type: "text", text: mode === "invalid" ? "not JSON" : JSON.stringify({ requestId: mode === "mismatch" ? "other-action" : envelope.requestId, decision: mode === "deny" || mode === "error_deny" ? "deny" : "approve", reason: "Synthetic verdict" }) }] };
 }
 const registry: any = {
   find: (provider: string, id: string) => modes[provider] === "missing" ? undefined : { provider, id, contextWindow: capacities[provider] ?? 272000, maxTokens: 128000, reasoning: modes[provider] !== "unsupported", api: "openai-responses", thinkingLevelMap: { medium: "medium" } },
@@ -38,6 +38,7 @@ const registry: any = {
     return { result: async () => {
       onResponse?.();
       if (modes[model.provider] === "throw") throw new Error("HTTP 429 with synthetic-private-error-content");
+      if (modes[model.provider] === "throw_cyber_refusal") throw new Error("HTTP 503: This content was flagged for possible cybersecurity risk. Check access_programs.cyber.");
       if (modes[model.provider] === "throw_refusal") throw new Error("Request blocked by safety policy with synthetic-private-error-content");
       if (modes[model.provider] === "timeout") await new Promise((done) => setTimeout(done, 35));
       return message(model.provider);
@@ -121,7 +122,7 @@ test("denial remains final when a provider error follows the complete verdict", 
   expect(calls).toHaveLength(1);
 });
 test("truncated, refused or aborted model responses never consult a fallback", async () => {
-  for (const mode of ["length", "filtered", "aborted", "throw_refusal"] as const) {
+  for (const mode of ["length", "filtered", "aborted", "throw_refusal", "cyber_refusal", "throw_cyber_refusal"] as const) {
     modes.openai = mode; calls = [];
     await expect(run()).rejects.toThrow("no fallback");
     expect(calls).toHaveLength(1);

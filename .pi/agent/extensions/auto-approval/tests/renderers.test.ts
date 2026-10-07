@@ -166,3 +166,9 @@ test("sandbox requests are visible alongside the native tool without disclosing 
   expect(display(component)).toContain("environment: MODE"); expect(display(component)).not.toContain("private-test-value");
   expect(display(component)).toContain("read /shared/example.ts");
 });
+
+test("encoded arguments retain the normal command preview", () => {
+  const component = new ToolExecutionComponent("approved_action", "encoded-render", { tool: "bash", arguments: JSON.stringify({ command: "printf encoded-preview" }) }, undefined, renderers, ui, cwd);
+  component.setArgsComplete(); component.markExecutionStarted();
+  expect(display(component)).toContain("printf encoded-preview");
+});

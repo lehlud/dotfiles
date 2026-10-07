@@ -23,7 +23,7 @@ const exists = async (path: string) => { try { await access(path); return true; 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const nativeTest = process.platform === "linux" && Bun.which("bwrap") ? test : test.skip;
 
-async function fixture(directory: string, diskLoaded = false, delayedReview = false, editFixture = false, compactionFixture = false, handoff?: "terminal-last" | "peer-last") {
+async function fixture(directory: string, diskLoaded = false, delayedReview = false, editFixture = false, compactionFixture = false, handoff?: "terminal-last" | "peer-last", failure?: "terminal" | "peer" | "invalid-terminal" | "invalid-peer", encoded = false) {
   const agentDir = join(directory, "agent"), project = join(directory, "project");
   await mkdir(agentDir); await mkdir(project);
   const runner = join(directory, "runner");
@@ -55,6 +55,12 @@ async function fixture(directory: string, diskLoaded = false, delayedReview = fa
             const name = serialized.match(/Your name: ([a-z]+)/)?.[1];
             if (!name) throw new Error("Agent has no bound random identity");
             const names = serialized.match(/Members: ([a-z]+(?:, [a-z]+)*)/)?.[1].split(", ") ?? [];
+            if ((failure === "terminal" || failure === "peer") && (name === names[0]) === (failure === "terminal")) {
+              message.content = [{ type: "text", text: "INCOMPLETE-FAILED-RESULT" }];
+              message.stopReason = "error";
+              message.errorMessage = "This content was flagged for possible cybersecurity risk. Check access_programs.cyber.";
+              stream.push({ type: "error", reason: "error", error: message }); return;
+            }
             const policy = context.messages.map((entry) => textContent(entry.content)).find((text) => text.includes("Your name:")) ?? "";
             if (!policy.includes("Coordination: ready")) {
               const planId = policy.match(/Plan ID: ([^\n]+)/)?.[1];
@@ -66,6 +72,11 @@ async function fixture(directory: string, diskLoaded = false, delayedReview = fa
               if (!args) message.stopReason = "stop";
               stream.push({ type: "done", reason: message.stopReason, message }); return;
             }
+            if (failure?.startsWith("invalid-") && (name === names[0]) === (failure === "invalid-terminal")) {
+              message.stopReason = "toolUse";
+              message.content = [{ type: "toolCall", id: `invalid-${Date.now()}`, name: "approved_action", arguments: { tool: "bash", arguments: 42, goal: "Implement TEAM-TASK", justification: "Synthetic malformed action" } }];
+              stream.push({ type: "done", reason: "toolUse", message }); return;
+            }
             const stage = stages.get(name) ?? 0; stages.set(name, stage + 1);
             contexts.push({ name, stage, messages: structuredClone(context.messages), tools: getCurrentTools(context.messages).map((tool) => tool.name) });
             if (stage === 0) {
@@ -75,7 +86,7 @@ async function fixture(directory: string, diskLoaded = false, delayedReview = fa
               stream.push({ type: "text_delta", contentIndex: 0, delta: `LIVE:${name}`, partial: message });
               await new Promise<void>((done) => { releases.push(done); options?.signal?.addEventListener("abort", () => done(), { once: true }); });
             }
-            const call = (tool: string, args: any) => { message.stopReason = "toolUse"; message.content = [{ type: "toolCall", id: `same-id-${stage}`, name: tool, arguments: args }]; };
+            const call = (tool: string, args: any) => { if (encoded && tool === "approved_action") args = { ...args, arguments: JSON.stringify(args.arguments) }; message.stopReason = "toolUse"; message.content = [{ type: "toolCall", id: `same-id-${stage}`, name: tool, arguments: args }]; };
             if (handoff) {
               const sender = names[handoff === "terminal-last" ? 0 : 1];
               if (stage === 0) call("approved_action", { tool: "bash", arguments: { command: `printf '%s' '${name}' > ${name}.txt` }, goal: "Implement TEAM-TASK", justification: "Write the assigned synthetic deliverable" });
@@ -602,6 +613,94 @@ for (const last of ["terminal-last", "peer-last"] as const) nativeTest(`quiescen
   } finally {
     state?.releases.forEach((release) => release());
     await state?.session.prompt("/goal stop").catch(() => {});
+    await state?.session.prompt("/multiplex off").catch(() => {});
+    if (state) await sessionServices(state.root()).cleanup?.(); state?.session.dispose();
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60000);
+
+for (const failure of ["terminal", "peer"] as const) nativeTest(`${failure} provider refusal during planning stops the team and pauses the goal`, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-multiplex-refusal-")), previous = process.env.PI_CODING_AGENT_DIR;
+  let state: Awaited<ReturnType<typeof fixture>> | undefined;
+  const notices: string[] = [];
+  try {
+    state = await fixture(directory, false, false, false, false, undefined, failure);
+    await state.session.bindExtensions({ mode: "tui", uiContext: { setStatus() {}, setWidget() {}, notify: (text: string) => notices.push(text) } as any });
+    await state.session.prompt("/multiplex 2");
+    await state.session.prompt("/goal Complete TEAM-TASK without uploads");
+    await until(() => !state!.session.isStreaming && state!.session.sessionManager.getBranch().some((entry) => entry.type === "custom" && entry.customType === "multiplex-team-failure"));
+    const branch = state.session.sessionManager.getBranch();
+    const goals = branch.filter((entry) => entry.type === "custom" && entry.customType === "auto-approval-goal").map((entry: any) => entry.data);
+    expect(goals.at(-1)).toMatchObject({ status: "paused", checks: 0 });
+    expect(goals.at(-1).reason).toContain("failed");
+    expect(state.reviews).toHaveLength(0); expect(state.contexts).toHaveLength(0);
+    expect(sessionServices(state.root()).mailbox?.active()).not.toBe(true);
+    expect(sessionServices(state.root()).operatorGoal?.()).toBeUndefined();
+    expect(state.session.getActiveToolNames()).toEqual(["approved_action"]);
+    expect(branch.filter((entry) => entry.type === "custom" && entry.customType === "multiplex-team-failure")).toHaveLength(1);
+    expect(branch.filter((entry) => entry.type === "custom" && entry.customType === "multiplex-peer-answer")).toHaveLength(0);
+    expect(notices.filter((text) => text.includes("the team has stopped"))).toHaveLength(1);
+    await new Promise<void>((done) => setTimeout(done, 50));
+    expect(state.reviews).toHaveLength(0); expect(state.session.isStreaming).toBe(false);
+    expect((await readdir(state.project)).filter((name) => name.endsWith(".txt"))).toEqual([]);
+  } finally {
+    await state?.session.prompt("/multiplex off").catch(() => {});
+    if (state) await sessionServices(state.root()).cleanup?.(); state?.session.dispose();
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60000);
+
+for (const failure of ["invalid-terminal", "invalid-peer"] as const) nativeTest(`${failure} stops after three schema failures without an external review`, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-multiplex-invalid-")), previous = process.env.PI_CODING_AGENT_DIR;
+  let state: Awaited<ReturnType<typeof fixture>> | undefined;
+  try {
+    state = await fixture(directory, false, false, false, false, undefined, failure);
+    await state.session.bindExtensions({ mode: "json" });
+    await state.session.prompt("/multiplex 2");
+    await state.session.prompt("/goal Complete TEAM-TASK without uploads");
+    await until(() => !state!.session.isStreaming && state!.session.sessionManager.getBranch().some((entry) => entry.type === "custom" && entry.customType === "multiplex-team-failure"));
+    const branch = state.session.sessionManager.getBranch();
+    const failureRecord = branch.find((entry) => entry.type === "custom" && entry.customType === "multiplex-team-failure") as any;
+    expect(failureRecord.data.reason).toContain("Repeated invalid approved_action arguments");
+    const invalid = branch.filter((entry) => entry.type === "custom" && entry.customType === ACTIVITY_ENTRY && (entry.data as any).from === failureRecord.data.from && (entry.data as any).kind === "tool-end");
+    expect(invalid).toHaveLength(3);
+    expect(state.reviews).toHaveLength(0);
+    expect(sessionServices(state.root()).operatorGoal?.()).toBeUndefined();
+    expect(state.session.getActiveToolNames()).toEqual(["approved_action"]);
+    expect((await readdir(state.project)).filter((name) => name.endsWith(".txt"))).toEqual([]);
+  } finally {
+    state?.releases.forEach((release) => release());
+    await state?.session.prompt("/multiplex off").catch(() => {});
+    if (state) await sessionServices(state.root()).cleanup?.(); state?.session.dispose();
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60000);
+
+nativeTest("JSON-string arguments from equal peers execute only their exact decoded reviewed actions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-multiplex-encoded-")), previous = process.env.PI_CODING_AGENT_DIR;
+  let state: Awaited<ReturnType<typeof fixture>> | undefined, main: Promise<void> | undefined;
+  try {
+    state = await fixture(directory, false, false, false, false, undefined, undefined, true);
+    await state.session.bindExtensions({ mode: "json" });
+    await state.session.prompt("/multiplex 2");
+    main = state.session.prompt("TEAM-TASK: Implement separate assigned files; no uploads.");
+    await until(() => state!.releases.length === 2);
+    state.releases.forEach((release) => release());
+    await main;
+    await until(() => !sessionServices(state!.root()).peersBusy?.());
+    expect(state.reviews).toHaveLength(4);
+    expect(state.reviews.every((review) => typeof review.action.arguments === "object")).toBe(true);
+    for (const name of state.stages.keys()) {
+      expect(await readFile(join(state.project, `${name}.txt`), "utf8")).toBe(name);
+      expect(await exists(join(state.project, `denied-${name}.txt`))).toBe(false);
+      expect(await exists(join(state.project, `bypass-${name}.txt`))).toBe(false);
+    }
+    expect(state.session.sessionManager.getBranch().some((entry) => entry.type === "custom" && entry.customType === "multiplex-team-failure")).toBe(false);
+  } finally {
+    state?.releases.forEach((release) => release()); await main?.catch(() => {});
     await state?.session.prompt("/multiplex off").catch(() => {});
     if (state) await sessionServices(state.root()).cleanup?.(); state?.session.dispose();
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;

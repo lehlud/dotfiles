@@ -1,3 +1,4 @@
+import { ActionFailures } from "../../multiplex/action-failures.ts";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -337,4 +338,18 @@ test("fullscreen history fills the recovered rows directly above the compact act
     expect(frame).toContain("INPUT"); expect(frame).toContain("STATUS");
   }
   view.dispose();
+});
+
+test("malformed action loops are bounded per member without treating denials or command errors as malformed", () => {
+  const failures = new ActionFailures();
+  const invalid = { type: "tool_execution_end", toolName: "approved_action", isError: true, result: { content: [{ type: "text", text: 'Validation failed for tool "approved_action": arguments must be object' }] } } as any;
+  expect(failures.observe("mint", invalid)).toBe(false);
+  expect(failures.observe("brook", invalid)).toBe(false);
+  expect(failures.observe("mint", invalid)).toBe(false);
+  expect(failures.observe("mint", invalid)).toBe(true);
+  expect(failures.observe("brook", { ...invalid, result: { details: { technicalFailure: true, technicalStage: "request validation" } } })).toBe(false);
+  expect(failures.observe("brook", { ...invalid, result: { content: [{ type: "text", text: "Reviewer denied" }] } })).toBe(false);
+  expect(failures.observe("brook", invalid)).toBe(false);
+  expect(failures.observe("brook", { ...invalid, result: { content: [{ type: "text", text: "Command exited with code 1" }] } })).toBe(false);
+  expect(failures.observe("brook", invalid)).toBe(false);
 });

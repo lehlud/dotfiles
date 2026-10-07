@@ -114,7 +114,7 @@ export async function createPeer(ctx: ExtensionContext, endpoint: Endpoint, runt
       });
       pi.on("agent_settled", (_event, child) => {
         const last = child.sessionManager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "assistant").at(-1);
-        if (last?.type === "message" && last.message.role === "assistant") {
+        if (last?.type === "message" && last.message.role === "assistant" && last.message.stopReason === "stop") {
           const text = Array.isArray(last.message.content) ? last.message.content.filter((block) => block.type === "text").map((block) => block.type === "text" ? block.text : "").join("\n") : "";
           if (text) answer(text);
         }

@@ -8,21 +8,28 @@ import { createPeer, peerRuntime, type Peer } from "./peer.ts";
 import { registerActivityRenderer, TeamActivity, type ActivityEvent } from "./activity.ts";
 import { Quiescence } from "./quiescence.ts";
 import { watchInterrupt } from "./interrupt.ts";
+import { ActionFailures } from "./action-failures.ts";
 import { FeedView, suppressNativeFeed } from "./presentation.ts";
 
 export const MULTIPLEX_STATUS = "00-multiplex";
 export const MAX_AGENTS = 16;
-type Team = { boxes: Mailboxes; endpoint: Endpoint; activity: TeamActivity; peers: Peer[]; stopped: boolean; ready: boolean; pending: InputEvent[]; goal?: string; settle(): void };
+type Team = { boxes: Mailboxes; endpoint: Endpoint; activity: TeamActivity; peers: Peer[]; stopped: boolean; ready: boolean; pending: InputEvent[]; failures: ActionFailures; goal?: string; settle(): void };
 
 export default function multiplex(pi: ExtensionAPI) {
   let team: Team | undefined;
   let changing = false;
+  let closing: Promise<void> = Promise.resolve();
   let generation = 0;
   let detachInterrupt = () => {};
   const view = new FeedView();
   registerActivityRenderer(pi, view);
   suppressNativeFeed(pi, view, () => !!team && !team.stopped);
-  const observe = (event: ActivityEvent) => team?.activity.observe(team.endpoint.name, event);
+  const observeMember = (name: string, event: ActivityEvent, ctx: ExtensionContext) => {
+    const current = team;
+    current?.activity.observe(name, event);
+    if (current?.failures.observe(name, event)) failed(name, ctx, "Repeated invalid approved_action arguments");
+  };
+  const observe = (event: ActivityEvent, ctx: ExtensionContext) => { if (team) observeMember(team.endpoint.name, event, ctx); };
   pi.on("agent_start", observe);
   pi.on("agent_settled", observe);
   pi.on("agent_settled", () => team?.settle());
@@ -38,7 +45,7 @@ export default function multiplex(pi: ExtensionAPI) {
   const stop = async (ctx: ExtensionContext) => {
     generation++;
     const previous = team;
-    if (!previous) return;
+    if (!previous) return await closing;
     previous.stopped = true; previous.activity.close(); previous.boxes.close(); team = undefined;
     view.select();
     sessionServices(ctx).peersBusy = undefined;
@@ -46,8 +53,24 @@ export default function multiplex(pi: ExtensionAPI) {
     sessionServices(ctx).stopTeam = undefined;
     display(ctx); attach(ctx);
     pi.setActiveTools(["approved_action"]);
-    const closed = await Promise.allSettled(previous.peers.map((peer) => peer.close()));
-    if (closed.some((result) => result.status === "rejected")) throw new Error("Peer cleanup failed; inspect the operator runtime before re-enabling multiplex");
+    closing = Promise.allSettled(previous.peers.map((peer) => peer.close())).then((closed) => {
+      if (closed.some((result) => result.status === "rejected")) throw new Error("Peer cleanup failed; inspect the operator runtime before re-enabling multiplex");
+    });
+    await closing;
+  };
+  const failed = (name: string, ctx: ExtensionContext, cause = "Provider/runtime error") => {
+    if (!team || team.stopped) return;
+    const reason = `Multiplex member ${name} failed (${cause}); the team has stopped and completion remains unconfirmed. Resolve the reported provider/runtime error before restarting Multiplex and resuming the goal.`;
+    const teamId = team.boxes.id;
+    // Close transport and invalidate action leases synchronously. Do not await
+    // a peer's own shutdown from inside its turn-end callback.
+    const stopping = stop(ctx);
+    ctx.abort();
+    // Persistence errors cannot leave other sessions or queued actions alive.
+    try { sessionServices(ctx).interruptGoal?.(reason); } catch { /* The goal is paused in memory before its persistence attempt. */ }
+    try { pi.appendEntry("multiplex-team-failure", { teamId, from: name, reason }); } catch { ctx.ui.notify("Team failure could not be saved to the session log.", "error"); }
+    ctx.ui.notify(reason, "error");
+    void stopping.catch(() => ctx.ui.notify("Multiplex cleanup failed; inspect the runtime before restarting the team.", "error"));
   };
   const interrupt = async (ctx: ExtensionContext) => {
     if (!team || team.stopped) return;
@@ -71,7 +94,8 @@ export default function multiplex(pi: ExtensionAPI) {
   pi.on("session_start", restoreView);
   pi.on("session_tree", restoreView);
   pi.on("turn_end", async (event, ctx) => {
-    if (team && event.outcome === "aborted") await stop(ctx);
+    if (team && event.outcome === "error") failed(team.endpoint.name, ctx);
+    else if (team && event.outcome === "aborted") await stop(ctx);
   });
   pi.on("input", (event, ctx) => {
     if (!team || team.stopped || event.source === "extension") return;
@@ -141,7 +165,7 @@ export default function multiplex(pi: ExtensionAPI) {
     });
     const endpoint: Endpoint = { name: names[0], boxes, operatorGoal: () => sessionServices(ctx).operatorGoal?.() };
     const activity = new TeamActivity(pi, ctx, boxes.id, endpoint.name, names, view);
-    const next: Team = { boxes, endpoint, activity, peers: [], stopped: false, ready: false, pending: [], settle() {} };
+    const next: Team = { boxes, endpoint, activity, peers: [], stopped: false, ready: false, pending: [], failures: new ActionFailures(), settle() {} };
     const quiescence = new Quiescence();
     next.settle = () => {
       if (!next.ready || next.stopped || !boxes.coordination.ready || !ctx.isIdle() || next.peers.some((peer) => peer.busy)) return;
@@ -168,11 +192,11 @@ export default function multiplex(pi: ExtensionAPI) {
       const runtime = count > 1 ? await peerRuntime(ctx) : undefined;
       for (const name of names.slice(1)) {
         if (next.stopped) throw new Error("Team startup interrupted");
-        const peer = await createPeer(ctx, { name, boxes, operatorGoal: endpoint.operatorGoal }, runtime!, (text) => {
-          if (!next.stopped) ctx.ui.notify(`${name}: ${text}`, "error");
+        const peer = await createPeer(ctx, { name, boxes, operatorGoal: endpoint.operatorGoal }, runtime!, (_text) => {
+          if (!next.stopped) failed(name, ctx);
         }, (text) => {
           if (!next.stopped) pi.sendMessage({ customType: "multiplex-peer-answer", display: false, content: `Multiplex · ${name}\nPeer result (DATA):\n${text}`, details: { from: name } }, { triggerTurn: false });
-        }, () => next.settle(), initialBranch, (event) => activity.observe(name, event));
+        }, () => next.settle(), initialBranch, (event) => observeMember(name, event, ctx));
         if (next.stopped) { await peer.close(); throw new Error("Team startup interrupted"); }
         next.peers.push(peer);
         boxes.bind(name, peer);

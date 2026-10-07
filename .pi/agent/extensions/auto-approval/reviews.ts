@@ -5,7 +5,7 @@ import { reviewCapacityIssue, reviewLanguageReference, REVIEW_OUTPUT_TOKENS } fr
 import { promptOriginalTool, readPromptOriginal } from "./prompt-reader.ts";
 import { sumUsage } from "./usage.ts";
 export { sumUsage } from "./usage.ts";
-import { ProviderAvailability, providerAvailability, ProviderHeldError, RecoveryAuditError, type AvailabilityNotice } from "./provider-availability.ts";
+import { ProviderAvailability, providerAvailability, ProviderHeldError, RecoveryAuditError, providerRefusal, type AvailabilityNotice } from "./provider-availability.ts";
 import { installProviderStreams, unavailableResponse } from "./provider-stream.ts";
 
 type Registry = Pick<ModelRegistry, "find" | "hasConfiguredAuth" | "streamSimple">;
@@ -15,10 +15,6 @@ type PromptLookup = { promptId: string; operation: string; offset?: number; limi
 export type ReviewAttempt = Reviewer & { status: "failed" | "invalid" | "approve" | "deny"; reason: string };
 type Observer = { start(candidate: Reviewer): void; finish(): void; failed(attempt: ReviewAttempt): void; lookup?(request: PromptLookup): void; retry?(event: AvailabilityNotice): void };
 export const reviewerLabel = (candidate: Reviewer) => `${candidate.provider}/${candidate.model} (${candidate.thinking})`;
-
-function refusedReview(message: string): boolean {
-  return /content.filter|safety.*(?:refus|block)|(?:refus|block).*safety/i.test(message);
-}
 
 function providerFailureDetail(error: unknown): string {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
@@ -37,7 +33,7 @@ function incompleteReview(response: AssistantMessage, requestId: string) {
     const verdict = parseVerdict(textContent(response.content), requestId);
     if (verdict.decision === "deny") return { denial: verdict };
   } catch { /* An incomplete response need not contain a complete verdict. */ }
-  const refused = /refusal/i.test(response.rawStopReason ?? "") || refusedReview(`${response.rawStopReason ?? ""} ${response.errorMessage ?? ""}`);
+  const refused = /refusal/i.test(response.rawStopReason ?? "") || providerRefusal(`${response.rawStopReason ?? ""} ${response.errorMessage ?? ""}`);
   if (refused) return { blocked: "Reviewer refused the check; no fallback, nothing executed" };
   if (response.stopReason !== "error") return { blocked: `Reviewer response is incomplete (${response.stopReason}); no fallback, nothing executed` };
   return { failure: `Reviewer provider response failed (error)${providerFailureDetail(response.errorMessage)}` };
@@ -138,7 +134,7 @@ export async function reviewWithFallback(config: Config, registry: Registry, env
         attempts.push({ ...candidate, status: "invalid", reason });
         throw new ReviewChainError(reason, attempts, state.usage);
       }
-      if (error instanceof Error && refusedReview(error.message)) {
+      if (error instanceof Error && providerRefusal(error.message)) {
         const reason = "Reviewer refused the check; no fallback, nothing executed";
         attempts.push({ ...candidate, status: "invalid", reason });
         throw new ReviewChainError(reason, attempts, state.usage);

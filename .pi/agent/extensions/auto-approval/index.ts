@@ -9,6 +9,7 @@ import {
   type ExtensionAPI, type ExtensionContext, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { actionSnapshot } from "./action-request.ts";
 import { Check } from "typebox/value";
 import { detectWorkspace, executeIsolated, sandboxHostPath, validateWorkspace } from "./isolation.ts";
 import { reviewSummary, startReviewDisplay } from "./display.ts";
@@ -47,7 +48,7 @@ const configPath = join(getAgentDir(), "auto-approval.json");
 const localConfigPath = join(getAgentDir(), "auto-approval.device.json");
 const sourceDir = dirname(fileURLToPath(import.meta.url));
 const definitions = Object.fromEntries(toolNames.map((name) => [name, factories[name](process.cwd())])) as Record<ToolName, ToolDefinition<any, any>>;
-const parameters = Type.Union(toolNames.map((name) => Type.Object({
+const strictParameters = Type.Union(toolNames.map((name) => Type.Object({
   tool: Type.Literal(name),
   arguments: definitions[name].parameters,
   goal: Type.String({ minLength: 1, maxLength: 4000, description: "Current concrete goal, tied to the real user's request." }),
@@ -55,6 +56,20 @@ const parameters = Type.Union(toolNames.map((name) => Type.Object({
   sandbox: Type.Optional(sandboxRequestSchema),
   ...(["bash", "powershell", "credential_exec"].includes(name) ? { network: Type.Optional(Type.Boolean({ description: "Request one-command network access (true) or explicitly stay offline (false). Independent approval is required before execution; expires when this action ends." })) } : {}),
 }, { additionalProperties: false })));
+const argumentSchemas = JSON.stringify(Object.fromEntries(toolNames.map((name) => [name, definitions[name].parameters])));
+// A root object with an enum works across providers that mishandle root unions.
+// Tool-specific requirements remain mandatory in the local strict validator.
+const parameters = Type.Object({
+  tool: Type.String({ enum: toolNames }),
+  arguments: Type.Union([
+    Type.Object({}, { additionalProperties: true, description: `An object following the selected tool's schema. Tool argument schemas: ${argumentSchemas}` }),
+    Type.String({ maxLength: 1048576, description: "A JSON-encoded arguments object is also accepted and decoded before strict validation and review. Never a bare command string." }),
+  ]),
+  goal: Type.String({ minLength: 1, maxLength: 4000, description: "Current concrete goal, tied to the real user's request." }),
+  justification: Type.String({ minLength: 1, maxLength: 4000, description: "Why this exact action is needed now; explain side effects and scope." }),
+  sandbox: Type.Optional(sandboxRequestSchema),
+  network: Type.Optional(Type.Boolean({ description: "Request network for this one shell/credential action only; independently reviewed." })),
+}, { additionalProperties: false });
 
 // Resolve symlinks even for not-yet-created paths. Unexpected filesystem errors
 // fail closed rather than letting a textual path check authorize an alias.
@@ -146,7 +161,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     // The executor queue below serializes external actions. Let Pi schedule
     // internal messages alongside them instead of waiting for review or builds.
     name: TOOL_NAME, label: "Reviewed action", exposure: "model-only", executionMode: "parallel",
-    description: "Submit one exact operation for independent approval and, only if approved, immediate execution. websearch uses DDGS (query, optional maxResults/region/timeLimit); webfetch reads one URL as clean plain text (url, optional maxChars/offset). Web operations request per-action network access before review. writing_check semantically reviews public prose in its original language (text, audience public/operator, optional format/context); it runs offline, and a denial reports editorial findings. Optional sandbox requests additional paths/read-write rights, network, literal environment variables, executable search paths, local tools or limits for this action only; explain necessity in justification. Use sandbox.tools: [node] for nvm/node/npm/npx or [sqlmap] for the local sqlmap launcher. Installed code stays read-only; version choices, caches and auto-updates persist only in session-private /tmp. Include tools on each action that needs them. npm install or tool downloads require the shell flag network: true (or sandbox.network: host), independently reviewed before execution. Network permission applies only to this new process and its descendants; existing processes stay isolated. The reviewer checks every expansion against the real user request. No blanket approvals. credential_exec delegates an operator-owned program/login binding to one pinned native CLI: arguments {profile, argv}. Request network: true for needed connectivity. The built-in github profile supplies native gh and its existing login for independently reviewed complete argv, including gh api. No fixed subcommand list substitutes for review. API destinations, methods, payloads and service effects must match the real user task. Credentials are resolved only after approval, never shown to the agent, and only this isolated argv-only command receives them. It has no shared /tmp; request sandbox.projectFiles: read/write or selected sandbox.paths when the command needs files. Other profiles must be configured outside Pi in auto-approval.device.json. For local Git commits with the operator identity, use tool git, arguments {argv: [commit, ...]}, sandbox.gitConfig: true. This separately reviewed offline route shares supported public global settings read-only for one command, excluding credentials, helpers, aliases and external executable settings. Every operation needs goal and justification. arguments follows the selected tool's schema.",
+    description: "Submit one exact operation for independent approval and, only if approved, immediate execution. websearch uses DDGS (query, optional maxResults/region/timeLimit); webfetch reads one URL as clean plain text (url, optional maxChars/offset). Web operations request per-action network access before review. writing_check semantically reviews public prose in its original language (text, audience public/operator, optional format/context); it runs offline, and a denial reports editorial findings. Optional sandbox requests additional paths/read-write rights, network, literal environment variables, executable search paths, local tools or limits for this action only; explain necessity in justification. Use sandbox.tools: [node] for nvm/node/npm/npx or [sqlmap] for the local sqlmap launcher. Installed code stays read-only; version choices, caches and auto-updates persist only in session-private /tmp. Include tools on each action that needs them. npm install or tool downloads require the shell flag network: true (or sandbox.network: host), independently reviewed before execution. Network permission applies only to this new process and its descendants; existing processes stay isolated. The reviewer checks every expansion against the real user request. No blanket approvals. credential_exec delegates an operator-owned program/login binding to one pinned native CLI: arguments {profile, argv}. Request network: true for needed connectivity. The built-in github profile supplies native gh and its existing login for independently reviewed complete argv, including gh api. No fixed subcommand list substitutes for review. API destinations, methods, payloads and service effects must match the real user task. Credentials are resolved only after approval, never shown to the agent, and only this isolated argv-only command receives them. It has no shared /tmp; request sandbox.projectFiles: read/write or selected sandbox.paths when the command needs files. Other profiles must be configured outside Pi in auto-approval.device.json. For local Git commits with the operator identity, use tool git, arguments {argv: [commit, ...]}, sandbox.gitConfig: true. This separately reviewed offline route shares supported public global settings read-only for one command, excluding credentials, helpers, aliases and external executable settings. Every operation needs goal and justification. arguments must be an object (or its JSON encoding) following the selected tool's schema; never a bare command string.",
     promptSnippet: "Request independent approval and execution of one operation",
     parameters,
     ...createApprovalRenderers(definitions),
@@ -175,8 +190,8 @@ export default function autoApproval(pi: ExtensionAPI) {
           phase = "request validation";
           // Snapshot and validate inside execute as well as at Pi's tool boundary.
           // Other event handlers cannot mutate arguments after they were reviewed.
-          const snapshot = structuredClone(raw) as Request;
-          const validRequest: boolean = Check(parameters, snapshot);
+          const snapshot = actionSnapshot(raw) as Request;
+          const validRequest: boolean = Check(strictParameters, snapshot);
           if (!validRequest || !snapshot.goal.trim() || !snapshot.justification.trim()) throw new Error("Invalid action, goal, or justification");
           const request = reviewedWebRequest(normalizeNetworkFlag(snapshot));
           checkActionSize(request);
