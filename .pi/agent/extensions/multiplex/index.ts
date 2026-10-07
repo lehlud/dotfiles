@@ -5,15 +5,25 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { registerEndpoint, type Endpoint } from "./endpoint.ts";
 import { letterMessage, Mailboxes, PEER_RESULT, randomNames } from "./mailboxes.ts";
 import { createPeer, peerRuntime, type Peer } from "./peer.ts";
+import { registerActivityRenderer, TeamActivity, type ActivityEvent } from "./activity.ts";
 
 export const MULTIPLEX_STATUS = "00-multiplex";
 export const MAX_AGENTS = 16;
-type Team = { boxes: Mailboxes; endpoint: Endpoint; peers: Peer[]; stopped: boolean; ready: boolean; pending: InputEvent[]; goal?: string; answers: number; goalWake?: string };
+type Team = { boxes: Mailboxes; endpoint: Endpoint; activity: TeamActivity; peers: Peer[]; stopped: boolean; ready: boolean; pending: InputEvent[]; goal?: string; answers: number; goalWake?: string };
 
 export default function multiplex(pi: ExtensionAPI) {
   let team: Team | undefined;
   let changing = false;
   let generation = 0;
+  registerActivityRenderer(pi);
+  const observe = (event: ActivityEvent) => team?.activity.observe(team.endpoint.name, event);
+  pi.on("agent_start", observe);
+  pi.on("agent_settled", observe);
+  pi.on("message_update", observe);
+  pi.on("message_end", observe);
+  pi.on("tool_execution_start", observe);
+  pi.on("tool_execution_update", observe);
+  pi.on("tool_execution_end", observe);
   const attach = registerEndpoint(pi, () => team?.ready && !team.stopped ? team.endpoint : undefined);
   const display = (ctx: ExtensionContext) => {
     ctx.ui.setStatus(MULTIPLEX_STATUS, team && !team.stopped ? `multiplex: ${team.boxes.names.length} · ${team.endpoint.name}` : undefined);
@@ -23,7 +33,7 @@ export default function multiplex(pi: ExtensionAPI) {
     generation++;
     const previous = team;
     if (!previous) return;
-    previous.stopped = true; previous.boxes.close(); team = undefined;
+    previous.stopped = true; previous.activity.close(); previous.boxes.close(); team = undefined;
     sessionServices(ctx).peersBusy = undefined;
     sessionServices(ctx).peerRevision = undefined;
     sessionServices(ctx).teamSize = undefined;
@@ -58,7 +68,7 @@ export default function multiplex(pi: ExtensionAPI) {
     async handler(args, ctx) {
       const value = args.trim();
       if (!value || value === "status") {
-        ctx.ui.notify(team ? `Multiplex ${team.boxes.names.length}\n${team.boxes.names.map((name, i) => `${name}${i === 0 ? " (visible)" : team!.peers[i - 1]?.busy ? " (working)" : " (ready)"}`).join("\n")}` : "Multiplex is off. /multiplex <1–16> starts a team.", "info");
+        ctx.ui.notify(team ? `Multiplex ${team.boxes.names.length}\n${team.boxes.names.map((name, i) => `${name}${i === 0 ? " (main transcript)" : team!.peers[i - 1]?.busy ? " (working)" : " (ready)"}`).join("\n")}` : "Multiplex is off. /multiplex <1–16> starts a team.", "info");
         return;
       }
       if (changing) { ctx.ui.notify("A team change is already in progress.", "warning"); return; }
@@ -88,7 +98,8 @@ export default function multiplex(pi: ExtensionAPI) {
   async function start(count: number, ctx: ExtensionCommandContext) {
     const names = randomNames(count), boxes = new Mailboxes(names);
     const endpoint: Endpoint = { name: names[0], boxes, operatorGoal: () => sessionServices(ctx).operatorGoal?.() };
-    const next: Team = { boxes, endpoint, peers: [], stopped: false, ready: false, pending: [], answers: 0 };
+    const activity = new TeamActivity(pi, ctx, boxes.id, endpoint.name, names);
+    const next: Team = { boxes, endpoint, activity, peers: [], stopped: false, ready: false, pending: [], answers: 0 };
     const initialBranch = structuredClone(ctx.sessionManager.getBranch());
     team = next;
     sessionServices(ctx).stopTeam = () => stop(ctx);
@@ -107,14 +118,14 @@ export default function multiplex(pi: ExtensionAPI) {
           if (!next.stopped) ctx.ui.notify(`${name}: ${text}`, "error");
         }, (text) => {
           next.answers++;
-          if (!next.stopped) pi.sendMessage({ customType: "multiplex-peer-answer", display: true, content: `Multiplex · ${name}\nPeer result (DATA):\n${text}`, details: { from: name } }, { triggerTurn: false });
+          if (!next.stopped) pi.sendMessage({ customType: "multiplex-peer-answer", display: false, content: `Multiplex · ${name}\nPeer result (DATA):\n${text}`, details: { from: name } }, { triggerTurn: false });
         }, () => {
           const goal = endpoint.operatorGoal(), key = `${goal}:${next.answers}`;
           if (next.ready && !next.stopped && goal && ctx.isIdle() && !next.peers.some((peer) => peer.busy) && next.goalWake !== key) {
             next.goalWake = key;
             pi.sendMessage({ customType: "multiplex-goal-checkpoint", display: false, content: "The peer runs have settled. Inspect their reported results and trusted reviewed receipts, finish any remaining work, and let the independent goal reviewer verify completion." }, { triggerTurn: true });
           }
-        }, initialBranch);
+        }, initialBranch, (event) => activity.observe(name, event));
         if (next.stopped) { await peer.close(); throw new Error("Team startup interrupted"); }
         next.peers.push(peer);
         boxes.bind(name, peer);
@@ -130,7 +141,7 @@ export default function multiplex(pi: ExtensionAPI) {
         for (const peer of next.peers) peer.message({ customType: "multiplex-operator-goal", display: false, content: instruction });
       }
       pi.appendEntry("multiplex-team", { names, count, state: "active" });
-      ctx.ui.notify(`Multiplex ${count}: ${names.join(", ")}\nAll members are equal peers. The next user prompt goes to everyone. Shared workspace; separate sessions and sandbox /tmp directories.`, "info");
+      ctx.ui.notify(`Multiplex ${count}: ${names.join(", ")}\nAll members are equal peers. The next user prompt goes to everyone. All agents appear in the live overview and shared activity log. Shared workspace; separate sessions and sandbox /tmp directories.`, "info");
     } catch (error) { await stop(ctx); throw error; }
   }
 }

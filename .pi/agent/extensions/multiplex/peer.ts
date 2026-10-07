@@ -11,6 +11,7 @@ import { installProviderStreams } from "../auto-approval/provider-stream.ts";
 import { sessionServices } from "../auto-approval/session-services.ts";
 import { registerEndpoint, type Endpoint } from "./endpoint.ts";
 import { letterMessage, PEER_RESULT, type Letter } from "./mailboxes.ts";
+import type { ActivityEvent } from "./activity.ts";
 
 /** All peers use the same trusted providers; credentials never enter model context. */
 export async function peerRuntime(ctx: ExtensionContext) {
@@ -29,7 +30,15 @@ export class Peer {
   private runs = new Set<Promise<void>>();
   private stopped = false;
   private pending = 0;
-  constructor(readonly session: AgentSession, private report: (error: string) => void, private settled: () => void) {}
+  private unsubscribe: () => void;
+  constructor(readonly session: AgentSession, private report: (error: string) => void, private settled: () => void, observe: (event: ActivityEvent) => void = () => {}) {
+    this.unsubscribe = session.subscribe((event) => {
+      switch (event.type) {
+        case "agent_start": case "agent_settled": case "message_update": case "message_end":
+        case "tool_execution_start": case "tool_execution_update": case "tool_execution_end": observe(event);
+      }
+    });
+  }
   get busy() { return this.pending > 0 || this.runs.size > 0 || this.session.isStreaming; }
   canDeliver() { return !this.stopped && this.pending < 256; }
   private enqueue(start: () => Promise<void>) {
@@ -62,6 +71,7 @@ export class Peer {
   async close() {
     if (this.stopped) return;
     this.stopped = true;
+    this.unsubscribe();
     this.session.clearQueue();
     await this.session.abort();
     await this.admission;
@@ -75,7 +85,7 @@ export class Peer {
   }
 }
 
-export async function createPeer(ctx: ExtensionContext, endpoint: Endpoint, runtime: ModelRuntime, report: (error: string) => void, answer: (text: string) => void, settled: () => void, branch = ctx.sessionManager.getBranch()) {
+export async function createPeer(ctx: ExtensionContext, endpoint: Endpoint, runtime: ModelRuntime, report: (error: string) => void, answer: (text: string) => void, settled: () => void, branch = ctx.sessionManager.getBranch(), observe?: (event: ActivityEvent) => void) {
   const entries = structuredClone(branch);
   const manager = SessionManager.inMemory(ctx.cwd, undefined, [{ type: "session", version: 3, id: randomUUID(), timestamp: new Date().toISOString(), cwd: ctx.cwd }, ...entries]);
   const settings = SettingsManager.inMemory();
@@ -102,7 +112,7 @@ export async function createPeer(ctx: ExtensionContext, endpoint: Endpoint, runt
   const { session } = await createAgentSession({ cwd: ctx.cwd, agentDir: getAgentDir(), modelRuntime: runtime, model: ctx.model, thinkingLevel: ctx.thinkingLevel ?? "medium", sessionManager: manager, settingsManager: settings, resourceLoader: loader, tools: ["approved_action", "mailbox"] });
   try {
     await session.bindExtensions({ mode: "json", onError: () => report("Peer extension reported an error."), uiContext: { setStatus() {}, setWidget() {}, notify: (_text: string, kind?: string) => { if (kind === "error") report("Peer sandbox or configuration unavailable."); } } as any });
-    return new Peer(session, report, settled);
+    return new Peer(session, report, settled, observe);
   } catch (error) {
     await sessionServices({ sessionManager: manager }).cleanup?.(); session.dispose(); throw error;
   }

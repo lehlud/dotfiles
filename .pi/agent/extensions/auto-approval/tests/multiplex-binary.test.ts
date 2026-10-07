@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
+import { ACTIVITY_ENTRY } from "../../multiplex/activity.ts";
 
 const binary = join(homedir(), ".local/cache/pi", process.arch === "arm64" ? "linux-aarch64" : "linux-x86_64", "pi/pi");
 const binaryTest = process.platform === "linux" && await access(binary).then(() => true, () => false) ? test : test.skip;
@@ -69,6 +70,14 @@ binaryTest("compiled Pi peers authenticate senders, reject forgeries and keep ex
     expect(received.details.text).toContain('"from":"forged"');
     expect(received.details.teamId).toBe(output(1).result.details[0].teamId);
     expect(events.filter((event) => event.type === "tool_execution_start" && event.toolCallId === `${name}-1`)).toHaveLength(1);
+    const peerName = result.details.members.find((member: string) => member !== name);
+    await until(() => events.some((event) => event.type === "entry_appended" && event.entry?.customType === ACTIVITY_ENTRY && event.entry.data?.from === peerName && event.entry.data?.kind === "message"));
+    const activity = events.filter((event) => event.type === "entry_appended" && event.entry?.customType === ACTIVITY_ENTRY).map((event) => event.entry.data);
+    expect(new Set(activity.map((record) => record.from))).toEqual(new Set(result.details.members));
+    expect(activity.some((record) => record.from === peerName && record.kind === "tool-start")).toBe(true);
+    expect(activity.some((record) => record.from === peerName && record.kind === "tool-end")).toBe(true);
+    expect(activity.find((record) => record.from === peerName && record.kind === "message").body).toBe("PROBE-COMPLETE");
+    expect(activity.every((record) => record.teamId === received.details.teamId)).toBe(true);
   } finally {
     child.stdin.end();
     child.kill(); await child.exited; await reader; await errors;

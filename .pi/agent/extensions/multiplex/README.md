@@ -9,7 +9,15 @@ The next actual user prompt and subsequent corrections reach every member. Membe
 - `/multiplex off` or `/multiplex 0`: stop the team and cancel peer work.
 - Change the team size only while all members are idle.
 
-The status bar shows `multiplex: n` and the visible member's name. During a `/goal`, the team size also appears at the start of the goal status so it remains visible on narrow terminals. Peer answers appear with their sender in the activity log. `/side` remains a separate explanatory conversation; side questions do not become team assignments.
+The status bar shows `multiplex: n` and the main transcript's member name. During a `/goal`, the team size also appears at the start of the goal status so it remains visible on narrow terminals. `/side` remains a separate explanatory conversation; side questions do not become team assignments.
+
+## Watching the whole team
+
+Multiplex opens a live overview with one row for every member, including the main transcript's member. Rows show whether an agent is ready, working, thinking, writing or running tools, together with a short preview of its streamed reply. Concurrent tool calls remain listed until each finishes. Streaming refreshes are coalesced over 80 ms; tool starts, completions and ready states update immediately. Approval explanations stay in the activity log.
+
+All members' activity appears in the shared transcript under an automatically bound `Agent · name` header. Peer replies, tool calls, streaming tool output, results, failures and incoming messageboxes appear while peers work, rather than only when a final answer arrives. The main member's normal detailed transcript remains visible; its attributed activity records point there instead of repeating its output. Tool-output snapshots are coalesced to at most one per second per peer call. Long activity bodies are collapsed by default and expand with `ctrl+o`; individual activity previews are bounded to 64 KiB. The complete original output remains in the corresponding agent session. Tool argument previews copy only commands, paths, URLs and queries, not credential profiles or environment values.
+
+These observations use rendered custom session entries. They are saved in the normal activity log, available to JSON/RPC consumers as `entry_appended` events, and never become model messages, peer messages, operator authorization or approval requests. There is no extra reviewer call or model turn for displaying activity. Final peer results still reach the main model through the separate peer-data channel without a duplicate visible answer. Member names come from the runtime session binding, never a claimed name in message text. Stopping, replacing or closing a team removes its live overview and subscriptions; saved log entries remain available.
 
 ## Messageboxes
 
