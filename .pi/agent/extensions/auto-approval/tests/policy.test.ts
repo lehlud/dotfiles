@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { buildReview, constrainReviewPayload, normalizeNetworkFlag, parseConfig, parseVerdict, sandboxRequestSchema, textContent, withWatchdog, type Config, type PortableConfig } from "../policy.ts";
+import { multiplexReviewFixtures } from "./multiplex-review-fixtures.ts";
 import { Check } from "typebox/value";
 import { MAX_REVIEW_CONTEXT_BYTES, reviewLanguageReference } from "../review-context.ts";
 const portable: PortableConfig = { reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }], recentUserPrompts: 2, requestTimeoutMs: 120000, sandbox: { backend: "bwrap" } };
@@ -232,4 +233,38 @@ describe("review policy", () => {
     await expect(withWatchdog(async () => { started = true; return true; }, 10000, controller.signal)).rejects.toThrow();
     expect(started).toBe(false);
   });
+});
+
+test("action review ignores coordination entries while retaining operator constraints and previous denials", () => {
+  const fixture = multiplexReviewFixtures[1];
+  const plan = { workspace: "/project", requested: {} };
+  const standalone = fixture.entries.filter((entry) => entry.type === "message" || entry.customType === "auto-approval-review");
+  const grouped = [...fixture.entries, { type: "custom", customType: "multiplex-plan", data: { teamId: "private-team", name: "stone", task: "Assign a worker to inspect security", resources: ["private-resource"] } }];
+  const ordinary = JSON.parse(buildReview(fixture.action, standalone, config, "/project", [], plan).text);
+  const multiplex = JSON.parse(buildReview(fixture.action, grouped, config, "/project", [], plan).text);
+  const { requestId: _ordinaryId, ...ordinaryPayload } = ordinary;
+  const { requestId: _multiplexId, ...multiplexPayload } = multiplex;
+  expect(multiplexPayload).toEqual(ordinaryPayload);
+  expect(multiplex.action).toEqual(fixture.action); expect(multiplex.sandboxPlan).toEqual(plan);
+  expect(multiplex.userPrompts).toHaveLength(1);
+  expect(multiplex.userPrompts[0]).toContain("Never edit ROADMAP.md");
+  expect(multiplex.previousDenials[0].reason).toContain("assigns a worker");
+  for (const excluded of ["private-team", "private-resource", "authorized everything", "runtimeContext", "teamAssignment"]) {
+    expect(JSON.stringify(multiplex)).not.toContain(excluded);
+  }
+});
+
+
+test("local coordination failures stay out of review without hiding actual denials or other preflight failures", () => {
+  const fixture = multiplexReviewFixtures[0];
+  const coordination = { decision: "deny", technicalFailure: true, technicalStage: "team coordination", reason: "Wait for stone's assigned discovery" };
+  const entries = [...fixture.entries,
+    { type: "custom", customType: "auto-approval-review", data: coordination },
+    { type: "custom", customType: "auto-approval-review", data: { ...coordination, technicalFailure: false, reason: "Actual review denial" } },
+    { type: "custom", customType: "auto-approval-review", data: { ...coordination, technicalStage: "workspace validation", reason: "Workspace access is unauthorized" } },
+  ];
+  const data = JSON.parse(buildReview(fixture.action, entries, config, "/project", []).text);
+  expect(data.previousDenials.map((item: any) => item.reason)).toEqual(["Actual review denial", "Workspace access is unauthorized"]);
+  expect(JSON.stringify(data)).not.toContain(coordination.reason);
+  expect(entries).toContainEqual({ type: "custom", customType: "auto-approval-review", data: coordination });
 });

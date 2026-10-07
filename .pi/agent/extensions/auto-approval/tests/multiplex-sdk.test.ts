@@ -45,6 +45,7 @@ async function fixture(directory: string, diskLoaded = false, delayedReview = fa
         try {
           if (model.id === "review") {
             const data = JSON.parse(String(context.messages.find((entry) => entry.role === "user")?.content));
+            if (data.action && (data.sandboxPlan?.teamAssignment || data.runtimeContext)) throw new Error("Review leaked coordination metadata");
             reviews.push(data);
             if (delayedReview && data.action?.goal === "Parallel barrier") await new Promise<void>((done) => { reviewReleases.push(done); options?.signal?.addEventListener("abort", () => done(), { once: true }); });
             const decision = !data.action ? data.reviewedContext.length >= 2 ? "approve" : "deny" : String(data.action.arguments.command).includes("denied-") ? "deny" : "approve";
@@ -217,6 +218,12 @@ nativeTest("real equal Pi peers run concurrently, share every prompt and message
     const mainName = sessionServices(state.root()).mailbox!.name;
     expect(activity.filter((entry) => entry.from !== mainName && entry.kind === "message").every((entry) => entry.body.includes("TEAM-DONE"))).toBe(true);
     expect(state.reviews).toHaveLength(6);
+    for (const review of state.reviews) {
+      expect(review.runtimeContext).toBeUndefined();
+      expect(review.sandboxPlan.teamAssignment).toBeUndefined();
+      expect(review.action.arguments.command).toBeString();
+      expect(review.action.tool).toBe("bash");
+    }
     expect(state.reviews.every((review) => review.userPrompts.every((text: string) => !text.includes("PEER-ONLY")))).toBe(true);
     const evidence = state.session.sessionManager.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "auto-approval-peer-result");
     expect(evidence.length).toBeGreaterThanOrEqual(4);

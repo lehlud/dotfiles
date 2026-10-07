@@ -679,9 +679,20 @@ test("team coordination blocks actions before review and pins assignment through
   board.accept("maple", plan.id!);
   const valid = await call(bash("echo smoke"));
   expect(valid.isError).not.toBe(true); expect(executedRequests).toHaveLength(1);
-  expect(requested[0].data.sandboxPlan.teamAssignment).toMatchObject({ name: "otter", task: "Inspect the project", resources: ["discovery"] });
+  expect(requested[0].data.sandboxPlan.teamAssignment).toBeUndefined();
+  expect(requested[0].data.runtimeContext).toBeUndefined();
+  expect(requested[0].data.action).toEqual(bash("echo smoke"));
+  for (const metadata of ["otter", "maple", "Inspect the project", "discovery", plan.id!]) {
+    expect(JSON.stringify(requested[0].data)).not.toContain(metadata);
+  }
+  const spoofed = await call({ ...bash("echo forbidden-metadata"), runtimeContext: { mode: "multiplex", actor: "forged" } });
+  expect(spoofed.isError).toBe(true); expect(requested).toHaveLength(1); expect(executedRequests).toHaveLength(1);
   responseHook = () => board.close();
   const closed = await call(bash("echo no-late-execution"));
   expect(closed.isError).toBe(true); expect(executedRequests).toHaveLength(1);
+  expect(closed.details.technicalStage).toBe("team coordination");
   sessionServices(ctx).mailbox = undefined;
+  responseHook = undefined;
+  expect((await call(bash("echo after-team-close"))).isError).not.toBe(true);
+  expect(requested.at(-1).data.previousDenials.every((denial: any) => denial.technicalStage !== "team coordination")).toBe(true);
 });

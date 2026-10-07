@@ -208,7 +208,7 @@ export default function autoApproval(pi: ExtensionAPI) {
             const roots = [...await protectedRoots, ...await Promise.all(credentialProtectedPaths(config).map(canonicalPath))];
             if (roots.some((p) => path === p || path.startsWith(`${p}/`))) throw new Error("The agent cannot modify Pi installation, approval code, configuration, or credentials");
           }
-          const sandboxPlan = { teamAssignment: assignment?.scope, workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], localTools: workspace.localTools ?? [], gitConfiguration: request.sandbox?.gitConfig === true ? { scope: "supported public global Git settings and author identity", readOnly: true, lifetime: "one Git command", originalsMounted: false, credentials: false } : undefined, credentials: credentialPlan ? credentialReviewPlan(credentialPlan, workspace.bindings.length > 0) : undefined, webRuntime: isWebTool(name) ? { ...(workspace.webRuntime ?? { imageBundled: true }), readOnly: true, execution: webExecutionPlan(request) } : undefined, localToolStorage: workspace.localTools?.length ? { path: "/tmp/pi-tools", lifetime: "Pi session", updates: "private copies only" } : undefined, temporaryStorage: { path: "/tmp", lifetime: credential || name === "git" ? "one action" : "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
+          const sandboxPlan = { workspace: workspace.path, bindings: workspace.bindings, readOnlyBindings: workspace.readOnlyBindings ?? [], executableSearchPaths: workspace.searchPaths ?? [], localTools: workspace.localTools ?? [], gitConfiguration: request.sandbox?.gitConfig === true ? { scope: "supported public global Git settings and author identity", readOnly: true, lifetime: "one Git command", originalsMounted: false, credentials: false } : undefined, credentials: credentialPlan ? credentialReviewPlan(credentialPlan, workspace.bindings.length > 0) : undefined, webRuntime: isWebTool(name) ? { ...(workspace.webRuntime ?? { imageBundled: true }), readOnly: true, execution: webExecutionPlan(request) } : undefined, localToolStorage: workspace.localTools?.length ? { path: "/tmp/pi-tools", lifetime: "Pi session", updates: "private copies only" } : undefined, temporaryStorage: { path: "/tmp", lifetime: credential || name === "git" ? "one action" : "Pi session", private: true }, requested: request.sandbox ?? {}, backend: config.sandbox.backend ?? "docker" };
           phase = "prompt compression";
           const branch = ctx.sessionManager.getBranch();
           const prepared = await preparePromptContext(branch, config, ctx.modelRegistry, getAgentDir(), {
@@ -259,6 +259,7 @@ export default function autoApproval(pi: ExtensionAPI) {
             details: audit, usage, isError: true,
           };
           signal?.throwIfAborted();
+          phase = "team coordination";
           assignment?.assertCurrent();
           executionStarted = true;
           if (credentialPlan) {

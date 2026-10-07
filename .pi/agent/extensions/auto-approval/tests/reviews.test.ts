@@ -1,6 +1,7 @@
 import { test, expect, beforeEach } from "bun:test";
 import { reviewWithFallback, ReviewChainError, type ReviewAttempt } from "../reviews.ts";
 import { buildReview, type Config } from "../policy.ts";
+import { multiplexReviewFixtures } from "./multiplex-review-fixtures.ts";
 import { ProviderAvailability } from "../provider-availability.ts";
 
 const primary = { provider: "openai", model: "gpt-6-luna", thinking: "medium" as const };
@@ -169,4 +170,28 @@ test("each new action starts at the highest priority, with no cached route", asy
   modes.openai = "auth"; expect((await run()).selectedReviewer).toEqual(fallback);
   modes.openai = "approve"; expect((await run()).selectedReviewer).toEqual(primary);
   expect(starts).toEqual(["openai", "openrouter", "openai"]);
+});
+
+test("the same action uses the same review policy regardless of coordination and valid denials stay final", async () => {
+  const fixture = multiplexReviewFixtures[1];
+  const gate: any = { ...registry, streamSimple: (model: any, context: any) => {
+    calls.push({ model, context });
+    const data = JSON.parse(context.messages[0].content);
+    return { result: async () => ({ ...message(model.provider), content: [{ type: "text", text: JSON.stringify({ requestId: data.requestId, decision: "deny", reason: "A concrete material concern remains." }) }] }) };
+  } };
+  for (const entries of [fixture.entries.filter((entry) => entry.type === "message" || entry.customType === "auto-approval-review"), fixture.entries]) {
+    const review = buildReview(fixture.action, entries, config, "/project", [], { workspace: "/project" });
+    const checked = await reviewWithFallback(config, gate, review, observer);
+    expect(checked.verdict.decision).toBe("deny");
+    expect(checked.selectedReviewer).toEqual(primary);
+  }
+  expect(calls).toHaveLength(2);
+  expect(calls[0].context.systemPrompt).toEqual(calls[1].context.systemPrompt);
+  expect(calls[0].context.systemPrompt).toContain("The executable operation is action.tool with action.arguments");
+  expect(calls[0].context.systemPrompt).toContain("alternative unreviewed execution routes");
+  for (const call of calls) {
+    const data = JSON.parse(call.context.messages[0].content);
+    expect(data.action).toEqual(fixture.action); expect(data.runtimeContext).toBeUndefined();
+    expect(data.previousDenials[0].reason).toContain("assigns a worker");
+  }
 });
