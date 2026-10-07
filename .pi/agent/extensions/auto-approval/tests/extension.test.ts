@@ -120,7 +120,11 @@ const credentialAction = () => ({ tool: "credential_exec", arguments: { profile:
 const gitAction = () => ({ tool: "git", arguments: { argv: ["commit", "-m", "Synthetic change"] }, sandbox: { gitConfig: true }, goal: "Commit the requested change", justification: "Use the existing operator identity for this exact local commit" });
 
 test("only a trusted live mailbox binding admits communication; external actions still require review", async () => {
-  expect((await hooks.tool_call({ toolName: "mailbox" }, ctx)).block).toBe(true);
+  const inactive = await hooks.tool_call({ toolName: "mailbox" }, ctx);
+  expect(inactive.block).toBe(true);
+  expect(inactive.reason).toContain("No message was delivered");
+  expect(inactive.reason).toContain("Do not repeat this call");
+  expect(inactive.reason).not.toContain("Use approved_action");
   const shared: unknown[] = [];
   sessionServices(ctx).mailbox = { name: "agent-fixture", active: () => true, audit: (data) => shared.push(data) };
   await hooks.session_start({}, ctx);

@@ -125,6 +125,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     } };
   });
   pi.on("tool_call", async (event, ctx) => {
+    if (event.toolName === "mailbox" && !event.parentToolCallId && !sessionServices(ctx).mailbox?.active()) return { block: true, reason: "Mailbox is inactive or its session binding is unavailable. No message was delivered. Do not repeat this call or route communication through approved_action; report the runtime problem to the operator." };
     const communication = event.toolName === "mailbox" && sessionServices(ctx).mailbox?.active();
     if ((!communication && event.toolName !== TOOL_NAME) || event.parentToolCallId) return { block: true, reason: LOCK_MESSAGE };
   });

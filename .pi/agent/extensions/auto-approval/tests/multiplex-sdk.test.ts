@@ -22,7 +22,7 @@ const exists = async (path: string) => { try { await access(path); return true; 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const nativeTest = process.platform === "linux" && Bun.which("bwrap") ? test : test.skip;
 
-async function fixture(directory: string) {
+async function fixture(directory: string, diskLoaded = false) {
   const agentDir = join(directory, "agent"), project = join(directory, "project");
   await mkdir(agentDir); await mkdir(project);
   const runner = join(directory, "runner");
@@ -70,13 +70,34 @@ async function fixture(directory: string) {
   });
   const settings = SettingsManager.inMemory();
   let rootContext: any;
-  const loader = new DefaultResourceLoader({ cwd: project, agentDir, settingsManager: settings, noExtensions: true, noSkills: true, noThemes: true, noContextFiles: true, noPromptTemplates: true, extensionFactories: [autoApproval, conversations, multiplex, recovery, (pi) => { pi.on("session_start", (_event, ctx) => { rootContext = ctx; }); }] });
+  const loader = new DefaultResourceLoader({ cwd: project, agentDir, settingsManager: settings, noExtensions: true, noSkills: true, noThemes: true, noContextFiles: true, noPromptTemplates: true,
+    additionalExtensionPaths: diskLoaded ? ["auto-approval", "conversations", "multiplex", "provider-recovery"].map((name) => resolve(import.meta.dir, "../..", name, "index.ts")) : [],
+    extensionFactories: [...(diskLoaded ? [] : [autoApproval, conversations, multiplex, recovery]), (pi) => { pi.on("session_start", (_event, ctx) => { rootContext = ctx; }); }],
+  });
   await loader.reload();
   const manager = SessionManager.inMemory(project);
   manager.appendMessage({ role: "user", content: "BEFORE-MULTIPLEX: Preserve existing user instructions and prohibitions.", timestamp: Date.now() });
   const { session } = await createAgentSession({ cwd: project, agentDir, modelRuntime: runtime, model: new ModelRegistry(runtime).find("multiplex-fixture", "working")!, thinkingLevel: "off", sessionManager: manager, settingsManager: settings, resourceLoader: loader, tools: ["approved_action", "mailbox"] });
   return { session, contexts, reviews, stages, project, releases, root: () => rootContext };
 }
+
+nativeTest("independently disk-loaded extensions share the trusted live mailbox binding", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-multiplex-loader-")), previous = process.env.PI_CODING_AGENT_DIR;
+  let state: Awaited<ReturnType<typeof fixture>> | undefined;
+  try {
+    state = await fixture(directory, true);
+    await state.session.bindExtensions({ mode: "json" });
+    await state.session.prompt("/multiplex 1");
+    expect(state.session.getActiveToolNames()).toEqual(["approved_action", "mailbox"]);
+    expect(sessionServices(state.root()).mailbox?.active()).toBe(true);
+  } finally {
+    state?.releases.forEach((release) => release());
+    await state?.session.prompt("/multiplex off").catch(() => {});
+    if (state) await sessionServices(state.root()).cleanup?.(); state?.session.dispose();
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60000);
 
 nativeTest("real equal Pi peers run concurrently, share every prompt and message, retain sandbox/review and clean private tmp", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-multiplex-sdk-"));
