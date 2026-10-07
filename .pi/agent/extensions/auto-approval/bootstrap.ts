@@ -1,6 +1,6 @@
 // Operator startup only. Never called by an agent tool or from inside Pi.
 import { createHash } from "node:crypto";
-import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, realpath, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -24,6 +24,19 @@ function run(directory: string, args: string[]): void {
   if (result.exitCode !== 0) throw new Error(`Auto-Approval setup failed: bun ${args[0]} (exit ${result.exitCode})`);
 }
 
+/** Die aufgeteilten Extensions teilen die hier festgeschriebenen SDK-Abhängigkeiten. */
+export async function prepareCompanionDependencies(directory: string): Promise<void> {
+  for (const name of ["conversations", "multiplex", "provider-recovery"]) {
+    const companion = join(dirname(directory), name);
+    try { await access(join(companion, "index.ts")); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+    const modules = join(companion, "node_modules");
+    try { await symlink("../auto-approval/node_modules", modules, "dir"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    if (await realpath(modules) !== await realpath(join(directory, "node_modules"))) throw new Error(`${name}: node_modules must refer to the pinned Auto-Approval SDK dependencies`);
+  }
+}
+
 export async function prepareExecutor(directory: string, home = homedir(), agentDirectory = dirname(dirname(directory))): Promise<void> {
   const dependencies = await fingerprint(directory, ["package.json", "bun.lock"]);
   const dependencyStamp = join(directory, "node_modules", ".auto-approval-dependencies");
@@ -31,6 +44,7 @@ export async function prepareExecutor(directory: string, home = homedir(), agent
     run(directory, ["install", "--frozen-lockfile", "--ignore-scripts"]);
     await writeFile(dependencyStamp, `${dependencies}\n`);
   }
+  await prepareCompanionDependencies(directory);
   const { assertSandboxReady, loadConfig } = await import(join(directory, "config.ts")) as typeof import("./config.ts");
   const config = await loadConfig(agentDirectory, { home });
   if (config.sandbox.backend !== "bwrap") return;

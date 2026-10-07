@@ -45,7 +45,7 @@ _pi_download() {
 
 _pi_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/pi")"
 
-# Mandatory approval: only the gate, web and public-writing extensions may load.
+# Pflichtprüfung: Nur die festgelegten Operator-Extensions dürfen geladen werden.
 # Model actions run in its isolated executor, never in this host shell.
 for _arg in "$@"; do
     case "$_arg" in
@@ -59,6 +59,9 @@ done
 _gate="$HOME/.pi/agent/extensions/auto-approval/index.ts"
 _web="$HOME/.pi/agent/extensions/web-research/index.ts"
 _writing="$HOME/.pi/agent/extensions/public-writing/index.ts"
+_conversations="$HOME/.pi/agent/extensions/conversations/index.ts"
+_multiplex="$HOME/.pi/agent/extensions/multiplex/index.ts"
+_recovery="$HOME/.pi/agent/extensions/provider-recovery/index.ts"
 if [ ! -r "$_gate" ]; then
     printf 'pi: mandatory approval gate is missing; startup blocked\n' >&2
     exit 1
@@ -71,6 +74,12 @@ if [ ! -r "$_writing" ]; then
     printf 'pi: public-writing extension is missing; startup blocked\n' >&2
     exit 1
 fi
+for _extension in "$_conversations" "$_multiplex" "$_recovery"; do
+    if [ ! -r "$_extension" ]; then
+        printf 'pi: required extension is missing: %s; startup blocked\n' "$_extension" >&2
+        exit 1
+    fi
+done
 
 # Bootstrap and update on operator startup, before any agent tools run.
 # Pi's cache, launcher and approval gate remain protected inside the sandbox.
@@ -88,7 +97,7 @@ if auto_update_ensure_tar_app pi "$_pi_cache_dir" pi pi/pi 3 _pi_download https:
     if ! bun "${_gate%/*}/bootstrap.ts" >&2; then
         exit 1
     fi
-    exec "$_pi_cache_dir/pi/pi" --no-extensions --extension "$_gate" --extension "$_web" --extension "$_writing" --no-approve --tools approved_action "$@"
+    exec "$_pi_cache_dir/pi/pi" --no-extensions --extension "$_gate" --extension "$_web" --extension "$_writing" --extension "$_conversations" --extension "$_multiplex" --extension "$_recovery" --no-approve --tools approved_action,mailbox "$@"
 fi
 
 exit 1

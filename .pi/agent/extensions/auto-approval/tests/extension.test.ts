@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { writingCheckTool } from "../../public-writing/index.ts";
+import { sessionServices } from "../session-services.ts";
 
 const root = await mkdtemp(join(tmpdir(), "pi-approval-test-"));
 const agentRoot = await mkdtemp(join(tmpdir(), "pi-approval-agent-test-"));
@@ -117,6 +118,24 @@ const exists = async (path: string) => { try { await access(path); return true; 
 
 const credentialAction = () => ({ tool: "credential_exec", arguments: { profile: "service", argv: ["inspect"] }, network: true, goal: "Inspect authenticated service", justification: "User requested this authenticated operation" });
 const gitAction = () => ({ tool: "git", arguments: { argv: ["commit", "-m", "Synthetic change"] }, sandbox: { gitConfig: true }, goal: "Commit the requested change", justification: "Use the existing operator identity for this exact local commit" });
+
+test("only a trusted live mailbox binding admits communication; external actions still require review", async () => {
+  expect((await hooks.tool_call({ toolName: "mailbox" }, ctx)).block).toBe(true);
+  const shared: unknown[] = [];
+  sessionServices(ctx).mailbox = { name: "agent-fixture", active: () => true, audit: (data) => shared.push(data) };
+  await hooks.session_start({}, ctx);
+  expect(active).toEqual(["approved_action", "mailbox"]);
+  expect(await hooks.tool_call({ toolName: "mailbox" }, ctx)).toBeUndefined();
+  expect(requested).toEqual([]);
+  expect((await hooks.tool_call({ toolName: "mailbox", parentToolCallId: "nested" }, ctx)).block).toBe(true);
+  mode = "deny";
+  expect((await call(bash("touch denied-with-peers"))).isError).toBe(true);
+  expect(requested).toHaveLength(1); expect(executedRequests).toEqual([]);
+  expect((shared[0] as any).multiplexAgent).toBe("agent-fixture");
+  expect((shared[0] as any).decision).toBe("deny");
+  sessionServices(ctx).mailbox!.active = () => false;
+  expect((await hooks.tool_call({ toolName: "mailbox" }, ctx)).block).toBe(true);
+});
 async function configureGitFixture() {
   await writeFile(configPath, JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }));
   await writeFile(localConfigPath, JSON.stringify({ sandbox: { executable: process.execPath, runnerExecutable: process.execPath } }));

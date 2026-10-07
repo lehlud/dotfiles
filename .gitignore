@@ -137,6 +137,7 @@
 /.pi/**/*.swp
 /.pi/**/*.log
 /.pi/**/node_modules/
+/.pi/**/node_modules
 /.pi/**/sessions/
 /.pi/**/cache/
 /.pi/**/.cache/

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { Type } from "typebox";
 import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { registerSteering, STEERING_TYPE } from "../steering.ts";
+import { registerSteering, STEERING_TYPE } from "../../conversations/steering.ts";
 import { textContent } from "../policy.ts";
 
 async function fixture(directory: string) {

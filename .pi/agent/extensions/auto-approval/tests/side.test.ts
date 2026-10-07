@@ -1,10 +1,10 @@
 import { beforeEach, expect, test } from "bun:test";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
-import { sideSnapshot } from "../side-context.ts";
-import { SideConversation, SIDE_SYSTEM } from "../side-conversation.ts";
-import { SideView } from "../side-view.ts";
-import { registerSide } from "../side.ts";
+import { sideSnapshot } from "../../conversations/side-context.ts";
+import { SideConversation, SIDE_SYSTEM } from "../../conversations/side-conversation.ts";
+import { SideView } from "../../conversations/side-view.ts";
+import { registerSide } from "../../conversations/side.ts";
 
 const usage = { input: 3, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 } };
 const model = { provider: "fixture", id: "side-fixture", api: "fixture", contextWindow: 65536 };

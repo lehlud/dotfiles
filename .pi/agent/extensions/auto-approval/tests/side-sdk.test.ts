@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
-import { registerSide } from "../side.ts";
+import { registerSide } from "../../conversations/side.ts";
 
 const tick = () => new Promise<void>((done) => setTimeout(done, 1));
 async function until(check: () => boolean) {

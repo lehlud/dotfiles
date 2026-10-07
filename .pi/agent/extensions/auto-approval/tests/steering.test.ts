@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from "bun:test";
-import { registerSteering, STEERING_POLICY, STEERING_TYPE } from "../steering.ts";
+import { registerSteering, STEERING_POLICY, STEERING_TYPE } from "../../conversations/steering.ts";
 
 let hooks: Record<string, Function>, target: string | undefined;
 let ctx: any;

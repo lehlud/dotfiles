@@ -2,7 +2,7 @@ import { test, expect, beforeAll, afterAll } from "bun:test";
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { prepareExecutor } from "../bootstrap.ts";
+import { prepareExecutor, prepareCompanionDependencies } from "../bootstrap.ts";
 
 const fixture = await mkdtemp(join(tmpdir(), "pi-bootstrap-test-"));
 const home = join(fixture, "home");
@@ -85,4 +85,15 @@ test("Docker startup leaves the native executor untouched", async () => {
   const before = await stat(runner);
   await prepareExecutor(source, home, agent);
   expect((await stat(runner)).ino).toBe(before.ino);
+});
+
+test("split extensions share pinned dependencies at startup and reject a conflicting installation", async () => {
+  const companion = join(source, "../conversations");
+  await mkdir(companion, { recursive: true }); await writeFile(join(companion, "index.ts"), "export default () => {};\n");
+  await prepareCompanionDependencies(source);
+  const { realpath } = await import("node:fs/promises");
+  expect(await realpath(join(companion, "node_modules"))).toBe(await realpath(join(source, "node_modules")));
+  await prepareCompanionDependencies(source);
+  await rm(join(companion, "node_modules")); await mkdir(join(companion, "node_modules"));
+  await expect(prepareCompanionDependencies(source)).rejects.toThrow("pinned Auto-Approval SDK dependencies");
 });

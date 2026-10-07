@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { buildReview, REVIEW_LANGUAGE, textContent, type Config, type Entry } from "./policy.ts";
-import { checkReviewSize } from "./review-context.ts";
-import type { PreparedPrompts } from "./prompt-compression.ts";
+import { buildReview, REVIEW_LANGUAGE, textContent, type Config, type Entry } from "../auto-approval/policy.ts";
+import { checkReviewSize } from "../auto-approval/review-context.ts";
+import type { PreparedPrompts } from "../auto-approval/prompt-compression.ts";
 
 export const GOAL_REVIEW_SYSTEM = `You independently verify whether the operator's goal is fully achieved.
 ${REVIEW_LANGUAGE}

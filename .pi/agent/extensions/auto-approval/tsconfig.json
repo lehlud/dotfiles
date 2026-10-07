@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "types": ["bun"]
   },
-  "include": ["*.ts", "tests/**/*.ts"]
+  "include": ["*.ts", "tests/**/*.ts", "../conversations/*.ts", "../multiplex/*.ts", "../provider-recovery/*.ts"]
 }

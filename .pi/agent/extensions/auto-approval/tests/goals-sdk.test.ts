@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createAgentSession, DefaultResourceLoader, ModelRegistry, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { registerGoals } from "../goals.ts";
+import { registerGoals } from "../../conversations/goals.ts";
 import { textContent } from "../policy.ts";
-import { registerSteering, STEERING_TYPE } from "../steering.ts";
+import { registerSteering, STEERING_TYPE } from "../../conversations/steering.ts";
 
 async function fixture(directory: string, steering = false) {
   await writeFile(join(directory, "auto-approval.json"), JSON.stringify({ reviewers: [{ provider: "goal-sdk-fixture", model: "reviewer", thinking: "off" }], recentUserPrompts: 2, requestTimeoutMs: 1000, sandbox: { backend: "bwrap" } }));

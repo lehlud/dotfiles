@@ -189,15 +189,19 @@ export function buildReview(request: Request, entries: readonly Entry[], config:
   for (const entry of entries) {
     if (entry.type === "custom" && entry.customType === "auto-approval-review") {
       const audit = entry.data as any;
-      if (audit?.decision === "approve" && ["read", "bash", "powershell", "grep", "find", "ls", "edit", "write", "websearch", "webfetch", "writing_check", "credential_exec", "git"].includes(audit.action?.tool) && audit.toolCallId) approvals.set(audit.toolCallId, audit);
+      if (audit?.decision === "approve" && ["read", "bash", "powershell", "grep", "find", "ls", "edit", "write", "websearch", "webfetch", "writing_check", "credential_exec", "git"].includes(audit.action?.tool) && audit.toolCallId) approvals.set(JSON.stringify([audit.multiplexAgent ?? "", audit.toolCallId]), audit);
     }
-    const message = entry.message;
-    if (entry.type !== "message" || message?.role !== "toolResult" || message.toolName !== "approved_action" || message.isError) continue;
-    const audit = approvals.get(message.toolCallId ?? "");
+    // Peer-Belege stammen ausschließlich vom Extension-Broker; normale
+    // Messagebox-Texte können diese vertrauenswürdigen Einträge nicht erzeugen.
+    const peer = entry.type === "custom" && entry.customType === "auto-approval-peer-result" ? entry.data as any : undefined;
+    const message = peer?.message ?? entry.message;
+    if ((!peer && entry.type !== "message") || message?.role !== "toolResult" || message.toolName !== "approved_action" || message.isError) continue;
     const receipt = message.details?.approval;
+    if (peer && peer.multiplexAgent !== receipt?.multiplexAgent) continue;
+    const audit = approvals.get(JSON.stringify([peer?.multiplexAgent ?? receipt?.multiplexAgent ?? "", message.toolCallId ?? ""]));
     if (!audit?.requestId || !audit.fingerprint || receipt?.decision !== "approve" || receipt.requestId !== audit.requestId || receipt.fingerprint !== audit.fingerprint) continue;
     const pageOnly = ["websearch", "webfetch"].includes(audit.action.tool);
-    const content = Array.isArray(message.content) ? message.content.slice(pageOnly ? 0 : 1).filter((item) => item?.type === "text") : [];
+    const content = Array.isArray(message.content) ? message.content.slice(pageOnly ? 0 : 1).filter((item: any) => item?.type === "text") : [];
     if (!content.length) continue;
     reviewedEvidence.push({ tool: audit.action.tool, arguments: audit.action.arguments, path: audit.action.arguments.path, cwd: audit.cwd, requestId: audit.requestId, content, details: message.details?.result });
   }

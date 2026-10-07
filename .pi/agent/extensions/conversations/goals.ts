@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { BoundaryResult, ExtensionAPI, ExtensionCommandContext, ExtensionContext, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
-import { assertSandboxReady, loadConfig } from "./config.ts";
+import { assertSandboxReady, loadConfig } from "../auto-approval/config.ts";
 import { buildGoalReview, GOAL_REVIEW_SYSTEM } from "./goal-review.ts";
-import { reviewWithFallback, reviewerLabel, ReviewChainError } from "./reviews.ts";
-import { preparePromptContext } from "./prompt-compression.ts";
+import { reviewWithFallback, reviewerLabel, ReviewChainError } from "../auto-approval/reviews.ts";
+import { preparePromptContext } from "../auto-approval/prompt-compression.ts";
+import { sessionServices } from "../auto-approval/session-services.ts";
 
 type Goal = { id: string; text: string; status: "running" | "paused" | "complete" | "stopped"; checks: number; reason: string; feedback?: string };
 type GoalReview = { goalId?: string; superseded?: boolean; verdict?: { decision?: string; reason?: string } };
@@ -25,10 +26,14 @@ class GoalController {
   goal: Goal | undefined;
   reviewController: AbortController | undefined;
   constructor(private pi: ExtensionAPI) {}
-  display = (ctx: ExtensionContext, status?: string) => ctx.ui.setStatus(STATUS_KEY, this.goal ? `goal: ${goalTitle(this.goal.text)} · ${status ?? this.goal.status} · ${this.goal.checks} checks` : undefined);
+  display = (ctx: ExtensionContext, status?: string) => ctx.ui.setStatus(STATUS_KEY, this.goal ? `${sessionServices(ctx).teamSize ? `multiplex: ${sessionServices(ctx).teamSize} · ` : ""}goal: ${goalTitle(this.goal.text)} · ${status ?? this.goal.status} · ${this.goal.checks} checks` : undefined);
   record(next: Goal, ctx: ExtensionContext) {
     this.pi.appendEntry(STATE_ENTRY, next);
     this.goal = next;
+    sessionServices(ctx).operatorGoal = () => this.goal?.status === "running" ? this.goal.text : undefined;
+    sessionServices(ctx).operatorGoalId = () => this.goal?.id;
+    sessionServices(ctx).goalInstruction = () => this.goal?.status === "running" ? instruction(this.goal) : undefined;
+    sessionServices(ctx).refreshGoalStatus = (current) => this.display(current);
     this.display(ctx);
   }
   pause(ctx: ExtensionContext, reason: string) {
@@ -39,6 +44,10 @@ class GoalController {
     this.pi.appendEntry(STATE_ENTRY, this.goal);
   }
   restore(_event: unknown, ctx: ExtensionContext) {
+    sessionServices(ctx).operatorGoal = () => this.goal?.status === "running" ? this.goal.text : undefined;
+    sessionServices(ctx).operatorGoalId = () => this.goal?.id;
+    sessionServices(ctx).goalInstruction = () => this.goal?.status === "running" ? instruction(this.goal) : undefined;
+    sessionServices(ctx).refreshGoalStatus = (current) => this.display(current);
     this.reviewController?.abort();
     ctx.ui.setStatus("goal", undefined); // Clear the old status key after reload.
     const branch = ctx.sessionManager.getBranch();
@@ -70,6 +79,7 @@ class GoalController {
         const stopped = { ...this.goal, status: "stopped" as const, reason: "Stopped by operator; completion not confirmed" };
         this.goal = stopped;
         ctx.abort();
+        await sessionServices(ctx).stopTeam?.();
         this.record(stopped, ctx);
       }
       ctx.ui.notify("Goal stopped by operator; no completion claim.", "warning");
@@ -104,6 +114,8 @@ class GoalController {
     if (current?.status !== "running") return;
     if (event.outcome !== "completed" || ctx.signal?.aborted) { this.pause(ctx, "Run interrupted or failed; use /goal resume"); return; }
     if (event.message.role !== "assistant" || event.message.content.some((block) => block.type === "toolCall") || ctx.hasPendingMessages()) return;
+    // Ein Team-Ergebnis ist erst nach abgeschlossenen Peer-Aktionen prüfbar.
+    if (sessionServices(ctx).peersBusy?.()) return;
     const controller = new AbortController();
     this.reviewController = controller;
     const signal = ctx.signal ? AbortSignal.any([controller.signal, ctx.signal]) : controller.signal;

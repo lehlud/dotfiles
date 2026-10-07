@@ -1,4 +1,4 @@
-import { textContent } from "./policy.ts";
+import { textContent } from "../auto-approval/policy.ts";
 
 type ContextEntry = { type: string; message?: { role: string; content?: unknown; toolName?: string }; customType?: string; data?: unknown; summary?: string };
 type Item = { source: string; text: string };
