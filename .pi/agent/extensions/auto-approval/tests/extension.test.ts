@@ -23,7 +23,7 @@ mock.module("../isolation.ts", () => ({
     validatedScopes.push(structuredClone(scope));
     temporaryStores.push(temporaryDirectory);
     if (mode === "project" && workspaceValidationFails) throw new Error("ENOENT: no such file or directory, lstat '/Users/gunter/.agents/skills/avoid-wikipedia-ai-writing-signs/SKILL.md'");
-    return mode === "web" ? { path: "/workspace", cwd: "/workspace", bindings: [], masked: [], temporaryDirectory } : { path: cwd, cwd, bindings: [cwd], masked: [], temporaryDirectory };
+    return mode !== "project" ? { path: "/workspace", cwd: "/workspace", bindings: (scope as any)?.paths?.map((entry: any) => entry.path) ?? [], masked: [], temporaryDirectory } : { path: cwd, cwd, bindings: [cwd], readOnlyBindings: (scope as any)?.projectFiles === "read" ? [cwd] : [], masked: [], temporaryDirectory };
   },
   executeIsolated: async (request: any, workspace: { path: string }, _config: unknown, signal?: AbortSignal, privateCredentialInput?: any, privateGitReader?: any) => {
     const cwd = workspace.path;
@@ -154,6 +154,33 @@ test("Git configuration cannot be attached to bash or hidden in unknown private 
   await configureGitFixture();
   for (const request of [{ ...bash("env"), sandbox: { gitConfig: true } }, { ...gitAction(), gitConfigReader: { home: "/private", xdg: "/private" } }, { ...gitAction(), arguments: { argv: ["push"] } }]) expect((await call(request)).isError).toBe(true);
   expect(requested).toEqual([]); expect(executedRequests).toEqual([]);
+});
+test("GitHub API calls reach independent review without an endpoint exception; denial never resolves credentials", async () => {
+  await configureGitFixture(); mode = "deny";
+  const argv = ["api", "--paginate", "repos/stuck-lehnert/sortsys/dependabot/alerts?state=open"];
+  const request = { ...credentialAction(), arguments: { profile: "github", argv } };
+  const result = await call(request);
+  expect(result.isError).toBe(true); expect(result.details.reason).toBe("Nicht vom Nutzer gewollt");
+  expect(requested[0].data.action.arguments.argv).toEqual(argv);
+  expect(requested[0].data.sandboxPlan.credentials.argumentPolicy).toBe("review");
+  expect(requested[0].data.sandboxPlan.credentials.operatorArgumentMatch).toBeUndefined();
+  expect(executedRequests).toEqual([]);
+});
+test("general review-mode credentials and project access are scoped and cannot skip denial or audit", async () => {
+  const secretPath = join(agentRoot, "review-mode-token"); await writeFile(secretPath, "synthetic-auth-only-after-review", { mode: 0o600 });
+  await configureCredentialFixture(secretPath);
+  await writeFile(localConfigPath, JSON.stringify({ sandbox: { executable: process.execPath, runnerExecutable: process.execPath }, credentialProfiles: [{ name: "service", executable: process.execPath, argumentPolicy: "review", secrets: { SERVICE_TOKEN: { type: "file", path: secretPath } } }] }));
+  const request = { ...credentialAction(), arguments: { profile: "service", argv: ["a-new-operation", "--file", join(root, "body.txt")] }, sandbox: { projectFiles: "read" } };
+  mode = "deny"; expect((await call(request)).isError).toBe(true); expect(executedRequests).toEqual([]);
+  mode = "approve"; auditFails = true; expect((await call(request)).isError).toBe(true); expect(executedRequests).toEqual([]);
+  auditFails = false;
+  const result = await call(request); expect(result.isError).not.toBe(true);
+  const plan = requested.at(-1).data.sandboxPlan;
+  expect(plan.credentials.argumentPolicy).toBe("review"); expect(plan.credentials.projectFiles).toBe(true);
+  expect(plan.bindings).toEqual([root]); expect(plan.readOnlyBindings).toEqual([root]);
+  expect(executedRequests.at(-1).arguments.argv).toEqual(request.arguments.argv);
+  expect(JSON.stringify(entries)).not.toContain("synthetic-auth-only-after-review");
+  expect((await call({ ...bash("env"), sandbox: { projectFiles: "read" } })).isError).toBe(true);
 });
 async function configureCredentialFixture(secretPath: string) {
   await writeFile(configPath, JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }));

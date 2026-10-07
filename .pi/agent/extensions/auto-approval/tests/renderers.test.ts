@@ -132,6 +132,13 @@ test("single-command read-only Git configuration sharing is visible in the activ
   expect(display(component)).toContain("git config: read-only · one command");
   expect(display(component)).toContain("Reviewed change");
 });
+test("credential project read access is visible as a separate one-command request", () => {
+  const component = new ToolExecutionComponent("approved_action", "credential-files", {
+    tool: "credential_exec", arguments: { profile: "service", argv: ["publish", "body.txt"] }, sandbox: { projectFiles: "read" }, network: true,
+  }, undefined, renderers, ui, cwd);
+  expect(display(component)).toContain("project files: read · one command");
+  expect(display(component)).toContain("network: host");
+});
 test("web approval stays visible in the activity log while model content is only page text", () => {
   const component = row("webfetch", { url: "https://example.com/" }, createApprovalRenderers({ ...tools, ...webTools }));
   const page = Array.from({ length: 30 }, (_, i) => `Page paragraph ${i}`).join("\n");

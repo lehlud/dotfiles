@@ -101,10 +101,10 @@ export async function detectWorkspace(cwd: string, home = homedir()): Promise<{ 
   return { path: current, cwd: current };
 }
 
-/** Projektaktionen prüfen die freigegebene Ansicht; Webaktionen brauchen keine Projektdateien. */
-export async function validateWorkspace(cwd: string, config: SandboxConfig, protectedPaths: readonly string[], request?: SandboxRequest, privateTemporaryDirectory?: string, mode: "project" | "web" = "project"): Promise<Workspace> {
+/** Projekte prüfen ihre Ansicht; Credential-Aufrufe binden sonst nur explizite Pfade ein. */
+export async function validateWorkspace(cwd: string, config: SandboxConfig, protectedPaths: readonly string[], request?: SandboxRequest, privateTemporaryDirectory?: string, mode: "project" | "web" | "credential" = "project"): Promise<Workspace> {
   if (mode === "web" && (request?.paths?.length || request?.executableSearchPaths?.length || request?.tools?.length)) throw new Error("Web research uses no project files, extra path mounts or local tools; remove those access requests");
-  const detected = mode === "web" ? { path: "/workspace", cwd: "/workspace" } : await detectWorkspace(cwd);
+  const detected = mode !== "project" ? { path: "/workspace", cwd: "/workspace" } : await detectWorkspace(cwd);
   const temporaryDirectory = privateTemporaryDirectory ? await realpath(privateTemporaryDirectory) : undefined;
   if (temporaryDirectory && !(await lstat(temporaryDirectory)).isDirectory()) throw new Error("Private /tmp backing storage must be a directory");
   if (temporaryDirectory && (within(detected.path, temporaryDirectory) || within(temporaryDirectory, detected.path))) throw new Error("Workspace overlaps private sandbox temporary storage");
@@ -113,7 +113,7 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
   const root = workspace;
   const protectedRoots = await Promise.all([...protectedPaths, ...backendPaths(config)].map((path) => realpath(path).catch(() => resolve(path))));
   if (mode === "project" && protectedRoots.some((path) => within(path, workspace))) throw new Error("Workspace is inside protected Pi, approval, or credential storage; choose a separate project directory");
-  let bindings = mode === "web" ? [] : [workspace];
+  let bindings = mode !== "project" ? [] : [workspace];
   if (mode === "project" && config.backend === "bwrap") {
     const view = config.workspaceViews?.find((entry) => resolve(entry.root) === root);
     if (view) {
@@ -136,7 +136,8 @@ export async function validateWorkspace(cwd: string, config: SandboxConfig, prot
   if (config.backend === "bwrap" && request?.limits && [request.limits.memoryMiB, request.limits.cpus, request.limits.pids].some((value) => value !== undefined)) {
     throw new Error("Memory, CPU and PID cgroup limits require the Docker backend; bwrap supports executionTimeoutMs, maxOutputBytes and tmpBytes.");
   }
-  const modes = new Map(bindings.map((path) => [path, "write" as "read" | "write"]));
+  const projectAccess: "read" | "write" = request?.projectFiles ?? "write";
+  const modes = new Map(bindings.map((path) => [path, projectAccess]));
   const home = await realpath(homedir());
   const searchPaths: string[] = [];
   const localTools = await resolveLocalTools(request?.tools);

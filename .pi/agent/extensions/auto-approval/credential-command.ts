@@ -8,24 +8,27 @@ import { StringDecoder } from "node:string_decoder";
 const name = Type.String({ pattern: "^[A-Za-z][A-Za-z0-9_-]{0,63}$" });
 const environmentName = Type.String({ pattern: "^[A-Za-z_][A-Za-z0-9_]{0,63}$" });
 const value = Type.String({ maxLength: 16384, pattern: "^[^\\u0000]*$" });
-export const credentialProfileSchema = Type.Object({
+const profileProperties = {
   name,
   executable: Type.String({ pattern: "^/", maxLength: 4096 }),
-  allowedArgv: Type.Array(Type.Array(Type.Union([
-    Type.Object({ literal: value }, { additionalProperties: false }),
-    Type.Object({ pattern: Type.String({ minLength: 1, maxLength: 500 }) }, { additionalProperties: false }),
-  ]), { minItems: 1, maxItems: 64 }), { minItems: 1, maxItems: 64 }),
   environment: Type.Optional(Type.Record(environmentName, value, { maxProperties: 32 })),
   secrets: Type.Record(environmentName, Type.Union([
     Type.Object({ type: Type.Literal("environment"), name: environmentName }, { additionalProperties: false }),
     Type.Object({ type: Type.Literal("file"), path: Type.String({ pattern: "^/", maxLength: 4096 }) }, { additionalProperties: false }),
   ]), { minProperties: 1, maxProperties: 16 }),
-}, { additionalProperties: false });
+};
+export const credentialProfileSchema = Type.Union([
+  Type.Object({ ...profileProperties, argumentPolicy: Type.Literal("review") }, { additionalProperties: false }),
+  Type.Object({ ...profileProperties, allowedArgv: Type.Array(Type.Array(Type.Union([
+    Type.Object({ literal: value }, { additionalProperties: false }),
+    Type.Object({ pattern: Type.String({ minLength: 1, maxLength: 500 }) }, { additionalProperties: false }),
+  ]), { minItems: 1, maxItems: 64 }), { minItems: 1, maxItems: 64 }) }, { additionalProperties: false }),
+]);
 export type CredentialProfile = Static<typeof credentialProfileSchema>;
 
 export const credentialCommandTool: ToolDefinition<any, any> = {
   name: "credential_exec", label: "Authenticated command",
-  description: "One argv-only command using an operator-owned credential profile. No shell, project files, shared /tmp, arbitrary environment or login-file mounts. github supplies bounded gh PR/issue operations with an explicit --repo OWNER/REPO and numeric number. Requires network: true and independent approval. Other profiles must be configured by the operator outside Pi.",
+  description: "One argv-only command using an operator-owned program/login binding. The independent reviewer authorizes the full argv and service effects; profiles may add an operator argument allowlist. github binds native gh to its existing login without a fixed subcommand list. Request network: true for remote access, sandbox.projectFiles: read/write for current-project access or sandbox.paths for selected files. No shell, shared /tmp, inherited environment or login-file mounts. Every command and access expansion requires its own review. Other program/login bindings must be configured by the operator outside Pi.",
   parameters: Type.Object({ profile: name, argv: Type.Array(value, { minItems: 1, maxItems: 64 }) }, { additionalProperties: false }),
   renderCall(args: any, theme, context) {
     const command = JSON.stringify(args.argv ?? []);
@@ -48,7 +51,7 @@ export async function executeCredentialCommand(input: unknown) {
   if (!Check(executionSchema, input)) throw new Error("Invalid private credential execution");
   const execution = input as CredentialExecution;
   const child = spawn(execution.executable, execution.argv, {
-    cwd: "/workspace", stdio: ["ignore", "pipe", "pipe"], shell: false,
+    cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"], shell: false,
     env: { PATH: "/usr/bin:/bin", HOME: "/tmp/home", LANG: "C.UTF-8", ...execution.environment },
   });
   let bytes = 0, exceeded = false;
