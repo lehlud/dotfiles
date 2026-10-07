@@ -31,7 +31,7 @@ export function registerEndpoint(pi: ExtensionAPI, current: () => Endpoint | und
     const endpoint = current();
     const messages = event.messages.filter((entry) => entry.role !== "custom" || entry.customType !== "multiplex-policy");
     if (!endpoint || endpoint.boxes.closed) return { messages };
-    const received = event.messages.flatMap((entry) => entry.role === "custom" && entry.customType === MAILBOX_MESSAGE && (entry.details as any)?.to === endpoint.name ? [Number((entry.details as any)?.sequence) || 0] : []);
+    const received = event.messages.flatMap((entry) => entry.role === "custom" && entry.customType === MAILBOX_MESSAGE && (entry.details as any)?.teamId === endpoint.boxes.id && (entry.details as any)?.to === endpoint.name ? [Number((entry.details as any)?.sequence) || 0] : []);
     endpoint.boxes.observe(endpoint.name, Math.max(0, ...received));
     return { messages: [...messages, { role: "custom", customType: "multiplex-policy", display: false, timestamp: Date.now(), content: `${POLICY}\nYour name: ${endpoint.name}\nMembers: ${endpoint.boxes.names.join(", ")}\n${endpoint.operatorGoal() ? `Shared operator goal: ${endpoint.operatorGoal()}` : ""}` }] };
   });

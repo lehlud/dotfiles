@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { Mailboxes, letterMessage, randomNames } from "../../multiplex/mailboxes.ts";
+import { AGENT_WORDS } from "../../multiplex/names.ts";
+import { registerEndpoint } from "../../multiplex/endpoint.ts";
 import { buildReview, type Config } from "../policy.ts";
 
 function fixture(count = 3) {
@@ -12,10 +14,21 @@ function fixture(count = 3) {
   return { names, boxes, delivered, audits, results };
 }
 
-test("names are fresh random identities; all members can address each other without a leader", () => {
+test("names are randomly selected English words, unique within each team", () => {
   const first = randomNames(16), second = randomNames(16);
-  expect(new Set([...first, ...second]).size).toBe(32);
-  expect(first.every((name) => /^agent-[0-9a-f]{10}$/.test(name))).toBe(true);
+  expect(new Set(AGENT_WORDS).size).toBe(AGENT_WORDS.length);
+  expect(AGENT_WORDS.every((word) => /^[a-z]+$/.test(word))).toBe(true);
+  for (const names of [first, second]) {
+    expect(names).toHaveLength(16);
+    expect(new Set(names).size).toBe(16);
+    expect(names.every((name) => AGENT_WORDS.includes(name))).toBe(true);
+  }
+  expect(first).not.toEqual(second);
+  expect(new Set(randomNames(AGENT_WORDS.length))).toEqual(new Set(AGENT_WORDS));
+  for (const count of [0, -1, 1.5, NaN, Infinity, AGENT_WORDS.length + 1]) expect(() => randomNames(count)).toThrow("Invalid agent name count");
+});
+
+test("all members can address each other without a leader", () => {
   const { names, boxes, delivered } = fixture();
   for (const from of names) for (const to of names.filter((name) => name !== from)) boxes.send(from, to, `${from} proposal`);
   for (const name of names) expect(delivered.get(name)).toHaveLength(2);
@@ -70,6 +83,27 @@ test("bounded pending queues apply backpressure atomically and recover after obs
   const last = boxes.inbox(names[2]).at(-1)!;
   boxes.observe(names[2], last.sequence);
   expect(boxes.send(names[0], "*", "allowed after observation")).toHaveLength(2);
+});
+
+test("reused word names cannot acknowledge messages from another team", () => {
+  const previous = new Mailboxes(["otter", "maple"]), current = new Mailboxes(previous.names);
+  const sink = { deliver() {}, audit() {}, result() {} };
+  for (const boxes of [previous, current]) for (const name of boxes.names) boxes.bind(name, sink);
+  for (let i = 0; i < 256; i++) {
+    previous.send("maple", "otter", "old team");
+    current.send("maple", "otter", "current team");
+  }
+  let context!: (event: any, ctx: any) => any;
+  registerEndpoint({ on: (event: string, handler: any) => { if (event === "context") context = handler; }, registerTool() {} } as any, () => ({ name: "otter", boxes: current, operatorGoal: () => undefined }));
+  const ctx = { sessionManager: {} };
+  const messages = previous.inbox("otter").map((letter) => ({ role: "custom", ...letterMessage(letter) }));
+  context({ messages }, ctx);
+  expect(() => current.send("maple", "otter", "must still wait")).toThrow("queue is full");
+  messages.push({ role: "custom", ...letterMessage(current.inbox("otter").at(-1)!) });
+  context({ messages }, ctx);
+  expect(current.send("maple", "otter", "current team observed")).toHaveLength(1);
+  expect(current.id).not.toBe(previous.id);
+  previous.close(); current.close();
 });
 
 test("shared receipts cannot collide across actors or turn ordinary peer prose into authority", () => {

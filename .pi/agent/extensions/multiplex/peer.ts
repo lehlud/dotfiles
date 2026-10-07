@@ -12,7 +12,7 @@ import { sessionServices } from "../auto-approval/session-services.ts";
 import { registerEndpoint, type Endpoint } from "./endpoint.ts";
 import { letterMessage, PEER_RESULT, type Letter } from "./mailboxes.ts";
 
-/** Alle Peers benutzen dieselben vertrauenswürdigen Provider, keine Auth-Kopie im Modell. */
+/** All peers use the same trusted providers; credentials never enter model context. */
 export async function peerRuntime(ctx: ExtensionContext) {
   installProviderStreams(ctx.modelRegistry);
   const agentDir = getAgentDir();
@@ -41,12 +41,12 @@ export class Peer {
       let ready!: () => void;
       const started = new Promise<void>((resolve) => { ready = resolve; });
       const unsubscribe = this.session.subscribe((event) => { if (event.type === "agent_start") ready(); });
-      const run = start().catch(() => { if (!this.stopped) this.report("Peer-Anfrage fehlgeschlagen; keine automatische Wiederholung des Auftrags."); });
+      const run = start().catch(() => { if (!this.stopped) this.report("Peer request failed; the task will not be automatically repeated."); });
       this.runs.add(run);
       void run.finally(() => { this.runs.delete(run); if (!this.stopped && !this.busy) this.settled(); });
       try { await Promise.race([started, run]); }
       finally { unsubscribe(); }
-    }).catch(() => this.report("Peer-Zustellung fehlgeschlagen.")).finally(() => { this.pending--; if (!this.stopped && !this.busy) this.settled(); });
+    }).catch(() => this.report("Peer delivery failed.")).finally(() => { this.pending--; if (!this.stopped && !this.busy) this.settled(); });
   }
   prompt(event: Pick<InputEvent, "text" | "images" | "streamingBehavior">) {
     const copy = structuredClone(event);
@@ -66,8 +66,8 @@ export class Peer {
     await this.session.abort();
     await this.admission;
     this.session.clearQueue();
-    // Ein noch laufender Auth-/Start-Hook kann erst nach dem ersten Abbruch
-    // in die SDK-Schleife eintreten. Auch diesen späteren Start abbrechen.
+    // An ongoing authentication/start hook may enter the SDK loop only after
+    // the first abort. Cancel that late start as well.
     await this.session.abort();
     await Promise.allSettled([...this.runs]);
     try { await sessionServices({ sessionManager: this.session.sessionManager }).cleanup?.(); }
@@ -87,7 +87,7 @@ export async function createPeer(ctx: ExtensionContext, endpoint: Endpoint, runt
       registerSteering(pi, endpoint.operatorGoal);
       registerEndpoint(pi, () => endpoint);
       pi.on("turn_end", (event) => {
-        if (event.outcome === "error") report("Peer-Modelllauf fehlgeschlagen; Ergebnis nicht vollständig.");
+        if (event.outcome === "error") report("Peer model run failed; its result is incomplete.");
       });
       pi.on("agent_settled", (_event, child) => {
         const last = child.sessionManager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "assistant").at(-1);
@@ -101,7 +101,7 @@ export async function createPeer(ctx: ExtensionContext, endpoint: Endpoint, runt
   await loader.reload();
   const { session } = await createAgentSession({ cwd: ctx.cwd, agentDir: getAgentDir(), modelRuntime: runtime, model: ctx.model, thinkingLevel: ctx.thinkingLevel ?? "medium", sessionManager: manager, settingsManager: settings, resourceLoader: loader, tools: ["approved_action", "mailbox"] });
   try {
-    await session.bindExtensions({ mode: "json", onError: () => report("Peer-Extension meldet einen Fehler."), uiContext: { setStatus() {}, setWidget() {}, notify: (_text: string, kind?: string) => { if (kind === "error") report("Peer-Sandbox oder Konfiguration ist nicht verfügbar."); } } as any });
+    await session.bindExtensions({ mode: "json", onError: () => report("Peer extension reported an error."), uiContext: { setStatus() {}, setWidget() {}, notify: (_text: string, kind?: string) => { if (kind === "error") report("Peer sandbox or configuration unavailable."); } } as any });
     return new Peer(session, report, settled);
   } catch (error) {
     await sessionServices({ sessionManager: manager }).cleanup?.(); session.dispose(); throw error;

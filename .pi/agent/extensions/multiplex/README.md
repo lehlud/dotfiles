@@ -1,39 +1,39 @@
 # Pi Multiplex
 
-`/multiplex <n>` startet ein Team aus `n` gleichberechtigten Arbeitsagenten, aktuell mit 1–16 Mitgliedern. Der sichtbare Agent zählt mit; zusätzlich entstehen `n - 1` echte Pi-SDK-Sessions. Es gibt keinen koordinierenden Master und keine bevorzugten Nachrichtenrechte. Jeder Name enthält neu erzeugte kryptografische Zufallsbytes. Alle Mitglieder starten mit dem aktiven Gesprächszweig, Systemkontext, Arbeitsmodell und Thinking-Level.
+`/multiplex <n>` starts a team of `n` equal working agents, currently 1–16 members. The visible agent counts as one member; `n - 1` additional Pi SDK sessions run concurrently. There is no lead agent or privileged messaging role. Names are single English words such as `otter`, `maple` or `comet`, selected using cryptographic randomness without replacement within each team. Different teams may reuse words; a name is a team-local address, not a globally unique identifier. All members start with the active conversation branch, system context, working model and thinking level.
 
-Der nächste echte User-Prompt und spätere Korrekturen erreichen alle Mitglieder. Sie bearbeiten denselben Projekt-Workspace, vereinbaren über Messageboxes selbst Aufgaben- und Dateiverantwortung und tauschen Befunde sowie Reviews aus. Das soll unabhängige Arbeit parallelisieren und die Prüfung komplexer Ergebnisse verbessern. Eine automatische Laufzeit- oder Qualitätsverbesserung ist damit nicht belegt; doppelte Arbeit und Konflikte müssen die Agenten durch Abstimmung vermeiden. Modellverbrauch entsteht für jedes aktive Mitglied separat.
+The next actual user prompt and subsequent corrections reach every member. Members share the project workspace, use messageboxes to agree on task and file ownership, and exchange findings and reviews. The purpose is to parallelize independent work and improve review of complex results. Faster or better results are not guaranteed; agents must coordinate to avoid duplicate work and conflicts. Each active member incurs its own model usage.
 
-- `/multiplex 4`: vier Mitglieder insgesamt, darunter das sichtbare Mitglied.
-- `/multiplex` oder `/multiplex status`: Namen, Dimension und Peer-Zustände anzeigen.
-- `/multiplex off` oder `/multiplex 0`: laufende Team-Arbeit abbrechen und Peer-Sessions bereinigen.
-- Eine neue Dimension kann im Leerlauf eingestellt werden. Namen und Messageboxes werden dabei neu erzeugt.
+- `/multiplex 4`: four members in total, including the visible member.
+- `/multiplex` or `/multiplex status`: show names, team size and peer states.
+- `/multiplex off` or `/multiplex 0`: stop the team and cancel peer work.
+- Change the team size only while all members are idle.
 
-Die Statusleiste zeigt `multiplex: n` und den Namen des sichtbaren Mitglieds. Bei einem `/goal` steht die Dimension zusätzlich am Anfang des Goal-Status, damit sie auf schmalen Terminals sichtbar bleibt. Peer-Antworten erscheinen mit Absender im Aktivitätsprotokoll. `/side` bleibt ein separater, rein erklärender Seitenchat; dortige Fragen werden nicht zu Team-Aufträgen.
+The status bar shows `multiplex: n` and the visible member's name. During a `/goal`, the team size also appears at the start of the goal status so it remains visible on narrow terminals. Peer answers appear with their sender in the activity log. `/side` remains a separate explanatory conversation; side questions do not become team assignments.
 
 ## Messageboxes
 
-Das Tool `mailbox` besitzt ausschließlich diese internen Operationen:
+The `mailbox` tool provides only these internal operations:
 
 ```json
 {"operation":"peers"}
-{"operation":"send","to":"agent-1234567890","text":"Ich übernehme parser.ts. Wer prüft die Fehlerpfade?"}
-{"operation":"send","to":"*","text":"Parseränderung und lokale Prüfungen fertig; Belege stehen im Aktionsprotokoll."}
+{"operation":"send","to":"otter","text":"I will handle parser.ts. Who can review its error paths?"}
+{"operation":"send","to":"*","text":"Parser changes and local checks are complete; evidence is in the action log."}
 {"operation":"inbox"}
 ```
 
-`*` adressiert alle anderen Mitglieder. Zustellung und Sequenznummern folgen der Sendereihenfolge; idle Mitglieder werden geweckt, arbeitende Mitglieder erhalten Steering. Ein Tool-Ergebnis bestätigt die Übergabe, nicht die Bearbeitung durch das Empfängermodell. Das Inbox-Archiv behält die letzten 128 empfangenen Nachrichten. Nachrichten haben höchstens 16 KiB; bis zu 256 noch nicht im Modellkontext beobachtete Nachrichten pro Empfänger sind möglich. Volle Queues melden Backpressure, ohne einen Broadcast teilweise anzunehmen. Nachrichteninhalte werden weder redigiert noch von einem Prüfmodell freigegeben.
+`*` addresses every other member. Delivery and sequence numbers follow send order. Messages wake idle members and steer working members. A tool result confirms handoff, not processing by the receiving model. The inbox archive retains the last 128 received messages. Each message is limited to 16 KiB; each recipient can have up to 256 messages not yet observed in its model context. Full queues apply backpressure without partially accepting a broadcast. Message contents are neither edited nor submitted to a reviewer for approval. A separate internal team ID prevents messages in an older transcript from acknowledging a new team's queue when word names are reused.
 
-Der Absender wird von der Extension an die Session gebunden und kann nicht als Tool-Argument überschrieben werden. Peer-Nachrichten bleiben ausdrücklich Peer-Daten; sie werden nie in echte Nutzerprompts oder Autorisierung umgewandelt. Ein Mitglied darf weder das Team konfigurieren noch für andere Mitglieder Freigaben erteilen.
+The extension binds the sender to the session; tool arguments cannot override it. Peer messages are explicitly peer data and never become actual user instructions or authorization. A member cannot configure the team or grant approvals to other members.
 
-## Freigabe, Belege und Lebensdauer
+## Isolation, goals and lifecycle
 
-Jede externe Aktion jedes Mitglieds läuft durch dieselbe Auto-Approval-Extension und den zwingenden Sandbox-Executor. Freigaben für Netzwerk, zusätzliche Pfade, Git-Konfiguration oder Credentials gelten weiterhin nur für die jeweils geprüfte Aktion. Andere Tools und verschachtelte Tool-Aufrufe bleiben gesperrt. Nur die internen Messageboxes benötigen keine Freigabe.
+Every external action by every member passes through the same Auto-Approval extension and mandatory sandbox executor. Network, additional path, Git configuration and credential permissions remain scoped to the reviewed action. Other tools and nested tool calls remain blocked. Only internal messagebox operations bypass action review.
 
-Die Mitglieder teilen Projektdateien, besitzen aber unabhängige Gesprächsverläufe und private Sandbox-`/tmp`-Verzeichnisse. Vom vertrauenswürdigen Broker übertragene Aktionsurteile und Ergebnisbelege bleiben von freiem Nachrichtentext getrennt. Aktionsprüfer sehen auch Peer-Ablehnungen; Nachrichten können keine Ablehnung umgehen. Belege tragen den ursprünglichen Actor-Namen, Request-ID und Fingerprint, damit gleiche Tool-Call-IDs verschiedener Sessions nicht verwechselt werden.
+Members share project files but have independent conversation histories and private sandbox `/tmp` directories. Action decisions and result evidence transferred by the trusted broker remain separate from arbitrary message text. Action reviewers see peer denials as well; messages cannot override a denial. Evidence retains the original actor name, request ID and fingerprint so identical tool-call IDs from different sessions are not confused.
 
-Ein gemeinsames `/goal` und die Rückmeldung seines unabhängigen Zielprüfers erreichen auch die Peers. Der Abschluss wird erst geprüft, wenn laufende Peer-Arbeit beendet ist. Neue Peer-Arbeit, Nachrichten oder Aktionsergebnisse während einer laufenden Zielprüfung machen deren älteres Urteil ungültig; nach Abschluss wird mit dem aktuellen Belegstand erneut geprüft. Die Zielprüfung bleibt beim sichtbaren Gespräch und verwendet auch die protokollierten Peer-Aktionsergebnisse; dies verleiht dem sichtbaren Arbeitsagenten keine Weisungsrechte. `/goal stop` beendet auch noch arbeitende Peers, wenn das sichtbare Mitglied bereits im Leerlauf ist.
+A shared `/goal` and feedback from its independent reviewer also reach peers. Completion review waits for ongoing peer work to settle. New peer work, messages or action results during goal review invalidate its older verdict; completion is reviewed again using current evidence. Goal review stays with the visible conversation and includes recorded peer action results; this grants the visible working agent no authority over peers. `/goal stop` also stops working peers when the visible member is already idle.
 
-Beenden, Reload, Session-Wechsel oder Navigation im Session-Baum beenden das Team und löschen die temporären Daten der Peer-Sessions. Ein Abbruch des sichtbaren Modelllaufs beendet ebenfalls das Team. Wenn nur Peers arbeiten, beendet `/multiplex off` diese Arbeit. Multiplex wird nach einem Session-Wechsel nicht automatisch wiederhergestellt. Peer-Verläufe leben im Speicher; übertragene Ergebnisse und Urteile verbleiben im normalen Session-Protokoll.
+Exit, reload, session replacement or session-tree navigation stop the team and delete peer temporary data. Aborting the visible model run also stops the team. `/multiplex off` cancels work even when only peers are busy. Multiplex does not restart automatically after a session change. Peer transcripts live in memory; transferred results and decisions remain in the normal session log.
 
-Der Launcher lädt die Extension separat. Ihre SDK-Abhängigkeiten werden beim Startup mit den festgeschriebenen Abhängigkeiten von Auto-Approval verknüpft. Tests laufen ohne echte Modellanbieter im Integrationstest-Paket `../auto-approval`.
+The launcher loads this extension separately. Startup links its SDK dependencies to Auto-Approval's pinned dependencies. Tests use synthetic providers in the `../auto-approval` integration package without contacting real model providers.

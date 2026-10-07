@@ -1,6 +1,7 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+export { randomNames } from "./names.ts";
 
-export type Letter = { id: string; sequence: number; from: string; to: string; text: string };
+export type Letter = { id: string; teamId: string; sequence: number; from: string; to: string; text: string };
 export type MailboxSink = {
   canDeliver?(): boolean;
   deliver(letter: Letter): void;
@@ -11,14 +12,9 @@ export const MAILBOX_TOOL = "mailbox";
 export const MAILBOX_MESSAGE = "multiplex-letter";
 export const PEER_RESULT = "auto-approval-peer-result";
 
-export function randomNames(count: number): string[] {
-  const names = new Set<string>();
-  while (names.size < count) names.add(`agent-${randomBytes(5).toString("hex")}`);
-  return [...names];
-}
-
-/** Absender kommen aus der gebundenen Session, niemals aus Tool-Argumenten. */
+/** Senders come from the bound session, never from tool arguments. */
 export class Mailboxes {
+  readonly id = randomUUID();
   private sinks = new Map<string, MailboxSink>();
   private histories = new Map<string, Letter[]>();
   private pending = new Map<string, number[]>();
@@ -37,7 +33,7 @@ export class Mailboxes {
     const recipients = to === "*" ? this.names.filter((name) => name !== from) : [to];
     if (recipients.some((name) => !this.sinks.has(name))) throw new Error("Unknown recipient");
     if (recipients.some((name) => this.pending.get(name)!.length >= 256 || this.sinks.get(name)!.canDeliver?.() === false)) throw new Error("Recipient message queue is full; wait for processing");
-    const letters = recipients.map((recipient) => ({ id: randomUUID(), sequence: ++this.sequence, from, to: recipient, text }));
+    const letters = recipients.map((recipient) => ({ id: randomUUID(), teamId: this.id, sequence: ++this.sequence, from, to: recipient, text }));
     if (letters.length) this.revision++;
     for (const letter of letters) {
       const history = this.histories.get(letter.to)!;

@@ -54,33 +54,33 @@ export default function multiplex(pi: ExtensionAPI) {
     for (const peer of team.peers) peer.message({ customType: "multiplex-operator-goal", display: false, content: instruction });
   });
   pi.registerCommand("multiplex", {
-    description: "Gleichberechtigte Agenten: /multiplex <1–16>, status oder off; n zählt alle Mitglieder",
+    description: "Equal peers: /multiplex <1–16>, status or off; n counts all members",
     async handler(args, ctx) {
       const value = args.trim();
       if (!value || value === "status") {
-        ctx.ui.notify(team ? `Multiplex ${team.boxes.names.length}\n${team.boxes.names.map((name, i) => `${name}${i === 0 ? " (sichtbar)" : team!.peers[i - 1]?.busy ? " (arbeitet)" : " (bereit)"}`).join("\n")}` : "Multiplex ist aus. /multiplex <1–16> startet ein Team.", "info");
+        ctx.ui.notify(team ? `Multiplex ${team.boxes.names.length}\n${team.boxes.names.map((name, i) => `${name}${i === 0 ? " (visible)" : team!.peers[i - 1]?.busy ? " (working)" : " (ready)"}`).join("\n")}` : "Multiplex is off. /multiplex <1–16> starts a team.", "info");
         return;
       }
-      if (changing) { ctx.ui.notify("Ein Team-Wechsel läuft bereits.", "warning"); return; }
+      if (changing) { ctx.ui.notify("A team change is already in progress.", "warning"); return; }
       changing = true;
       const before = generation;
       try {
         if (value === "off" || value === "0") {
           if (team && !ctx.isIdle()) ctx.abort();
           await stop(ctx); await ctx.waitForIdle();
-          ctx.ui.notify("Multiplex beendet; Peer-Prozesse und deren temporäre Daten wurden bereinigt.", "info"); return;
+          ctx.ui.notify("Multiplex stopped; peer sessions and their temporary data have been cleaned up.", "info"); return;
         }
-        if (!/^[1-9]\d*$/.test(value) || Number(value) > MAX_AGENTS) throw new Error("Verwende /multiplex <1–16>, status oder off.");
-        if (!ctx.isIdle() || team?.peers.some((peer) => peer.busy)) throw new Error("Team-Wechsel erst im Leerlauf; /multiplex off bricht laufende Team-Arbeit ab.");
-        if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) throw new Error("Arbeitsmodell oder Anmeldung nicht verfügbar.");
+        if (!/^[1-9]\d*$/.test(value) || Number(value) > MAX_AGENTS) throw new Error("Use /multiplex <1–16>, status or off.");
+        if (!ctx.isIdle() || team?.peers.some((peer) => peer.busy)) throw new Error("Change teams only while idle; /multiplex off cancels ongoing team work.");
+        if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) throw new Error("Working model or authentication unavailable.");
         await assertSandboxReady(await loadConfig(getAgentDir()));
-        if (before !== generation) throw new Error("Session während des Team-Starts gewechselt");
-        if (!ctx.isIdle()) throw new Error("Ein Modelllauf wurde während der Vorprüfung gestartet; Team-Wechsel abgebrochen.");
+        if (before !== generation) throw new Error("Session changed during team startup");
+        if (!ctx.isIdle()) throw new Error("A model run started during preflight; team change cancelled.");
         await stop(ctx);
-        if (generation !== before + 1 || !ctx.isIdle()) throw new Error("Session oder Modelllauf während des Team-Wechsels geändert");
+        if (generation !== before + 1 || !ctx.isIdle()) throw new Error("Session or model run changed during team replacement");
         await start(Number(value), ctx);
       } catch (error) {
-        ctx.ui.notify(`Multiplex: ${error instanceof Error ? error.message : "Start fehlgeschlagen"}`, "error");
+        ctx.ui.notify(`Multiplex: ${error instanceof Error ? error.message : "Startup failed"}`, "error");
       } finally { changing = false; }
     },
   });
@@ -102,7 +102,7 @@ export default function multiplex(pi: ExtensionAPI) {
     try {
       const runtime = count > 1 ? await peerRuntime(ctx) : undefined;
       for (const name of names.slice(1)) {
-        if (next.stopped) throw new Error("Team-Start unterbrochen");
+        if (next.stopped) throw new Error("Team startup interrupted");
         const peer = await createPeer(ctx, { name, boxes, operatorGoal: endpoint.operatorGoal }, runtime!, (text) => {
           if (!next.stopped) ctx.ui.notify(`${name}: ${text}`, "error");
         }, (text) => {
@@ -115,11 +115,11 @@ export default function multiplex(pi: ExtensionAPI) {
             pi.sendMessage({ customType: "multiplex-goal-checkpoint", display: false, content: "The peer runs have settled. Inspect their reported results and trusted reviewed receipts, finish any remaining work, and let the independent goal reviewer verify completion." }, { triggerTurn: true });
           }
         }, initialBranch);
-        if (next.stopped) { await peer.close(); throw new Error("Team-Start unterbrochen"); }
+        if (next.stopped) { await peer.close(); throw new Error("Team startup interrupted"); }
         next.peers.push(peer);
         boxes.bind(name, peer);
       }
-      if (next.stopped) throw new Error("Team-Start unterbrochen");
+      if (next.stopped) throw new Error("Team startup interrupted");
       next.ready = true;
       sessionServices(ctx).teamSize = count;
       attach(ctx); pi.setActiveTools(["approved_action", "mailbox"]); display(ctx);
@@ -130,7 +130,7 @@ export default function multiplex(pi: ExtensionAPI) {
         for (const peer of next.peers) peer.message({ customType: "multiplex-operator-goal", display: false, content: instruction });
       }
       pi.appendEntry("multiplex-team", { names, count, state: "active" });
-      ctx.ui.notify(`Multiplex ${count}: ${names.join(", ")}\nAlle Mitglieder sind gleichberechtigt. Der nächste User-Prompt geht an alle. Gemeinsamer Workspace; getrennte Sessions und Sandbox-/tmp.`, "info");
+      ctx.ui.notify(`Multiplex ${count}: ${names.join(", ")}\nAll members are equal peers. The next user prompt goes to everyone. Shared workspace; separate sessions and sandbox /tmp directories.`, "info");
     } catch (error) { await stop(ctx); throw error; }
   }
 }

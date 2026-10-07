@@ -45,12 +45,12 @@ async function fixture(directory: string) {
             const data = JSON.parse(String(context.messages.find((entry) => entry.role === "user")?.content));
             reviews.push(data);
             const decision = !data.action ? data.reviewedContext.length >= 2 ? "approve" : "deny" : String(data.action.arguments.command).includes("denied-") ? "deny" : "approve";
-            message.content = [{ type: "text", text: JSON.stringify({ requestId: data.requestId, decision, reason: "Synthetische, aktionsgebundene Prüfentscheidung." }) }];
+            message.content = [{ type: "text", text: JSON.stringify({ requestId: data.requestId, decision, reason: "Synthetic action-bound review decision." }) }];
           } else {
             const serialized = JSON.stringify(context.messages);
-            const name = serialized.match(/Your name: (agent-[a-f0-9]+)/)?.[1];
+            const name = serialized.match(/Your name: ([a-z]+)/)?.[1];
             if (!name) throw new Error("Agent has no bound random identity");
-            const names = serialized.match(/Members: (agent-[a-f0-9]+(?:, agent-[a-f0-9]+)*)/)?.[1].split(", ") ?? [];
+            const names = serialized.match(/Members: ([a-z]+(?:, [a-z]+)*)/)?.[1].split(", ") ?? [];
             const stage = stages.get(name) ?? 0; stages.set(name, stage + 1);
             contexts.push({ name, stage, messages: structuredClone(context.messages), tools: getCurrentTools(context.messages).map((tool) => tool.name) });
             if (stage === 0) await new Promise<void>((done) => { releases.push(done); options?.signal?.addEventListener("abort", () => done(), { once: true }); });
@@ -73,7 +73,7 @@ async function fixture(directory: string) {
   const loader = new DefaultResourceLoader({ cwd: project, agentDir, settingsManager: settings, noExtensions: true, noSkills: true, noThemes: true, noContextFiles: true, noPromptTemplates: true, extensionFactories: [autoApproval, conversations, multiplex, recovery, (pi) => { pi.on("session_start", (_event, ctx) => { rootContext = ctx; }); }] });
   await loader.reload();
   const manager = SessionManager.inMemory(project);
-  manager.appendMessage({ role: "user", content: "BEFORE-MULTIPLEX: Bereits vorhandene User-Aufträge und Verbote behalten.", timestamp: Date.now() });
+  manager.appendMessage({ role: "user", content: "BEFORE-MULTIPLEX: Preserve existing user instructions and prohibitions.", timestamp: Date.now() });
   const { session } = await createAgentSession({ cwd: project, agentDir, modelRuntime: runtime, model: new ModelRegistry(runtime).find("multiplex-fixture", "working")!, thinkingLevel: "off", sessionManager: manager, settingsManager: settings, resourceLoader: loader, tools: ["approved_action", "mailbox"] });
   return { session, contexts, reviews, stages, project, releases, root: () => rootContext };
 }
@@ -103,7 +103,7 @@ nativeTest("real equal Pi peers run concurrently, share every prompt and message
     const blocked = state.session.sessionManager.getBranch().flatMap((entry) => entry.type === "custom" && entry.customType === "auto-approval-review" && (entry.data as any)?.technicalFailure ? [(entry.data as any).reason] : []);
     expect(blocked).toEqual([]);
     const toolErrors = state.session.sessionManager.getBranch().flatMap((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.isError ? [{ tool: entry.message.toolName, content: entry.message.content }] : []);
-    expect(toolErrors.filter((error) => !JSON.stringify(error).includes("Synthetische") && error.tool !== "bash")).toEqual([]);
+    expect(toolErrors.filter((error) => !JSON.stringify(error).includes("Synthetic action-bound review decision.") && error.tool !== "bash")).toEqual([]);
     const names = [...state.stages.keys()]; expect(names).toHaveLength(3);
     for (const name of names) {
       expect(await readFile(join(state.project, `${name}.txt`), "utf8")).toBe(name);
@@ -154,17 +154,20 @@ nativeTest("operator off cancels all concurrent peers, rejects busy resizing, an
     for (const invalid of ["-1", "2.5", "17", "NaN", "2 trailing"]) await state.session.prompt(`/multiplex ${invalid}`);
     expect(statuses.has("00-multiplex")).toBe(false);
     await state.session.prompt("/multiplex 2");
-    main = state.session.prompt("TEAM-TASK: Dieser synthetische Lauf wartet bis zum Betreiberabbruch.");
+    expect(notices.at(-1)).toContain("All members are equal peers.");
+    expect(notices.at(-1)).toContain("The next user prompt goes to everyone.");
+    main = state.session.prompt("TEAM-TASK: This synthetic run waits until the operator cancels it.");
     await until(() => state!.releases.length === 2);
     await state.session.prompt("/multiplex 4");
-    expect(notices.at(-1)).toContain("Leerlauf"); expect(statuses.get("00-multiplex")).toContain("multiplex: 2");
+    expect(notices.at(-1)).toContain("idle"); expect(statuses.get("00-multiplex")).toContain("multiplex: 2");
+    const previousMailbox = sessionServices(state.root()).mailbox!;
     await state.session.prompt("/multiplex off"); await main;
     expect(statuses.has("00-multiplex")).toBe(false); expect(state.reviews).toEqual([]);
     expect(await readdir(state.project)).toEqual([]);
-    const oldNames = new Set(state.stages.keys());
     await state.session.prompt("/multiplex 2");
-    const newVisible = sessionServices(state.root()).mailbox!.name;
-    expect(oldNames.has(newVisible)).toBe(false);
+    const currentMailbox = sessionServices(state.root()).mailbox!;
+    expect(currentMailbox).not.toBe(previousMailbox);
+    expect(currentMailbox.name).toMatch(/^[a-z]+$/);
     await state.session.reload();
     expect(statuses.has("00-multiplex")).toBe(false);
     expect(sessionServices(state.root()).mailbox).toBeUndefined();
@@ -186,12 +189,12 @@ nativeTest("a multiplex goal reaches every peer and completion waits for their r
     state = await fixture(directory);
     await state.session.bindExtensions({ mode: "tui", uiContext: { setStatus: (key: string, value?: string) => { if (value === undefined) statuses.delete(key); else statuses.set(key, value); }, setWidget() {}, notify: (text: string) => notices.push(text) } as any });
     await state.session.prompt("/multiplex 2");
-    await state.session.prompt("/goal TEAM-GOAL: Erzeugt getrennte, unabhängig geprüfte Ergebnisse.");
+    await state.session.prompt("/goal TEAM-GOAL: Produce separate, independently reviewed results.");
     await until(() => state!.releases.length === 2);
     expect(state.contexts.every((context) => JSON.stringify(context.messages).includes("TEAM-GOAL"))).toBe(true);
     expect(statuses.get("00-goal")).toStartWith("multiplex: 2 · goal:");
     expect(notices.some((text) => text.startsWith("Goal confirmed:"))).toBe(false);
-    // Sichtbares Mitglied zuerst fertig: der Peer bleibt noch in seiner Anfrage.
+    // The visible member finishes first; the peer remains in its request.
     const visible = sessionServices(state.root()).mailbox!.name;
     const rootIndex = state.contexts.findIndex((context) => context.name === visible);
     state.releases[rootIndex]();
@@ -223,7 +226,7 @@ nativeTest("goal stop also cancels peers when the visible member has already set
     state = await fixture(directory);
     await state.session.bindExtensions({ mode: "tui", uiContext: { setStatus: (key: string, value?: string) => { if (value === undefined) statuses.delete(key); else statuses.set(key, value); }, setWidget() {}, notify() {} } as any });
     await state.session.prompt("/multiplex 2");
-    await state.session.prompt("/goal TEAM-GOAL: Wartende Peer-Arbeit auf ausdrücklichen Betreiberabbruch beenden.");
+    await state.session.prompt("/goal TEAM-GOAL: Stop waiting peer work on explicit operator cancellation.");
     await until(() => state!.releases.length === 2);
     const visible = sessionServices(state.root()).mailbox!.name;
     state.releases[state.contexts.findIndex((context) => context.name === visible)]();
