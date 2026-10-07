@@ -3,13 +3,17 @@ import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import { buildReview, constrainReviewPayload, parseVerdict, REVIEW_LANGUAGE, REVIEW_SYSTEM, textContent, withWatchdog, type Config, type Reviewer } from "./policy.ts";
 import { reviewCapacityIssue, reviewLanguageReference, REVIEW_OUTPUT_TOKENS } from "./review-context.ts";
 import { promptOriginalTool, readPromptOriginal } from "./prompt-reader.ts";
+import { sumUsage } from "./usage.ts";
+export { sumUsage } from "./usage.ts";
+import { ProviderAvailability, providerAvailability, ProviderHeldError, RecoveryAuditError, type AvailabilityNotice } from "./provider-availability.ts";
+import { installProviderStreams, unavailableResponse } from "./provider-stream.ts";
 
 type Registry = Pick<ModelRegistry, "find" | "hasConfiguredAuth" | "streamSimple">;
 type Usage = AssistantMessage["usage"];
 type Envelope = Pick<ReturnType<typeof buildReview>, "requestId" | "fingerprint" | "text"> & Partial<Pick<ReturnType<typeof buildReview>, "promptSources" | "compressionUsage">>;
 type PromptLookup = { promptId: string; operation: string; offset?: number; limit?: number; query?: string };
 export type ReviewAttempt = Reviewer & { status: "failed" | "invalid" | "approve" | "deny"; reason: string };
-type Observer = { start(candidate: Reviewer): void; finish(): void; failed(attempt: ReviewAttempt): void; lookup?(request: PromptLookup): void };
+type Observer = { start(candidate: Reviewer): void; finish(): void; failed(attempt: ReviewAttempt): void; lookup?(request: PromptLookup): void; retry?(event: AvailabilityNotice): void };
 export const reviewerLabel = (candidate: Reviewer) => `${candidate.provider}/${candidate.model} (${candidate.thinking})`;
 
 function refusedReview(message: string): boolean {
@@ -28,6 +32,7 @@ function providerFailureDetail(error: unknown): string {
 }
 
 function incompleteReview(response: AssistantMessage, requestId: string) {
+  if (response.errorMessage === new RecoveryAuditError().message) return { blocked: response.errorMessage };
   try {
     const verdict = parseVerdict(textContent(response.content), requestId);
     if (verdict.decision === "deny") return { denial: verdict };
@@ -40,14 +45,6 @@ function incompleteReview(response: AssistantMessage, requestId: string) {
 
 export class ReviewChainError extends Error {
   constructor(message: string, public attempts: ReviewAttempt[], public usage?: Usage) { super(message); }
-}
-
-export function sumUsage(current: Usage | undefined, next: Usage): Usage {
-  if (!current) return structuredClone(next);
-  const merged = { ...next, cost: { ...next.cost } };
-  for (const key of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) merged[key] += current[key];
-  for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) merged.cost[key] += current.cost[key];
-  return merged;
 }
 
 function unavailable(registry: Registry, candidate: Reviewer, model: ReturnType<Registry["find"]>) {
@@ -71,25 +68,32 @@ function reviewContext(envelope: Envelope, systemPrompt: string): Context {
   };
 }
 
-async function requestReview(registry: Registry, candidate: Reviewer, model: NonNullable<ReturnType<Registry["find"]>>, envelope: Envelope, timeoutMs: number, signal: AbortSignal | undefined, context: Context) {
-  return await withWatchdog(async (reviewSignal) => registry.streamSimple(model, context, {
-    reasoning: candidate.thinking === "off" ? undefined : candidate.thinking,
-    signal: reviewSignal, maxTokens: REVIEW_OUTPUT_TOKENS, cacheRetention: "short", sessionId: envelope.requestId,
-    onPayload: (payload, providerModel) => constrainReviewPayload(payload, providerModel, envelope.requestId),
-  }).result(), timeoutMs, signal);
+async function requestReview(registry: Registry, candidate: Reviewer, model: NonNullable<ReturnType<Registry["find"]>>, envelope: Envelope, timeoutMs: number, signal: AbortSignal | undefined, context: Context, state: ReviewState, availability: ProviderAvailability, observer: Observer) {
+  const managed = installProviderStreams(registry as any, availability, observer.retry);
+  return await withWatchdog(async (reviewSignal) => {
+    const work = async () => {
+      const response = await registry.streamSimple(model, structuredClone(context), {
+        reasoning: candidate.thinking === "off" ? undefined : candidate.thinking,
+        signal: reviewSignal, maxTokens: REVIEW_OUTPUT_TOKENS, cacheRetention: "short", sessionId: envelope.requestId,
+        onPayload: (payload, providerModel) => constrainReviewPayload(payload, providerModel, envelope.requestId),
+      }).result();
+      state.usage = sumUsage(state.usage, response.usage);
+      return response;
+    };
+    return managed ? await work() : await availability.run(model, work, (response) => unavailableResponse(response, context), reviewSignal, observer.retry);
+  }, timeoutMs, signal);
 }
 
 class ReviewerToolError extends Error {}
 type ReviewState = { usage?: Usage; promptLookups: PromptLookup[]; consulted: Set<string> };
-async function requestCandidate(registry: Registry, candidate: Reviewer, model: NonNullable<ReturnType<Registry["find"]>>, envelope: Envelope, timeoutMs: number, signal: AbortSignal | undefined, initial: Context, observer: Observer, state: ReviewState) {
+async function requestCandidate(registry: Registry, candidate: Reviewer, model: NonNullable<ReturnType<Registry["find"]>>, envelope: Envelope, timeoutMs: number, signal: AbortSignal | undefined, initial: Context, observer: Observer, state: ReviewState, availability: ProviderAvailability) {
   const context = structuredClone(initial);
   const started = Date.now();
   for (let round = 0; round <= 8; round++) {
     const remaining = timeoutMs - (Date.now() - started);
     if (remaining <= 0) throw new Error("Reviewer request timed out");
     if (reviewCapacityIssue(context, model)) throw new ReviewerToolError("Reviewer lookup context exceeds model capacity");
-    const response = await requestReview(registry, candidate, model, envelope, remaining, signal, context);
-    state.usage = sumUsage(state.usage, response.usage);
+    const response = await requestReview(registry, candidate, model, envelope, remaining, signal, context, state, availability, observer);
     const calls = response.content.filter((block) => block.type === "toolCall");
     if (!calls.length) return response;
     try { if (parseVerdict(textContent(response.content), envelope.requestId).decision === "deny") return response; } catch { /* Ein Tool-Turn braucht noch kein Urteil. */ }
@@ -109,7 +113,7 @@ async function requestCandidate(registry: Registry, candidate: Reviewer, model: 
   throw new ReviewerToolError("Reviewer original-prompt lookup rounds exceeded");
 }
 
-export async function reviewWithFallback(config: Config, registry: Registry, envelope: Envelope, observer: Observer, signal?: AbortSignal, systemPrompt = REVIEW_SYSTEM) {
+export async function reviewWithFallback(config: Config, registry: Registry, envelope: Envelope, observer: Observer, signal?: AbortSignal, systemPrompt = REVIEW_SYSTEM, availability = providerAvailability) {
   const source = JSON.parse(envelope.text).latestUserPrompt;
   if (typeof source !== "string" || !source.trim()) throw new ReviewChainError("Latest operator prompt unavailable; no fallback, nothing executed", []);
   const context = reviewContext(envelope, systemPrompt);
@@ -125,11 +129,11 @@ export async function reviewWithFallback(config: Config, registry: Registry, env
     state.consulted.clear();
     try {
       if (!reason && model) {
-        response = await requestCandidate(registry, candidate, model, envelope, config.requestTimeoutMs, signal, context, observer, state);
+        response = await requestCandidate(registry, candidate, model, envelope, config.requestTimeoutMs, signal, context, observer, state, availability);
       }
     } catch (error) {
       signal?.throwIfAborted();
-      if (error instanceof ReviewerToolError) {
+      if (error instanceof RecoveryAuditError || error instanceof ReviewerToolError) {
         const reason = "Reviewer original-prompt lookup failed; no fallback, nothing executed";
         attempts.push({ ...candidate, status: "invalid", reason });
         throw new ReviewChainError(reason, attempts, state.usage);
@@ -139,7 +143,7 @@ export async function reviewWithFallback(config: Config, registry: Registry, env
         attempts.push({ ...candidate, status: "invalid", reason });
         throw new ReviewChainError(reason, attempts, state.usage);
       }
-      reason = error instanceof Error && error.message === "Reviewer request timed out" ? error.message : `Reviewer provider request failed${providerFailureDetail(error)}`;
+      reason = error instanceof ProviderHeldError ? error.message : error instanceof Error && error.message === "Reviewer request timed out" ? error.message : `Reviewer provider request failed${providerFailureDetail(error)}`;
     } finally { observer.finish(); }
     signal?.throwIfAborted();
     if (response) {

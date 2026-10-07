@@ -1,6 +1,7 @@
 import { test, expect, beforeEach } from "bun:test";
 import { reviewWithFallback, ReviewChainError, type ReviewAttempt } from "../reviews.ts";
 import { buildReview, type Config } from "../policy.ts";
+import { ProviderAvailability } from "../provider-availability.ts";
 
 const primary = { provider: "openai", model: "gpt-6-luna", thinking: "medium" as const };
 const fallback = { provider: "openrouter", model: "openai/gpt-6-luna", thinking: "medium" as const };
@@ -15,7 +16,9 @@ let starts: string[];
 let finishes: number;
 let onResponse: (() => void) | undefined;
 let capacities: Record<string, number>;
-beforeEach(() => { modes = {}; calls = []; attempts = []; starts = []; finishes = 0; onResponse = undefined; capacities = {}; });
+let availability: ProviderAvailability;
+let clock: number;
+beforeEach(() => { modes = {}; calls = []; attempts = []; starts = []; finishes = 0; onResponse = undefined; capacities = {}; clock = 0; availability = new ProviderAvailability({ now: () => clock, wait: async (ms, signal) => { signal?.throwIfAborted(); clock += ms; } }); });
 const observer = {
   start: (candidate: { provider: string }) => { starts.push(candidate.provider); },
   finish: () => { finishes++; },
@@ -40,7 +43,7 @@ const registry: any = {
     } };
   },
 };
-const run = (settings = config, signal?: AbortSignal, callbacks = observer) => reviewWithFallback(settings, registry, envelope, callbacks, signal);
+const run = (settings = config, signal?: AbortSignal, callbacks = observer) => reviewWithFallback(settings, registry, envelope, callbacks, signal, undefined, availability);
 
 test("highest-priority success stops the chain and preserves request-bound output", async () => {
   const result = await run();
@@ -66,7 +69,8 @@ test("provider failures fall back without exposing raw provider error content", 
   modes.openai = "throw";
   const result = await run();
   expect(result.selectedReviewer).toEqual(fallback);
-  expect(result.attempts[0].reason).toBe("Reviewer provider request failed: rate limit or quota unavailable");
+  expect(result.attempts[0].reason).toContain("availability guard for 300 seconds");
+  expect(calls.filter((item) => item.model.provider === "openai")).toHaveLength(6);
   expect(JSON.stringify(result)).not.toContain("synthetic-private-error-content");
   expect(result.usage).toEqual(usage);
 });

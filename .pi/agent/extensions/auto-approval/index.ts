@@ -28,6 +28,7 @@ import { preparePromptContext } from "./prompt-compression.ts";
 import { checkActionSize } from "./review-context.ts";
 import { credentialCommandTool } from "./credential-command.ts";
 import { credentialProtectedPaths, credentialReviewPlan, executeWithCredentials, resolveCredentialPlan } from "./credential-access.ts";
+import { registerProviderRecovery } from "./provider-stream.ts";
 
 const TOOL_NAME = "approved_action";
 const factories = {
@@ -70,6 +71,7 @@ async function canonicalPath(path: string): Promise<string> {
 const LOCK_MESSAGE = "Auto-Approval: direct and alternative tools are blocked. Use approved_action with the exact action, goal, and justification. A denied action must not be bypassed.";
 
 export default function autoApproval(pi: ExtensionAPI) {
+  registerProviderRecovery(pi);
   const operatorGoal = registerGoals(pi);
   registerSteering(pi, operatorGoal);
   registerSide(pi);
@@ -214,6 +216,10 @@ export default function autoApproval(pi: ExtensionAPI) {
           phase = "independent review";
           reviewer = config.reviewers.map(reviewerLabel).join(" → ");
           const checked = await reviewWithFallback(config, ctx.modelRegistry, review, {
+            retry(event) {
+              pi.appendEntry("auto-approval-provider-retry", { toolCallId: id, requestId: review.requestId, ...event });
+              onUpdate?.({ content: [{ type: "text", text: `Provider recovery · ${event.provider}/${event.model} · ${event.retry}/${event.maxRetries} · ${event.delayMs / 1000}s` }], details: { phase: "reviewing", retry: event } });
+            },
             start(candidate) {
               reviewer = reviewerLabel(candidate);
               stopDisplay = startReviewDisplay(ctx, reviewer, name).stop;
