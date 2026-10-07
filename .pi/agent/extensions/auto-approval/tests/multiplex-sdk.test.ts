@@ -22,7 +22,7 @@ const exists = async (path: string) => { try { await access(path); return true; 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const nativeTest = process.platform === "linux" && Bun.which("bwrap") ? test : test.skip;
 
-async function fixture(directory: string, diskLoaded = false) {
+async function fixture(directory: string, diskLoaded = false, delayedReview = false) {
   const agentDir = join(directory, "agent"), project = join(directory, "project");
   await mkdir(agentDir); await mkdir(project);
   const runner = join(directory, "runner");
@@ -33,6 +33,7 @@ async function fixture(directory: string, diskLoaded = false) {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), modelsStorePath: join(agentDir, "models-store.json"), allowModelNetwork: false });
   const stages = new Map<string, number>(), contexts: any[] = [], reviews: any[] = [], releases: (() => void)[] = [];
+  const reviewReleases: (() => void)[] = [], mailboxResults: any[] = [];
   runtime.registerProvider("multiplex-fixture", {
     api: "multiplex-fixture", apiKey: "synthetic", baseUrl: "https://example.invalid",
     models: ["working", "review"].map((id) => ({ id, name: id, reasoning: false, input: ["text"], contextWindow: 131072, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })),
@@ -44,6 +45,7 @@ async function fixture(directory: string, diskLoaded = false) {
           if (model.id === "review") {
             const data = JSON.parse(String(context.messages.find((entry) => entry.role === "user")?.content));
             reviews.push(data);
+            if (delayedReview && data.action?.goal === "Parallel barrier") await new Promise<void>((done) => { reviewReleases.push(done); options?.signal?.addEventListener("abort", () => done(), { once: true }); });
             const decision = !data.action ? data.reviewedContext.length >= 2 ? "approve" : "deny" : String(data.action.arguments.command).includes("denied-") ? "deny" : "approve";
             message.content = [{ type: "text", text: JSON.stringify({ requestId: data.requestId, decision, reason: "Synthetic action-bound review decision." }) }];
           } else {
@@ -60,6 +62,7 @@ async function fixture(directory: string, diskLoaded = false) {
             else if (stage === 2) call("approved_action", { tool: "bash", arguments: { command: `touch denied-${name}.txt` }, goal: "Implement TEAM-TASK", justification: "Synthetic denied action" });
             else if (stage === 3) call("bash", { command: `touch bypass-${name}.txt` });
             else message.content = [{ type: "text", text: `${name}: TEAM-DONE with independently reviewed output.` }];
+            if (delayedReview && stage === 0) message.content.unshift({ type: "toolCall", id: `barrier-${name}`, name: "approved_action", arguments: { tool: "bash", arguments: { command: "printf 'reviewed'" }, goal: "Parallel barrier", justification: "Hold the synthetic external review while testing internal transport" } });
           }
           if (options?.signal?.aborted) { message.stopReason = "aborted"; stream.push({ type: "error", reason: "aborted", error: message }); }
           else stream.push({ type: "done", reason: message.stopReason, message });
@@ -72,14 +75,47 @@ async function fixture(directory: string, diskLoaded = false) {
   let rootContext: any;
   const loader = new DefaultResourceLoader({ cwd: project, agentDir, settingsManager: settings, noExtensions: true, noSkills: true, noThemes: true, noContextFiles: true, noPromptTemplates: true,
     additionalExtensionPaths: diskLoaded ? ["auto-approval", "conversations", "multiplex", "provider-recovery"].map((name) => resolve(import.meta.dir, "../..", name, "index.ts")) : [],
-    extensionFactories: [...(diskLoaded ? [] : [autoApproval, conversations, multiplex, recovery]), (pi) => { pi.on("session_start", (_event, ctx) => { rootContext = ctx; }); }],
+    extensionFactories: [...(diskLoaded ? [] : [autoApproval, conversations, multiplex, recovery]), (pi) => {
+      pi.on("session_start", (_event, ctx) => { rootContext = ctx; });
+      pi.on("tool_result", (event) => { if (event.toolName === "mailbox" && !event.isError) mailboxResults.push(event); });
+    }],
   });
   await loader.reload();
   const manager = SessionManager.inMemory(project);
   manager.appendMessage({ role: "user", content: "BEFORE-MULTIPLEX: Preserve existing user instructions and prohibitions.", timestamp: Date.now() });
   const { session } = await createAgentSession({ cwd: project, agentDir, modelRuntime: runtime, model: new ModelRegistry(runtime).find("multiplex-fixture", "working")!, thinkingLevel: "off", sessionManager: manager, settingsManager: settings, resourceLoader: loader, tools: ["approved_action", "mailbox"] });
-  return { session, contexts, reviews, stages, project, releases, root: () => rootContext };
+  return { session, contexts, reviews, stages, project, releases, reviewReleases, mailboxResults, root: () => rootContext };
 }
+
+nativeTest("mailbox handoff does not wait for a pending external action review", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-mailbox-parallel-")), previous = process.env.PI_CODING_AGENT_DIR;
+  let state: Awaited<ReturnType<typeof fixture>> | undefined, main: Promise<void> | undefined;
+  try {
+    state = await fixture(directory, false, true);
+    await state.session.bindExtensions({ mode: "json" });
+    await state.session.prompt("/multiplex 2");
+    main = state.session.prompt("TEAM-TASK: Exchange ownership while the external reviewer is held.");
+    await until(() => state!.releases.length === 2);
+    state.releases.forEach((release) => release());
+    await until(() => state!.reviewReleases.length === 2 && state!.mailboxResults.length > 0);
+    expect(state.session.isStreaming).toBe(true);
+    expect(state.mailboxResults[0].details).toHaveLength(1);
+    expect(state.mailboxResults[0].details[0].from).toBe(sessionServices(state.root()).mailbox!.name);
+    expect(state.reviews.every((review) => review.action.goal === "Parallel barrier")).toBe(true);
+    const before = state.session.sessionManager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === "approved_action");
+    expect(before).toHaveLength(0);
+    state.reviewReleases.forEach((release) => release());
+    await main;
+    await until(() => !sessionServices(state!.root()).peersBusy?.());
+    expect(state.mailboxResults).toHaveLength(1);
+  } finally {
+    state?.releases.forEach((release) => release()); state?.reviewReleases.forEach((release) => release());
+    await main?.catch(() => {}); await state?.session.prompt("/multiplex off").catch(() => {});
+    if (state) await sessionServices(state.root()).cleanup?.(); state?.session.dispose();
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60000);
 
 nativeTest("independently disk-loaded extensions share the trusted live mailbox binding", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-multiplex-loader-")), previous = process.env.PI_CODING_AGENT_DIR;

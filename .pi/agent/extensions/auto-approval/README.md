@@ -1,6 +1,6 @@
 # Pi Auto-Approval
 
-Every external agent action is reviewed by an independent model. Approved actions then run in a separate sandbox. Direct tools, `!`/`!!`, nested tool calls and a local execution fallback are blocked.
+Every external agent action is reviewed by an independent model. Approved actions then run in a separate sandbox. Direct external tools, `!`/`!!`, nested external tool calls and a local execution fallback are blocked. Multiplex's internal `mailbox` transport is outside approval: the hook returns immediately without inspecting message content or contacting a reviewer. The Multiplex extension owns its session-bound delivery.
 
 Built-in prompts, interface messages, source comments and extension documentation use English. Model replies and review explanations still follow the latest actual operator prompt's language. Multilingual regression inputs deliberately retain their original languages.
 
@@ -16,7 +16,7 @@ Technical failures before independent review identify the failing preflight stag
 
 ## Conversation features
 
-`/goal`, `/side` and steering reminders belong to the separate [Conversations extension](../conversations/README.md). [`/multiplex <n>`](../multiplex/README.md) starts concurrent equal peers. Their internal messageboxes require no reviewer; every external action by every member still uses this approval and sandbox path.
+`/goal`, `/side` and steering reminders belong to the separate [Conversations extension](../conversations/README.md). [`/multiplex <n>`](../multiplex/README.md) starts concurrent equal peers. Their internal messageboxes require no reviewer or approval request. They can be scheduled alongside pending reviews and commands, while this extension's own queue still serializes external review and execution. Every external action by every member continues to use this approval and sandbox path.
 
 ## Automatic workspace detection
 

@@ -119,26 +119,24 @@ const exists = async (path: string) => { try { await access(path); return true; 
 const credentialAction = () => ({ tool: "credential_exec", arguments: { profile: "service", argv: ["inspect"] }, network: true, goal: "Inspect authenticated service", justification: "User requested this authenticated operation" });
 const gitAction = () => ({ tool: "git", arguments: { argv: ["commit", "-m", "Synthetic change"] }, sandbox: { gitConfig: true }, goal: "Commit the requested change", justification: "Use the existing operator identity for this exact local commit" });
 
-test("only a trusted live mailbox binding admits communication; external actions still require review", async () => {
-  const inactive = await hooks.tool_call({ toolName: "mailbox" }, ctx);
-  expect(inactive.block).toBe(true);
-  expect(inactive.reason).toContain("No message was delivered");
-  expect(inactive.reason).toContain("Do not repeat this call");
-  expect(inactive.reason).not.toContain("Use approved_action");
+test("mailbox bypasses approval entirely while external actions still require review", async () => {
+  const inaccessible = { get sessionManager() { throw new Error("Approval must not inspect mailbox sessions"); } };
+  expect(hooks.tool_call({ toolName: "mailbox" }, inaccessible)).toBeUndefined();
+  expect(hooks.tool_call({ toolName: "mailbox", parentToolCallId: "nested" }, inaccessible)).toBeUndefined();
+  expect(requested).toEqual([]);
   const shared: unknown[] = [];
   sessionServices(ctx).mailbox = { name: "agent-fixture", active: () => true, audit: (data) => shared.push(data) };
   await hooks.session_start({}, ctx);
   expect(active).toEqual(["approved_action", "mailbox"]);
   expect(await hooks.tool_call({ toolName: "mailbox" }, ctx)).toBeUndefined();
   expect(requested).toEqual([]);
-  expect((await hooks.tool_call({ toolName: "mailbox", parentToolCallId: "nested" }, ctx)).block).toBe(true);
   mode = "deny";
   expect((await call(bash("touch denied-with-peers"))).isError).toBe(true);
   expect(requested).toHaveLength(1); expect(executedRequests).toEqual([]);
   expect((shared[0] as any).multiplexAgent).toBe("agent-fixture");
   expect((shared[0] as any).decision).toBe("deny");
   sessionServices(ctx).mailbox!.active = () => false;
-  expect((await hooks.tool_call({ toolName: "mailbox" }, ctx)).block).toBe(true);
+  expect(hooks.tool_call({ toolName: "mailbox" }, ctx)).toBeUndefined();
 });
 async function configureGitFixture() {
   await writeFile(configPath, JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }));
