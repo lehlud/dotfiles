@@ -15,7 +15,7 @@ export function credentialProtectedPaths(config: Config): string[] {
   return [ghConfigDirectory(), ...(config.credentialProfiles ?? []).flatMap((profile) => [profile.executable, ...Object.values(profile.secrets).flatMap((source) => source.type === "file" ? [source.path] : [])])];
 }
 
-/** Vollständige Argumentfolgen prüfen; kein Regex-Teiltreffer gewährt Zugriff. */
+/** Check complete argument sequences; partial regex matches never grant access. */
 export function matchesCredentialArgv(profile: CredentialProfile, argv: string[]): boolean {
   if ("argumentPolicy" in profile) return profile.argumentPolicy === "review";
   return profile.allowedArgv.some((rule) => rule.length === argv.length && rule.every((item, index) => {
@@ -88,7 +88,7 @@ const safeSecret = (secret: string | undefined): string => {
   return secret;
 };
 
-/** Der feste Offline-Getter liefert nur dem vertrauenswürdigen Gate einen Token. */
+/** The fixed offline getter supplies a token only to the trusted gate. */
 export async function resolveGithubCredential(plan: CredentialPlan, workspace: Workspace, config: Config, directory: string, signal?: AbortSignal): Promise<string> {
   const inherited = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
   if (inherited) return safeSecret(inherited);
@@ -96,13 +96,13 @@ export async function resolveGithubCredential(plan: CredentialPlan, workspace: W
   await copyGithubConfiguration(plan.configDirectory!, source);
   const getter: CredentialExecution = { executable: "/opt/pi-credential/tool", argv: ["auth", "token", "--hostname", "github.com"], environment: { GH_CONFIG_DIR: source, GH_PROMPT_DISABLED: "1" }, redact: [], maxOutputBytes: 32768 };
   const request: Request = { tool: "credential_exec", arguments: { profile: "github", argv: getter.argv }, goal: "Resolve approved GitHub credential", justification: "Fixed offline credential getter", sandbox: { network: "none", limits: { executionTimeoutMs: 10000, maxOutputBytes: 65536 } } };
-  // gh migriert ältere Konfigurationen auch bei auth token. Nur die private Kopie ist schreibbar.
+  // gh migrates older configurations even during auth token. Only the private copy is writable.
   const result = await executeIsolated(request, { path: "/workspace", cwd: "/workspace", bindings: [source], masked: [], credentialExecutable: workspace.credentialExecutable }, config.sandbox, signal, getter);
   if (result.isError) throw new Error("GitHub credentials unavailable; authenticate gh inside Lubox outside Pi or supply GH_TOKEN to the Pi process. macOS Keychain-only logins are not available inside Linux");
   return safeSecret(result.content.filter((item) => item.type === "text").map((item) => item.text).join("").trim());
 }
 
-/** Auflösung erst nach protokollierter Freigabe; kein Secret landet im Request. */
+/** Resolve credentials only after recorded approval; secrets never enter the request. */
 export async function executeWithCredentials(request: Request, plan: CredentialPlan, config: Config, signal?: AbortSignal, approvedWorkspace?: Workspace) {
   signal?.throwIfAborted();
   const bytes = await executableBytes(plan.executable);
@@ -125,7 +125,7 @@ export async function executeWithCredentials(request: Request, plan: CredentialP
     const execution: CredentialExecution = { executable: "/opt/pi-credential/tool", argv: plan.argv, environment, redact: secrets, maxOutputBytes: request.sandbox?.limits?.maxOutputBytes ?? 16 * 1024 * 1024 };
     return await executeIsolated(request, workspace, config.sandbox, signal, execution);
   } catch (error) {
-    // Secret-Dateiinhalte und Getter-Ausgabe erscheinen auch bei Fehlern nie im Audit.
+    // Secret file contents and getter output never enter the audit, including on failure.
     if (signal?.aborted) throw new Error("Credential execution cancelled");
     throw new Error(error instanceof Error ? error.message : "Credential execution failed");
   } finally { await removeSessionTemporaryDirectory(directory); }

@@ -1,52 +1,52 @@
 # Pi Conversations
 
-Diese Extension enthält Gesprächssteuerung: `/goal`, `/side` und Steering. Sie besitzt keinen Executor und kann keine Aktion freigeben. Aktionsprüfungen verwenden den vom Goal-Controller bereitgestellten Session-Dienst; der Chat-Verlauf bleibt die Quelle echter Nutzeraufträge.
+This extension owns conversation control: `/goal`, `/side` and steering. It has no executor and cannot approve actions. Action review uses a session service supplied by the goal controller; the actual conversation history remains the source of user instructions.
 
-## Bis zum bestätigten Ziel weiterarbeiten
+## Continue until the goal is verified
 
-`/goal <Ziel>` startet das aktuelle Arbeitsmodell mit einem konkreten Ziel. Sobald das Modell seine Antwort beendet, prüft das konfigurierte Prüfmodell die Zielerfüllung anhand der Antwort und der protokollierten Ergebnisse genehmigter Aktionen. Eine bloße Behauptung des Arbeitsmodells genügt bei Codeänderungen und Laufzeitprüfungen nicht.
+`/goal <objective>` starts the current working model with a concrete objective. When the model finishes its response, the configured reviewer checks completion using the answer and recorded results of approved actions. A claim by the working model alone is insufficient for code changes or runtime checks.
 
-Das Ziel erscheint unten in der Statusleiste, auch während der Abschlussprüfung und bei pausierten Zielen. Es steht vor dem Approval-Status, damit dieser es auf schmalen Terminals nicht verdrängt. Lange oder mehrzeilige Ziele werden für die Anzeige gekürzt und auf eine Zeile gebracht; `/goal status` zeigt den vollständigen Text. Beim Session-Wechsel oder Beenden wird die Anzeige entfernt und anschließend gegebenenfalls aus der gewählten Session wiederhergestellt.
+The goal appears in the bottom status bar, including during completion review and while paused. It precedes approval status so it remains visible on narrow terminals. Long or multiline goals are shortened to one display line; `/goal status` shows the full text. Exit and session replacement clear the status, which can then be restored from the selected session.
 
-Fehlt noch Arbeit, erhält das Arbeitsmodell die Begründung und setzt automatisch fort. Erst ein positives Prüferegebnis markiert das Ziel als erfüllt. Eine negative Zielprüfung wechselt nicht zum nächsten Prüfmodell; Fallbacks gelten weiterhin ausschließlich für technische Nichtverfügbarkeit. Jede Aktion bleibt separat genehmigungspflichtig und läuft in der Sandbox.
+When work remains, the working model receives the reviewer's reason and continues automatically. Only a positive review marks the goal complete. A negative goal verdict does not try another reviewer; fallbacks apply only to technical unavailability. Every external action still requires its own approval and sandbox execution.
 
-- `/goal` oder `/goal status` zeigt Ziel, Zustand, Begründung und Anzahl der Prüfungen.
-- `/goal resume` setzt ein pausiertes Ziel fort.
-- `/goal stop` ist der ausdrückliche Betreiberabbruch und behauptet keine Zielerfüllung. Auch Escape, Ctrl+C und Beenden bleiben möglich.
+- `/goal` or `/goal status` shows the objective, state, reason and review count.
+- `/goal resume` continues a paused goal.
+- `/goal stop` is an explicit operator cancellation and never claims completion. Escape, Ctrl+C and exit remain available.
 
-Beim Fortsetzen erhält das Arbeitsmodell das gespeicherte Ziel und die zuletzt gültige Rückmeldung der unabhängigen Zielprüfung. Pausengründe und Bedienhinweise wie `/goal resume` bleiben Statusinformationen für den Betreiber. Während ein Ziel läuft, enthält jede Modellanfrage genau eine aktuelle Goal-Steuernachricht; ältere Steuernachrichten werden nur aus diesem Anfragekontext entfernt. Der gespeicherte Verlauf, echte Nutzertexte und Nachrichten anderer Erweiterungen bleiben erhalten. Das gilt auch für bereits vorhandene Sessions.
+On resume, the model receives the saved objective and latest valid independent completion feedback. Pause reasons and interface hints such as `/goal resume` remain operator status information. Each model request during an active goal contains exactly one current goal control message; older control messages are removed only from that request context. The saved transcript, actual user text and other extensions' messages remain intact. This also applies to existing sessions.
 
-Prüfausfälle, ungültige Urteile und unterbrochene Modellläufe pausieren das Ziel. Nach einem Neustart, Neuladen oder Session-Wechsel wird ein gespeichertes, unerfülltes Ziel ebenfalls pausiert wiederhergestellt. Es startet erst mit `/goal resume` erneut; das private `/tmp` wurde beim Session-Shutdown gelöscht. Eine Navigation im Session-Baum übernimmt den Zielzustand des gewählten Zweigs ohne automatischen Neustart.
+Review failures, invalid verdicts and interrupted model runs pause the goal. Restart, reload or session replacement restore a saved incomplete goal as paused. It resumes only with `/goal resume`; session shutdown has deleted its private `/tmp`. Session-tree navigation adopts the selected branch's goal state without restarting it automatically.
 
-Ziel, Prüfversuche, Entscheidungsmodell, Request-ID, Evidence-Fingerprint und Verbrauch werden im Session-Protokoll gespeichert. Die ursprüngliche `/goal`-Anweisung bleibt den Aktionsprüfern als Nutzerauftrag erhalten, auch wenn weitere Modellrunden keinen neuen Nutzerprompt haben. Spätere Nutzerkorrekturen gelten weiterhin. Es gibt keine feste Rundenzahl oder Laufzeitgrenze für ein Ziel; bis zur Bestätigung oder Unterbrechung können laufend Modellkosten entstehen.
+The session log records the objective, review attempts, deciding model, request ID, evidence fingerprint and usage. The original `/goal` instruction remains an operator instruction for action reviewers even when subsequent model turns have no new user prompt. Later user corrections still apply. Goals have no fixed turn count or total runtime limit; model costs can accumulate until verification or interruption.
 
-## Korrekturen während der Arbeit
+## Corrections during ongoing work
 
-Eine als Steering eingereihte Nutzernachricht ergänzt die laufende Aufgabe. Das Modell erhält danach bei jeder Anfrage den Hinweis, die Korrektur einzuarbeiten und anschließend die noch offene Hauptarbeit samt Validierung fortzusetzen. Bei normalen Aufgaben wird der ursprüngliche Auftrag als zitierter Text mit höchstens 4.000 Zeichen erinnert; längere Aufträge werden ausdrücklich als Ausschnitt gekennzeichnet. Bei `/goal` bleibt dessen gespeichertes Ziel maßgeblich.
+A user message queued as steering supplements the ongoing task. Subsequent model requests remind the model to apply the correction and continue the remaining main work and validation. For ordinary tasks, the original request is recalled as quoted text of up to 4,000 characters; longer requests are explicitly labeled as excerpts. An active `/goal` remains the authoritative objective.
 
-Die tatsächliche Nutzernachricht und ihr gespeicherter Verlauf bleiben unverändert. Der Hinweis erscheint einmal im Modellkontext, wird nicht als zusätzliche Nutzernachricht gespeichert und erteilt keine Tool-Freigabe. Er gilt nur für den laufenden Auftrag und wird bei einer neuen Aufgabe oder einem Session-Wechsel zurückgesetzt. Ein ausdrücklicher Abbruch oder Aufgabenwechsel bleibt möglich. Follow-up-Nachrichten werden nicht automatisch als Steering behandelt.
+Actual user messages and their saved history remain unchanged. The reminder appears once in model context, is not stored as an additional user message and grants no tool permission. It applies only to the current task and resets on a new task or session. Explicit cancellation or task replacement remains possible. Follow-up messages are not automatically treated as steering.
 
-Normale Aufgaben erhalten diese Fortsetzungsanweisung ohne zusätzliche Modellrunden oder Abschlussprüfungen. Bei `/goal` prüft das unabhängige Modell weiterhin die gesamte Aufgabe einschließlich späterer Korrekturen: Die Fertigstellung einer Zwischenkorrektur genügt nicht, solange Hauptarbeit fehlt.
+Ordinary tasks receive this reminder without additional model turns or completion reviews. For `/goal`, the independent reviewer still checks the entire task, including subsequent corrections. Completing an intermediate correction is insufficient while main work remains.
 
-## Seitenkonversationen mit `/side`
+## Side conversations with `/side`
 
-`/side` öffnet ein temporäres Gespräch zum Inhalt der Hauptkonversation. Mit `/side <Frage>` startet die erste Frage sofort. Das funktioniert auch, während das Hauptmodell noch arbeitet: Es wird weder angehalten noch auf eine andere Session gewechselt. Das aktive Ziel, genehmigte Befehle und das private Session-`/tmp` bleiben bestehen. Das Fenster zeigt, ob die Hauptkonversation arbeitet oder bereit ist.
+`/side` opens a temporary conversation about the main conversation's contents. `/side <question>` immediately starts the first question. It works while the main model is busy without pausing it or switching sessions. The active goal, approved commands and private session `/tmp` remain in place. The window shows whether the main conversation is working or ready.
 
-Vor jeder Nebenfrage wird ein neuer Textausschnitt aus dem aktuellen, kompaktierten Hauptkontext übernommen. Dazu gehören Nutzer- und Modelltexte, Werkzeugaufrufe und deren Ausgaben sowie Zusammenfassungen. So sieht eine Rückfrage die inzwischen abgeschlossene Arbeit. Die Nebenunterhaltung hat einen eigenen Verlauf im Speicher; ihre Fragen und Antworten werden nicht in den Hauptverlauf geschrieben und erteilen dem Hauptmodell keine zusätzlichen Aufträge.
+Before each side question, a fresh text snapshot is copied from the main conversation's current compacted context. It includes user and model text, tool calls and outputs, and summaries. Follow-up questions can therefore see work completed since the side chat opened. The side chat has its own in-memory history; its questions and answers are not written to the main history and grant the main model no additional assignments.
 
-Es wird das beim Öffnen aktive Modell mit dessen Thinking-Einstellung verwendet. Der Seitenchat hat keine Datei-, Shell- oder Web-Tools und kann keine Änderungen ausführen. Er kann vorhandene Ergebnisse erklären und Fragen dazu beantworten. Für neue Arbeit kehrt der Betreiber zur Hauptkonversation zurück und stellt dort den Auftrag.
+The side chat uses the model and thinking setting active when it opens. It has no file, shell or web tools and cannot make changes. It can explain existing results and answer questions about them. New work belongs in the main conversation.
 
-- Enter sendet eine Nebenfrage; weitere Fragen bleiben im selben Seitenchat.
-- Escape bricht während einer Antwort nur die Nebenanfrage ab. Wenn keine Nebenanfrage läuft, schließt Escape das Fenster. Ctrl+C oder `/back` schließen es direkt.
-- PgUp/PgDn blättern im Nebenverlauf.
-- `/new` innerhalb des Fensters leert nur den Nebenverlauf; der Hauptkontext wird vor der nächsten Frage erneut übernommen.
+- Enter sends a side question; subsequent questions remain in the same side chat.
+- During a response, Escape cancels only the side request. Otherwise Escape closes the window. Ctrl+C or `/back` closes it immediately.
+- PgUp/PgDn scroll through side history.
+- `/new` inside the window clears only side history; the next question copies fresh main context.
 
-Der Seitenchat endet beim Schließen, Session-Wechsel oder Neuladen. Er wird nicht als Session-Datei gespeichert. Ein verschachteltes `/side` wird abgewiesen. Die Funktion steht in der interaktiven Terminal-Oberfläche zur Verfügung.
+Closing, session replacement or reload ends the side chat. It is not saved as a session file. Nested `/side` is rejected. This feature requires the interactive terminal interface.
 
-Der übernommene Kontext ist begrenzt: höchstens 40 vollständige Textbeiträge und 24.000 UTF-8-Bytes, bei kleinen Modellfenstern entsprechend weniger. Originalauftrag und aktuelle Beiträge werden bevorzugt; ausgelassene Textbeiträge werden im Fenster gezählt. Bilder und verborgenes Reasoning des Hauptmodells werden nicht übernommen. Eine Nebenfrage erlaubt bis zu 8.000 Zeichen; eine Modellantwort hat höchstens 4.096 Tokens und drei Minuten Laufzeit. Bei ausgeschöpftem Gesprächsbudget fordert Pi einen neuen Nebenverlauf an. Der vollständige Hauptverlauf bleibt erhalten. Angezeigte Nebentokens und Kosten beruhen auf den vom Provider gelieferten Angaben und bleiben vom Hauptverlauf getrennt.
+The snapshot contains at most 40 complete text items and 24,000 UTF-8 bytes, or less for small model windows. Original task context and recent items are preferred; the window counts omitted items. Images and hidden main-model reasoning are not copied. A side question allows up to 8,000 characters; a response allows at most 4,096 tokens and three minutes. When conversation capacity is exhausted, Pi requests a fresh side history. The complete main history remains intact. Displayed side tokens and costs use provider-reported values and remain separate from main usage.
 
-Das Verhalten orientiert sich an der [offiziellen Codex-Beschreibung von `/side`](https://learn.chatgpt.com/docs/developer-commands#start-a-side-chat-with-side).
+The behavior follows the [official Codex description of `/side`](https://learn.chatgpt.com/docs/developer-commands#start-a-side-chat-with-side).
 
-## Laden und Abhängigkeiten
+## Loading and dependencies
 
-Der Pi-Launcher lädt diese Extension unabhängig von Auto-Approval. Der Startup-Bootstrap verknüpft `node_modules` mit den festgeschriebenen SDK-Abhängigkeiten von Auto-Approval. Die Regressionstests laufen aktuell im gemeinsamen Integrationstest-Paket `../auto-approval`: `bun run check` und `bun run test`.
+The Pi launcher loads this extension independently of Auto-Approval. Startup links `node_modules` to Auto-Approval's pinned SDK dependencies. Regression tests currently run in the shared `../auto-approval` integration package: `bun run check` and `bun run test`.

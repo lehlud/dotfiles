@@ -19,7 +19,7 @@ export function unavailableResponse(response: AssistantMessage, context: Context
 type Stream = Provider["streamSimple"];
 type Wrapped = { notice?: (event: AvailabilityNotice) => void; finish?: (model: Model<any>) => void };
 
-/** Ein Stream und eine Verlaufsnachricht bleiben erhalten, auch bei mehreren HTTP-Versuchen. */
+/** Keep one stream and transcript message even across multiple HTTP attempts. */
 export function resilientStream(original: Stream, availability = providerAvailability, notice?: (event: AvailabilityNotice) => void, finish?: (model: Model<any>) => void): Stream {
   return (model, context, options) => {
     const stream = createAssistantMessageEventStream();
@@ -56,7 +56,7 @@ export function resilientStream(original: Stream, availability = providerAvailab
         const aborted = options?.signal?.aborted;
         const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), content: [], usage: usage ?? zeroUsage(), stopReason: aborted ? "aborted" : "error", errorMessage: error instanceof ProviderHeldError || error instanceof RecoveryAuditError ? error.message : aborted ? "Model request cancelled" : "Model request failed without a transport recovery route" };
         if (error instanceof Error && /refusal|(?:reviewer|model|policy|request).*(?:refus|block)|content.filter|safety/i.test(error.message)) { message.rawStopReason = "refusal"; message.errorMessage = "Reviewer refused the check; no fallback, nothing executed"; }
-        // Nach einem Transportabbruch werden keine halbfertigen Tool-Aufrufe übernommen.
+        // Do not retain incomplete tool calls after a transport failure.
         if (last && finalReviewDenial(last, immutable)) message.content = last.content;
         stream.push({ type: "error", reason: message.stopReason as "error" | "aborted", error: message });
       } finally { finish?.(model); }
@@ -65,7 +65,7 @@ export function resilientStream(original: Stream, availability = providerAvailab
   };
 }
 
-/** Öffentliche Provider-Objekte werden umhüllt; Authentifizierung und Request-Hooks bleiben bestehen. */
+/** Wrap public provider objects while preserving authentication and request hooks. */
 export function installProviderStreams(registry: Pick<ModelRegistry, "getAll" | "getProvider">, availability = providerAvailability, notice?: (event: AvailabilityNotice) => void, finish?: (model: Model<any>) => void): boolean {
   if (typeof registry.getAll !== "function" || typeof registry.getProvider !== "function") return false;
   for (const id of new Set(registry.getAll().map((model) => model.provider))) {

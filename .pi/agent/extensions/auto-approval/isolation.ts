@@ -101,7 +101,7 @@ export async function detectWorkspace(cwd: string, home = homedir()): Promise<{ 
   return { path: current, cwd: current };
 }
 
-/** Projekte prüfen ihre Ansicht; Credential-Aufrufe binden sonst nur explizite Pfade ein. */
+/** Validate project views; credential calls otherwise mount only explicitly requested paths. */
 export async function validateWorkspace(cwd: string, config: SandboxConfig, protectedPaths: readonly string[], request?: SandboxRequest, privateTemporaryDirectory?: string, mode: "project" | "web" | "credential" = "project"): Promise<Workspace> {
   if (mode === "web" && (request?.paths?.length || request?.executableSearchPaths?.length || request?.tools?.length)) throw new Error("Web research uses no project files, extra path mounts or local tools; remove those access requests");
   const detected = mode !== "project" ? { path: "/workspace", cwd: "/workspace" } : await detectWorkspace(cwd);

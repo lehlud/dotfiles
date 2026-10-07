@@ -191,8 +191,8 @@ export function buildReview(request: Request, entries: readonly Entry[], config:
       const audit = entry.data as any;
       if (audit?.decision === "approve" && ["read", "bash", "powershell", "grep", "find", "ls", "edit", "write", "websearch", "webfetch", "writing_check", "credential_exec", "git"].includes(audit.action?.tool) && audit.toolCallId) approvals.set(JSON.stringify([audit.multiplexAgent ?? "", audit.toolCallId]), audit);
     }
-    // Peer-Belege stammen ausschließlich vom Extension-Broker; normale
-    // Messagebox-Texte können diese vertrauenswürdigen Einträge nicht erzeugen.
+    // Peer evidence comes only from the extension broker; ordinary mailbox
+    // text cannot create these trusted entries.
     const peer = entry.type === "custom" && entry.customType === "auto-approval-peer-result" ? entry.data as any : undefined;
     const message = peer?.message ?? entry.message;
     if ((!peer && entry.type !== "message") || message?.role !== "toolResult" || message.toolName !== "approved_action" || message.isError) continue;

@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-/** Nur Extensions setzen diese pro Session gebundenen Dienste; kein Modell-Tool. */
+/** Only extensions set these session-bound services; no model tool can access them. */
 export type SessionServices = {
   operatorGoal?: () => string | undefined;
   operatorGoalId?: () => string | undefined;

@@ -36,7 +36,7 @@ function entries(text: string): [string, string][] {
   });
 }
 
-// Nach Freigabe: Originale privat lesen, nur öffentliche Werte an Git delegieren.
+// After approval, read originals privately and delegate only public values to Git.
 export async function executeWithGitConfig(request: Request, workspace: Workspace, config: Config, signal?: AbortSignal, home = homedir(), xdg = process.env.XDG_CONFIG_HOME ?? join(home, ".config"), global = process.env.GIT_CONFIG_GLOBAL) {
   validateGitRequest(request, config);
   if (request.tool !== "git" || request.sandbox?.gitConfig !== true) throw new Error("No reviewed Git configuration grant");

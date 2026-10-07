@@ -4,7 +4,7 @@ import { registerSide } from "./side.ts";
 import { registerSteering } from "./steering.ts";
 import { sessionServices } from "../auto-approval/session-services.ts";
 
-/** Gesprächssteuerung besitzt weder Executor noch Freigaberechte. */
+/** Conversation control owns no executor and cannot approve actions. */
 export default function conversations(pi: ExtensionAPI) {
   registerGoals(pi);
   registerSide(pi);

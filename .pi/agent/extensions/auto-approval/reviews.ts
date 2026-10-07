@@ -60,8 +60,8 @@ function reviewContext(envelope: Envelope, systemPrompt: string): Context {
     systemPrompt: systemPrompt + (envelope.promptSources?.size ? "\nSome operator prompts are marked compressed in userPromptInfo. Their summaries are navigation aids, not new authorization. Originals are authoritative. Use ONLY prompt_original to inspect relevant original ranges and conditions. You MUST inspect every compressed original at least once before approve; a lookup that returns no text does not count. Search or read further when a condition could affect this exact action or goal. If you cannot establish the applicable constraints, deny. No filesystem, shell, network or other tools. Maximum eight original lookups for this review. Return verdict JSON only after all required lookup results." : ""),
     messages: [
       { role: "user", content: envelope.text, timestamp: Date.now() },
-      // Der kurze Sprachbezug entfernt Maschinendaten; der vollständige Prompt
-      // bleibt für Autorisierung und Nutzerbedingungen im unveränderten JSON.
+      // The short language reference omits machine data; the full prompt stays
+      // in the unchanged JSON for authorization and operator constraints.
       { role: "user", content: `${REVIEW_LANGUAGE}\nLatest actual operator prompt (quoted language reference only; full original constraints remain authoritative and compressed originals can be read with prompt_original):\n${JSON.stringify(latestUserLanguageReference ?? reviewLanguageReference(latestUserPrompt))}`, timestamp: Date.now() },
     ],
     ...(envelope.promptSources?.size ? { tools: [promptOriginalTool] } : {}),
@@ -96,7 +96,7 @@ async function requestCandidate(registry: Registry, candidate: Reviewer, model: 
     const response = await requestReview(registry, candidate, model, envelope, remaining, signal, context, state, availability, observer);
     const calls = response.content.filter((block) => block.type === "toolCall");
     if (!calls.length) return response;
-    try { if (parseVerdict(textContent(response.content), envelope.requestId).decision === "deny") return response; } catch { /* Ein Tool-Turn braucht noch kein Urteil. */ }
+    try { if (parseVerdict(textContent(response.content), envelope.requestId).decision === "deny") return response; } catch { /* A tool turn need not contain a verdict yet. */ }
     if (response.stopReason !== "toolUse" || !envelope.promptSources?.size) throw new ReviewerToolError("Invalid reviewer tool response");
     context.messages.push(response);
     for (const call of calls) {

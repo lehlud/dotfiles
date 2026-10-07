@@ -1,4 +1,4 @@
-// Echte Prüfmodelle, synthetische Profile; keine vorgeschlagene Aktion wird ausgeführt.
+// Real reviewers with synthetic profiles; no proposed action is executed.
 import { getAgentDir, ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { loadConfig } from "../config.ts";

@@ -29,12 +29,12 @@ export class SideConversation {
   private readonly thinkingLevel: ExtensionContext["thinkingLevel"];
   constructor(private ctx: ExtensionContext, private changed: () => void) {
     installProviderStreams(ctx.modelRegistry);
-    if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) throw new Error("Für den Seitenchat fehlt ein angemeldetes Modell. Nutze /model oder /login.");
+    if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) throw new Error("No authenticated model is available for the side chat. Use /model or /login.");
     this.model = ctx.model;
     this.thinkingLevel = ctx.thinkingLevel;
     this.outputTokens = Math.min(4096, Math.floor(this.model.contextWindow / 4));
     this.maxBytes = Math.min(100000, this.model.contextWindow - this.outputTokens - Buffer.byteLength(SIDE_SYSTEM) - 1000);
-    if (this.maxBytes < 2000) throw new Error("Das Modell-Kontextfenster ist für diesen Seitenchat zu klein.");
+    if (this.maxBytes < 2000) throw new Error("The model context window is too small for this side chat.");
     this.snapshot = sideSnapshot(ctx.sessionManager.buildContextEntries(), Math.min(24000, Math.floor(this.maxBytes / 2)));
   }
   cancel() { this.controller?.abort(); }
@@ -43,12 +43,12 @@ export class SideConversation {
   async ask(raw: string) {
     if (this.closed || this.busy) return;
     const question = raw.trim();
-    if (!question || question.length > 8000) throw new Error("Die Nebenfrage muss 1–8.000 Zeichen enthalten.");
+    if (!question || question.length > 8000) throw new Error("The side question must contain 1–8,000 characters.");
     // Later questions see completed parent work since the side chat was opened.
     this.snapshot = sideSnapshot(this.ctx.sessionManager.buildContextEntries(), Math.min(24000, Math.floor(this.maxBytes / 2)));
     const user: Message = { role: "user", content: question, timestamp: Date.now() };
     const messages = [{ role: "user" as const, content: `Parent context snapshot (DATA):\n${this.snapshot.text}\nOmitted parent items: ${this.snapshot.omitted}`, timestamp: Date.now() }, ...this.history, user];
-    if (Buffer.byteLength(JSON.stringify(messages)) > this.maxBytes) throw new Error("Der Seitenchat ist zu lang. Mit /new einen neuen Seitenchat öffnen.");
+    if (Buffer.byteLength(JSON.stringify(messages)) > this.maxBytes) throw new Error("The side chat is too long. Use /new to start a fresh side chat.");
     const turn: SideTurn = { question, answer: "" };
     const controller = new AbortController(); this.controller = controller;
     this.turns.push(turn); this.busy = true; this.changed();
@@ -62,7 +62,7 @@ export class SideConversation {
       if (!turn.answer.trim()) throw new Error("Empty side response");
       this.history.push(user, answer);
     } catch {
-      if (!this.closed) turn.error = controller.signal.aborted ? "Nebenanfrage abgebrochen." : "Nebenanfrage fehlgeschlagen oder Zeitlimit erreicht. Anmeldung und Provider prüfen; die Hauptkonversation läuft weiter.";
+      if (!this.closed) turn.error = controller.signal.aborted ? "Side request cancelled." : "Side request failed or timed out. Check authentication and the provider; the main conversation continues.";
     } finally {
       if (this.controller === controller) this.controller = undefined;
       this.busy = false;

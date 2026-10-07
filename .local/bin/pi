@@ -45,7 +45,7 @@ _pi_download() {
 
 _pi_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/pi")"
 
-# Pflichtprüfung: Nur die festgelegten Operator-Extensions dürfen geladen werden.
+# Mandatory review: only the configured operator extensions may be loaded.
 # Model actions run in its isolated executor, never in this host shell.
 for _arg in "$@"; do
     case "$_arg" in

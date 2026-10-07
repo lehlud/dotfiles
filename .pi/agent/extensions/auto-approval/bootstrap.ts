@@ -24,7 +24,7 @@ function run(directory: string, args: string[]): void {
   if (result.exitCode !== 0) throw new Error(`Auto-Approval setup failed: bun ${args[0]} (exit ${result.exitCode})`);
 }
 
-/** Die aufgeteilten Extensions teilen die hier festgeschriebenen SDK-Abhängigkeiten. */
+/** The separate extensions share the SDK dependencies pinned here. */
 export async function prepareCompanionDependencies(directory: string): Promise<void> {
   for (const name of ["conversations", "multiplex", "provider-recovery"]) {
     const companion = join(dirname(directory), name);

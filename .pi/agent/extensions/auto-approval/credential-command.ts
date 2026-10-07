@@ -46,7 +46,7 @@ const executionSchema = Type.Object({
   maxOutputBytes: Type.Integer({ minimum: 1024, maximum: 268435456 }),
 }, { additionalProperties: false });
 
-/** Nur der feste Prozess erhält Secrets; Shell, Pager und geerbte Umgebung entfallen. */
+/** Only the fixed process receives secrets; no shell, pager or inherited environment. */
 export async function executeCredentialCommand(input: unknown) {
   if (!Check(executionSchema, input)) throw new Error("Invalid private credential execution");
   const execution = input as CredentialExecution;

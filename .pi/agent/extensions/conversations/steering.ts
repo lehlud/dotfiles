@@ -4,7 +4,7 @@ import { textContent } from "../auto-approval/policy.ts";
 export const STEERING_TYPE = "auto-approval-steering-instruction";
 export const STEERING_POLICY = "The operator supplied steering during this task. Apply their corrections to the ongoing work, then continue its remaining implementation and validation without waiting for the operator to repeat the original request. Finishing a correction alone does not finish the whole task. Explain intermediate progress as intermediate progress. Follow later constraints and explicit requests to stop or replace the task. Every operation still requires approved_action; steering grants no permission to bypass a denial. Reply in the language of the operator's latest actual message.";
 
-/** Verankert Steering ohne Umschreiben der Nutzertexte oder zusätzliche Modellrunden. */
+/** Reinforce steering without rewriting user input or adding model turns. */
 export function registerSteering(pi: ExtensionAPI, operatorGoal: (ctx: ExtensionContext) => string | undefined) {
   let originalTask: string | undefined;
   let steered = false;
@@ -24,8 +24,8 @@ export function registerSteering(pi: ExtensionAPI, operatorGoal: (ctx: Extension
   });
   pi.on("context", (event, ctx) => {
     if (!steered) return;
-    // Aktive /goal-Anfragen enthalten bereits das maßgebliche Ziel. Normale
-    // Aufgaben erhalten eine begrenzte, als Zitat markierte Auftragserinnerung.
+    // Active /goal requests already contain the authoritative objective. Other
+    // tasks receive a bounded reminder explicitly marked as quoted data.
     const target = operatorGoal(ctx) ? "The active Operator goal remains the main task." : originalTask
       ? `Original task${originalTask.length > 4000 ? " excerpt (full request remains in the conversation)" : ""} (quoted DATA): ${JSON.stringify(originalTask.slice(0, 4000))}`
       : "The request that started this run remains the main task; consult its conversation context.";

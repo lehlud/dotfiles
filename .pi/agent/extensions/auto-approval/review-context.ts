@@ -55,8 +55,8 @@ export function reviewLanguageReference(prompt: string): string {
 export function reviewCapacityIssue(context: { systemPrompt?: string; messages: { content: unknown }[]; tools?: unknown[] }, model: { contextWindow: number; maxTokens: number }): string | undefined {
   if (!Number.isFinite(model.contextWindow) || model.contextWindow <= 0 || !Number.isFinite(model.maxTokens) || model.maxTokens < REVIEW_OUTPUT_TOKENS) return "Reviewer context/output capacity unavailable";
   const texts = [context.systemPrompt ?? "", JSON.stringify(context.tools ?? []), ...context.messages.map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content))];
-  // ASCII-JSON wird mit drei Bytes je Token geschätzt; Nicht-ASCII zählt byteweise.
-  // Der Provider prüft das echte Tokenlimit; alle Nachrichten werden vollständig gesendet.
+  // Estimate ASCII JSON at three bytes per token; count non-ASCII byte by byte.
+  // The provider enforces the actual token limit; all messages are sent in full.
   const estimatedInput = texts.reduce((sum, text) => {
     const asciiBytes = text.match(/[\x00-\x7f]/g)?.length ?? 0;
     return sum + Math.ceil(asciiBytes / 3) + Buffer.byteLength(text) - asciiBytes;

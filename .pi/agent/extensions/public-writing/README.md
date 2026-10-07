@@ -1,32 +1,32 @@
-# Öffentliche Texte prüfen
+# Review Public Writing
 
-Diese Pi-Extension ersetzt den Skill `avoid-wikipedia-ai-writing-signs`. Vierzehn lokal gespeicherte Regelgruppen decken unter anderem künstliche Gegensätze, unbelegte Bedeutungszuschreibungen, vage Quellen, Werbefloskeln, formelhafte Schlüsse und Chat-Reste in Veröffentlichungen ab. Ausgangspunkt ist [diese Wikipedia-Fassung](https://en.wikipedia.org/w/index.php?oldid=1378298730&title=Wikipedia:Signs_of_AI_writing), einmalig am 5. Oktober 2026 gelesen. Zur Laufzeit wird Wikipedia nicht abgerufen.
+This Pi extension replaces the `avoid-wikipedia-ai-writing-signs` skill. Fourteen locally stored rule groups cover invented contrasts, unsupported claims of importance, vague sources, promotional language, formulaic conclusions and assistant residue in published text. The source is [this Wikipedia revision](https://en.wikipedia.org/w/index.php?oldid=1378298730&title=Wikipedia:Signs_of_AI_writing), consulted once on October 5, 2026. Wikipedia is not fetched at runtime.
 
-Das bestehende unabhängige Prüfmodell beurteilt die Muster im Kontext und in der Originalsprache. Es gibt keine Wortlisten oder regulären Ausdrücke pro Sprache. Die Prüfung gilt für neu verfasste oder wesentlich umformulierte Texte für Website-/App-Besucher, öffentliche Artikel, Dokumentation und Veröffentlichungsentwürfe, auch innerhalb von Quellcode, Templates und Übersetzungsdateien. Normale Antworten an den Betreiber von Pi, reine Codesyntax, Daten ohne Veröffentlichungstext und unverändert übernommene Texte bleiben ausgenommen. Fachlich nötige Gegensätze, Namen, vorgeschriebene Zitate und ausdrückliche Stilvorgaben des Betreibers bleiben erhalten. Die Regeln dienen der Redaktion; sie beweisen keine KI-Autorschaft.
+The existing independent reviewer assesses patterns in context and in the original language. There are no per-language word lists or regular expressions. Review applies to newly authored or materially reworded prose for website/app visitors, public articles, documentation and publication drafts, including prose inside source code, templates and localization files. Ordinary replies to the Pi operator, code syntax, non-publication data and unchanged existing wording are exempt. Necessary technical contrasts, names, required quotations and explicit operator style instructions remain intact. These are editorial rules, not evidence of AI authorship.
 
-Die Extension gibt dem Hauptmodell feste Anweisungen, diese Regeln bereits beim Verfassen öffentlicher Texte anzuwenden. Beim Speichern prüft der bestehende Action-Reviewer die neuen Formulierungen mit; ein zusätzlicher Stilaufruf für denselben Schreibvorgang ist nicht nötig. Für öffentliche Entwürfe im Chat und Prüfungen ohne Speichern steht innerhalb von `approved_action` die Operation `writing_check` bereit:
+The extension gives the working model fixed instructions to apply these rules while composing public text. When saving text, the existing action reviewer also checks its changed wording; the same write needs no additional style call. For public drafts delivered in chat and reviews without saving, `approved_action` provides `writing_check`:
 
 ```json
 {
   "tool": "writing_check",
   "arguments": {
-    "text": "Wir reparieren Fahrräder. Geöffnet Dienstag bis Samstag, 9–18 Uhr.",
+    "text": "We repair bicycles. Open Tuesday through Saturday, 9 am–6 pm.",
     "audience": "public",
     "format": "plain",
-    "context": "Besuchertext für die Website einer Fahrradwerkstatt."
+    "context": "Visitor copy for a bicycle repair shop website."
   },
-  "goal": "Öffentlichen Entwurf prüfen",
-  "justification": "Die neuen Formulierungen vor dem Speichern redaktionell prüfen."
+  "goal": "Review the public draft",
+  "justification": "Check the new wording before saving it."
 }
 ```
 
-`text` erlaubt 1–20.000 Zeichen, `context` höchstens 2.000; `format` kann `plain`, `markdown` oder `html` sein. Bei längeren Veröffentlichungen werden zusammenhängende Abschnitte einzeln geprüft. `audience: "operator"` kennzeichnet ausschließlich interne Kommunikation. Die tatsächliche Nutzerabsicht entscheidet über den Geltungsbereich; ein falsches Label schafft keine Ausnahme.
+`text` allows 1–20,000 characters; `context` allows up to 2,000. `format` can be `plain`, `markdown` or `html`. Review coherent sections of longer publications separately. `audience: "operator"` labels internal communication only. Actual user intent determines scope; a false label creates no exemption.
 
-Eine Ablehnung enthält eine konkrete Fundstelle und eine gezielte Korrekturanweisung. Das Hauptmodell überarbeitet den Text und stellt eine neue Anfrage. Es wird nach einer gültigen Ablehnung kein anderes Prüfmodell versucht. Eine Genehmigung führt offline zu einem Beleg mit SHA256 des exakten Texts und Regelversion; dieser Beleg gilt nur zusammen mit dem zugehörigen Approval-Protokoll. Es gibt keinen zweiten Modellaufruf im Executor. Eine Stilfreigabe genehmigt weder einen Schreibvorgang noch eine Veröffentlichung.
+A denial identifies offending wording and a focused correction. The working model revises the text and submits a new request. A valid denial never tries another reviewer. Approval produces an offline receipt containing the exact text's SHA256 and rule version; the receipt is valid only with its corresponding approval audit. The executor makes no second model call. Style approval authorizes neither writing nor publication.
 
-Auch normale Write-/Edit-/Shell-Anfragen, die öffentliche Formulierungen ändern, werden vom Reviewer anhand derselben Regeln geprüft. Die Regeln gelten unabhängig von `/goal`; dessen Abschlussprüfung bleibt unverändert. Für reine Veröffentlichungsentwürfe in Chat-Antworten ist die Vorabprüfung eine Anweisung an das Hauptmodell; es gibt keinen nachgeschalteten Filter für jede Chat-Nachricht. Wie jede semantische Modellprüfung kann sie Formulierungen falsch einordnen oder übersehen.
+Ordinary write, edit and shell requests that change public wording use the same rules in their action review. Rules apply independently of `/goal`; goal completion review remains unchanged. For publication drafts in chat, preflight review is an instruction to the working model, not a postprocessing filter on every chat message. Semantic review can misclassify or miss wording.
 
-Der Launcher `~/.local/bin/pi` lädt die Extension mit dem Approval-Gate und Web-Recherche. Ein Neustart lädt Änderungen. Die native Executor-Erstellung berücksichtigt Änderungen an Regeln, Tool und Dependencies. Nach Änderungen am Docker-Backend muss dessen Image mit einem neuen Digest neu gebaut werden.
+The `~/.local/bin/pi` launcher loads this extension with the approval gate and web research. Restart loads changes. Native executor preparation tracks rule, tool and dependency changes. Docker backend changes require rebuilding its image and configuring a new digest.
 
 ```bash
 bun run check
@@ -34,8 +34,8 @@ bun test tests/extension.test.ts
 bun tests/reviewer.eval.ts
 ```
 
-Der letzte Aufruf nutzt die konfigurierten Prüfmodelle und verursacht Modellanfragen. Er prüft sechs Sprachen, notwendige Gegensätze, Zitate, interne Kommunikation, falsch bezeichnete Entwürfe, öffentliche Datei-/Shell-Schreibvorgänge, Besuchertexte in Quellcode, reine Layoutänderungen und negative Testdaten. Er führt keine vorgeschlagenen Schreib- oder Shell-Aktionen aus. Ein optionales Argument filtert die Fallnamen, etwa `bun tests/reviewer.eval.ts 'public UI prose'`.
+The last command uses configured reviewers and makes paid model requests. It tests six languages, necessary contrasts, quotations, internal communication, mislabeled drafts, public file/shell writes, visitor copy inside source code, layout-only changes and negative test data. It executes no proposed writes or shell actions. An optional argument filters case names, for example `bun tests/reviewer.eval.ts 'public UI prose'`.
 
-Validierung am 5. Oktober 2026: 164 automatische Prüfungen bestanden, darunter echte bwrap-Isolation, sowie 19 unterschiedliche semantische Fälle mit dem konfigurierten Reviewer. Drei zusätzliche vollständige Gate-/Executor-Aufrufe bestätigten Ablehnung, Stilbeleg und Betreiber-Ausnahme. Der echte Pi-Resource-Loader lädt alle drei Extensions ohne den ersetzten Skill. TypeScript-Prüfungen aller drei Extensions, Shell-Syntax und Diff-Prüfung bestanden. Docker wurde nicht live getestet.
+Historical validation on October 5, 2026: 164 automated checks passed, including real bwrap isolation, along with 19 distinct semantic cases using the configured reviewer. Three additional complete gate/executor calls confirmed denial, a style receipt and the operator exemption. The real Pi resource loader loaded all three extensions present at that time without the replaced skill. All three TypeScript checks, shell syntax and diff checks passed. Docker was not tested live.
 
-Die semantischen Urteile wurden geprüft, die Sprache sämtlicher Begründungen wurde nicht als Passkriterium erzwungen. Bei isolierten Fixture-Anfragen antwortete der Reviewer teilweise auf Englisch trotz deutscher Betreiberanfrage; im vollständigen Gate-Test waren alle drei Begründungen deutsch. Die Sprachvorgabe ist zusätzlich im Regeltext und im OpenAI-Ausgabeschema verankert, aber noch nicht zuverlässig erzwungen. Das betrifft die Begründung, nicht eine Übersetzung des geprüften Entwurfs.
+Semantic verdicts were checked; explanation language was not enforced as a pass criterion in that historical run. Isolated fixtures sometimes received English explanations despite German operator instructions; all three complete gate-test explanations were German. The language requirement is also present in policy and the OpenAI output schema but was not reliably enforced in every isolated case. This concerns explanation language, not translation of reviewed drafts.

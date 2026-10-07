@@ -23,7 +23,7 @@ export function validateGitArgv(argv: string[]): void {
   if (argv.some((arg) => /^(?:--ext-diff|--textconv)(?:=|$)/.test(arg))) throw new Error("External Git diff programs are excluded");
 }
 
-// Nur der interne, feste Offline-Leser kann originale Config-Snapshots auswerten.
+// Only the fixed internal offline reader can parse original configuration snapshots.
 export type GitConfigReader = { home: string; xdg: string; file?: string; global?: string };
 const readerSchema = Type.Object({ home: value, xdg: value, file: Type.Optional(value), global: Type.Optional(value) }, { additionalProperties: false });
 export async function executeGit(argv: string[], share: boolean, reader?: GitConfigReader) {

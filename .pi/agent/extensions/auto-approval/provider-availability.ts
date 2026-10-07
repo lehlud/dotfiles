@@ -40,7 +40,7 @@ async function interruptible<T>(work: () => Promise<T>, signal?: AbortSignal): P
   finally { signal.removeEventListener("abort", abort!); }
 }
 
-/** Zustand gilt pro Provider/Modell; ein erfolgreicher Kontakt beendet die Ausfallserie. */
+/** State is scoped to each provider/model pair; a successful response ends the outage. */
 export class ProviderAvailability {
   private readonly states = new Map<string, State>();
   constructor(private clock: Clock = { now: () => performance.now(), wait: abortableWait }) {}

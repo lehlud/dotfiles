@@ -114,7 +114,7 @@ class GoalController {
     if (current?.status !== "running") return;
     if (event.outcome !== "completed" || ctx.signal?.aborted) { this.pause(ctx, "Run interrupted or failed; use /goal resume"); return; }
     if (event.message.role !== "assistant" || event.message.content.some((block) => block.type === "toolCall") || ctx.hasPendingMessages()) return;
-    // Ein Team-Ergebnis ist erst nach abgeschlossenen Peer-Aktionen prüfbar.
+    // A team result can be reviewed only after peer actions have settled.
     if (sessionServices(ctx).peersBusy?.()) return;
     const controller = new AbortController();
     this.reviewController = controller;
@@ -149,8 +149,8 @@ class GoalController {
       // New operator input must run before a verdict on older context can settle
       // the goal. Pi drains the queued input without an extra extension turn.
       if (superseded) {
-        // Schon beendete Peer-Arbeit löst nach dem veralteten Urteil eine neue
-        // Runde aus; laufende Peers wecken die Zielprüfung beim Abschluss.
+        // Already settled peer work triggers another turn after a stale verdict;
+        // ongoing peers wake the goal review when they finish.
         if (!ctx.hasPendingMessages() && peerChanged && !peersBusy) return { continue: true, entries: [{ type: "custom_message", ...message(instruction(current)) }] };
         return;
       }

@@ -90,7 +90,7 @@ test("cancellation stops only the side request and rejects an ignored late respo
   expect(side.busy).toBe(true);
   const request = calls[0]; side.cancel(); await pending;
   expect(request.options.signal.aborted).toBe(true); expect(side.history).toHaveLength(0);
-  expect(side.turns[0].error).toContain("abgebrochen");
+  expect(side.turns[0].error).toContain("cancelled");
   release?.(); await tick(); expect(side.history).toHaveLength(0);
   expect(branch).toHaveLength(2); expect(statuses.get("00-goal")).toBe("goal: parser");
 });
@@ -101,7 +101,7 @@ test("tool calls and provider failures cannot execute actions or leak provider e
     const side = new SideConversation(ctx, () => {});
     await side.ask("Question");
     expect(side.history).toHaveLength(0);
-    expect(side.turns[0].error).toContain("fehlgeschlagen");
+    expect(side.turns[0].error).toContain("failed");
     expect(JSON.stringify(side.turns)).not.toContain("private provider token");
   }
 });
@@ -118,12 +118,12 @@ test("new side history retains billing and uses new request identities", async (
 
 test("input and history limits fail before a paid request; unsupported models fail closed", async () => {
   const side = new SideConversation(ctx, () => {});
-  await expect(side.ask(" ")).rejects.toThrow("1–8.000");
-  await expect(side.ask("x".repeat(8001))).rejects.toThrow("1–8.000");
+  await expect(side.ask(" ")).rejects.toThrow("1–8,000");
+  await expect(side.ask("x".repeat(8001))).rejects.toThrow("1–8,000");
   side.history.push({ role: "user", content: "x".repeat(side.maxBytes), timestamp: 0 });
-  await expect(side.ask("Question")).rejects.toThrow("zu lang"); expect(calls).toHaveLength(0);
+  await expect(side.ask("Question")).rejects.toThrow("too long"); expect(calls).toHaveLength(0);
   ctx.modelRegistry.hasConfiguredAuth = () => false;
-  expect(() => new SideConversation(ctx, () => {})).toThrow("angemeldetes Modell");
+  expect(() => new SideConversation(ctx, () => {})).toThrow("authenticated model");
 });
 
 function panel(initial = "") {
@@ -137,7 +137,7 @@ function panel(initial = "") {
 test("side panel renders parent progress and preserves the parent's footer state", async () => {
   const { view, tui } = panel("What is the task?"); await tick();
   const rows = view.render(40).map(stripTerminalSequences);
-  expect(rows.join("\n")).toContain("Hauptkonversation");
+  expect(rows.join("\n")).toContain("Main conversation");
   expect(rows.every((row) => visibleWidth(row) <= 40)).toBe(true);
   expect(rows.length).toBeLessThanOrEqual(tui.terminal.rows - 5);
   tui.terminal.rows = 80;
@@ -145,7 +145,7 @@ test("side panel renders parent progress and preserves the parent's footer state
   expect(tall.length).toBeLessThanOrEqual(64);
   expect(tall.at(-1)).toContain("Escape");
   ctx.isIdle = () => true;
-  expect(view.render(80).map(stripTerminalSequences).join("\n")).toContain("bereit");
+  expect(view.render(80).map(stripTerminalSequences).join("\n")).toContain("ready");
   view.dispose(); expect(statuses.has("01-side")).toBe(false);
   expect(statuses.size).toBe(2);
 });
@@ -167,7 +167,7 @@ test("/side is UI-only, cannot nest, and is closed on parent session navigation"
   initTheme("dark", false);
   ctx.ui.custom = (factory: Function) => new Promise<void>((done) => { finish = done; view = factory({ terminal: { rows: 24, columns: 80 }, requestRender() {} }, theme, {}, done); });
   const open = command("Question", ctx); await tick();
-  await command("nested", ctx); expect(notices.at(-1)).toContain("bereits");
+  await command("nested", ctx); expect(notices.at(-1)).toContain("already");
   hooks.session_tree({}, ctx); await open;
   expect(view.conversation.closed).toBe(true); expect(statuses.has("01-side")).toBe(false);
   expect(branch).toHaveLength(2); expect(typeof finish).toBe("function");

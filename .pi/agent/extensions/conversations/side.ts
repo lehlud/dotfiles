@@ -8,10 +8,10 @@ export function registerSide(pi: ExtensionAPI) {
   pi.on("session_shutdown", close);
   pi.on("session_tree", close);
   pi.registerCommand("side", {
-    description: "Temporärer Seitenchat zum Hauptkontext: /side [Frage]; Escape kehrt zurück",
+    description: "Temporary side chat about the main context: /side [question]; Escape returns",
     async handler(question: string, ctx: ExtensionCommandContext) {
-      if (ctx.mode !== "tui") { ctx.ui.notify("/side benötigt die interaktive Terminal-Oberfläche.", "warning"); return; }
-      if (active) { ctx.ui.notify("Es ist bereits ein Seitenchat geöffnet.", "warning"); return; }
+      if (ctx.mode !== "tui") { ctx.ui.notify("/side requires the interactive terminal interface.", "warning"); return; }
+      if (active) { ctx.ui.notify("A side chat is already open.", "warning"); return; }
       const opening: OpenSide = {}; active = opening;
       try {
         await ctx.ui.custom<void>((tui, theme, _keys, done) => {
@@ -19,7 +19,7 @@ export function registerSide(pi: ExtensionAPI) {
           opening.view = new SideView(tui, theme, ctx, () => { opening.view?.dispose(); done(); }, question);
           return opening.view;
         }, { overlay: true, overlayOptions: { anchor: "top-left", row: 0, col: 0, width: "100%", maxHeight: "80%" } });
-      } catch (error) { ctx.ui.notify(`Seitenchat: ${error instanceof Error ? error.message : "Start fehlgeschlagen"}`, "error"); }
+      } catch (error) { ctx.ui.notify(`Side chat: ${error instanceof Error ? error.message : "Startup failed"}`, "error"); }
       finally { opening.view?.dispose(); if (active === opening) active = undefined; }
     },
   });

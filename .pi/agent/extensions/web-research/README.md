@@ -1,27 +1,27 @@
-# Web-Recherche für Pi
+# Web Research for Pi
 
-Die Extension ersetzt den bisherigen `web-research`-Skill. Der Launcher lädt sie zusammen mit Auto-Approval. Das Modell nutzt die Operationen über `approved_action`; Suche und Seitenabruf erhalten jeweils erst nach der unabhängigen Prüfung Netzwerkzugriff. Direkte Werkzeuge und alternative Ausführungswege bleiben gesperrt.
+This extension replaces the former `web-research` skill. The launcher loads it alongside Auto-Approval. The model uses operations through `approved_action`; search and page fetch receive network access only after independent review. Direct tools and alternative execution paths remain blocked.
 
-Webaktionen laufen in einem leeren, schreibgeschützten `/workspace`. Projekt- und Home-Dateien werden weder eingebunden noch durchsucht. Ein fehlender alter Skill oder ein problematischer Projektverweis kann deshalb keine Websuche blockieren. Zusätzliche Datei-, PATH- oder Tool-Freigaben sind für Webaktionen nicht vorgesehen und werden zurückgewiesen. Das private Session-`/tmp` bleibt verfügbar und wird weiterhin auf unzulässige Hardlinks geprüft. Die statischen Regeln für öffentliche Texte kommen aus der eigenen Extension; der gelöschte Wikipedia-Skill wird nicht benötigt.
+Web actions run in an empty, read-only `/workspace`. Project and home files are neither mounted nor scanned. A missing legacy skill or a problematic project reference therefore cannot block web search. Additional file, PATH and local-tool permissions are not supported for web actions and are rejected. Private session `/tmp` remains available and is checked for forbidden hardlinks. Static public-writing guidance comes from its own extension; the deleted Wikipedia skill is not needed.
 
-`websearch` verwendet [DDGS](https://github.com/deedy5/ddgs) und liefert Titel, URL und einen kurzen Text pro Treffer. Standard sind fünf Treffer, höchstens zehn. Optional: `region` (Standard `wt-wt`) und `timeLimit` (`d`, `w`, `m`, `y`). DDGS kann mehrere öffentliche Suchanbieter nutzen. Die Suchanfrage wird an diese Anbieter übertragen.
-
-```json
-{"tool":"websearch","arguments":{"query":"site:docs.python.org asyncio TaskGroup","maxResults":5},"goal":"Offizielle Dokumentation finden","justification":"Die API anhand aktueller Primärquellen prüfen"}
-```
-
-`webfetch` liest eine einzelne öffentliche HTTP(S)-URL. [Trafilatura](https://trafilatura.readthedocs.io/en/latest/usage-python.html) extrahiert den lesbaren Text; HTML-Tags, Skripte, Navigation und Footer werden entfernt. Die Modellantwort enthält ausschließlich den Seitentext. Freigabe, Quell-URL und Fortsetzungsdaten bleiben in den Ergebnisdetails und im Aktivitätsprotokoll.
+`websearch` uses [DDGS](https://github.com/deedy5/ddgs) and returns a title, URL and short text for each result. The default is five results, with a maximum of ten. Optional fields are `region` (default `wt-wt`) and `timeLimit` (`d`, `w`, `m`, `y`). DDGS may use multiple public search providers; the query is sent to those providers.
 
 ```json
-{"tool":"webfetch","arguments":{"url":"https://docs.python.org/3/library/asyncio-task.html","maxChars":20000,"offset":0},"goal":"TaskGroup verstehen","justification":"Die gefundene offizielle Dokumentation lesen"}
+{"tool":"websearch","arguments":{"query":"site:docs.python.org asyncio TaskGroup","maxResults":5},"goal":"Find official documentation","justification":"Check the API against current primary sources"}
 ```
 
-Standard sind 20.000 Zeichen; `maxChars` erlaubt 100 bis 80.000 Zeichen. `offset` liest einen späteren Abschnitt. Die Ergebnisdetails enthalten `finalUrl`, `totalChars`, `hasMore` und `nextOffset`. Die Anzeige klappt lange Ergebnisse zunächst ein; `ctrl+o` zeigt den vollständigen Abschnitt. Freigaben stehen im Aktivitätsprotokoll, ohne zusätzlichen Text vor der Eingabe.
+`webfetch` reads a single public HTTP(S) URL. [Trafilatura](https://trafilatura.readthedocs.io/en/latest/usage-python.html) extracts readable text and removes HTML tags, scripts, navigation and footers. The model receives only page text. Approval, source URL and continuation metadata remain in result details and the activity log.
 
-Seitenabrufe sind GET-Anfragen ohne Cookies, Zugangsdaten oder benutzerdefinierte Header. Jede Weiterleitung wird geprüft. Lokale/private IP-Adressen werden abgewiesen; die Verbindung nutzt die zuvor geprüfte IP-Adresse. Downloads sind auf 2 MB begrenzt. JavaScript-Seiten, PDFs und andere Binärformate werden nicht ausgeführt beziehungsweise nicht extrahiert. HTTP-Fehler oder unlesbare Inhalte werden als Fehler gemeldet.
+```json
+{"tool":"webfetch","arguments":{"url":"https://docs.python.org/3/library/asyncio-task.html","maxChars":20000,"offset":0},"goal":"Understand TaskGroup","justification":"Read the official documentation found by search"}
+```
 
-Beim Operator-Start installiert `bootstrap.ts` die festgeschriebenen JavaScript-Dependencies und `setup.py` mit `/usr/bin/python3` die festgeschriebenen Python-Wheels. Setup und Sandbox verwenden denselben Linux-Interpreter; geteilte macOS-Launcher werden nicht verwendet. Der Python-Cache ist nach Linux-Plattform, Architektur, Python-Version und Requirements getrennt. Die Sandbox bindet nur diese Dependencies und den Worker lesbar ein. HTTPS prüft Serverzertifikate gegen das mitgelieferte öffentliche CA-Bundle. Es gibt keine Installation aus einem Modell-Werkzeug. Sessiondaten liegen weiterhin im privaten `/tmp` und werden beim Ende oder Wechsel der Session gelöscht.
+The default is 20,000 characters; `maxChars` allows 100–80,000 characters. `offset` reads a later section. Result details contain `finalUrl`, `totalChars`, `hasMore` and `nextOffset`. Long results start collapsed; `ctrl+o` shows the full section. Approvals appear in the activity log without an additional block above the input prompt.
 
-Für das Docker-Backend das Executor-Image mit dem Verzeichnis `~/.pi/agent/extensions` als Build-Kontext und `auto-approval/Dockerfile` als Dockerfile neu bauen und dessen Digest außerhalb von Pi konfigurieren. Python und Web-Dependencies liegen dann im Image. Der native Lubox/bwrap-Pfad verwendet den vorbereiteten Linux-Cache.
+Page fetches are GET requests without cookies, credentials or custom headers. Every redirect is checked. Local and private IP addresses are rejected; connections use the previously validated IP address. Downloads are limited to 2 MB. JavaScript pages are not executed; PDFs and other binary formats are not extracted. HTTP failures and unreadable content are reported as errors.
 
-Prüfung: `bun test tests`, `bun node_modules/typescript/bin/tsc --noEmit` und `python3 -m unittest discover -s tests -p 'test_*.py'`. Die Python-Tests benötigen den zuvor vorbereiteten Runtime-Cache; die regulären Tests rufen keine externen Websites auf.
+At operator startup, `bootstrap.ts` installs pinned JavaScript dependencies and `setup.py` uses `/usr/bin/python3` to install pinned Python wheels. Setup and sandbox use the same Linux interpreter; shared macOS launchers are not used. The Python cache is scoped by Linux platform, architecture, Python version and requirements. The sandbox mounts only these dependencies and the worker read-only. HTTPS verifies server certificates against the bundled public CA collection. Model tools cannot install dependencies. Session data stays in private `/tmp` and is deleted on session exit or replacement.
+
+For Docker, rebuild the executor image with `~/.pi/agent/extensions` as the build context and `auto-approval/Dockerfile` as its Dockerfile, then configure its digest outside Pi. Python and web dependencies are included in the image. Native Lubox/bwrap uses the prepared Linux cache.
+
+Validation: `bun test tests`, `bun node_modules/typescript/bin/tsc --noEmit` and `python3 -m unittest discover -s tests -p 'test_*.py'`. Python tests require the prepared runtime cache. Ordinary tests do not contact external websites.
