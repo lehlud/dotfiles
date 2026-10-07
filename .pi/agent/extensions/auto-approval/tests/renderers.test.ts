@@ -7,6 +7,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { createApprovalRenderers } from "../renderers.ts";
 import { webTools } from "../../web-research/index.ts";
+import { gitTool } from "../git-command.ts";
 
 initTheme("dark", false);
 const cwd = "/tmp/approval-renderer-fixture";
@@ -123,6 +124,13 @@ test("one-command network and selected tool bundles are visible", () => {
   }, undefined, renderers, ui, cwd);
   expect(display(component)).toContain("tool: node");
   expect(display(component)).toContain("network: host");
+});
+test("single-command read-only Git configuration sharing is visible in the activity log", () => {
+  const component = new ToolExecutionComponent("approved_action", "git-scope", {
+    tool: "git", arguments: { argv: ["commit", "-m", "Reviewed change"] }, sandbox: { gitConfig: true },
+  }, undefined, createApprovalRenderers({ ...tools, git: gitTool }), ui, cwd);
+  expect(display(component)).toContain("git config: read-only · one command");
+  expect(display(component)).toContain("Reviewed change");
 });
 test("web approval stays visible in the activity log while model content is only page text", () => {
   const component = row("webfetch", { url: "https://example.com/" }, createApprovalRenderers({ ...tools, ...webTools }));

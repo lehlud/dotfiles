@@ -48,6 +48,7 @@ export function createApprovalRenderers(tools: Record<string, NativeTool>): Pick
       if (args?.sandbox || args?.network !== undefined) {
         const changes = { ...args.sandbox, ...(args?.network !== undefined ? { network: args.network ? "host" : "none" } : {}) };
         const labels = [
+          ...(changes.gitConfig === true ? ["git config: read-only · one command"] : []),
           ...(changes.tools ?? []).map((name: string) => `tool: ${name}`),
           ...(changes.paths ?? []).map((entry: any) => `${entry.access}: ${entry.path}`),
           ...(changes.network ? [`network: ${changes.network}`] : []),

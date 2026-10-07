@@ -25,9 +25,10 @@ mock.module("../isolation.ts", () => ({
     if (mode === "project" && workspaceValidationFails) throw new Error("ENOENT: no such file or directory, lstat '/Users/gunter/.agents/skills/avoid-wikipedia-ai-writing-signs/SKILL.md'");
     return mode === "web" ? { path: "/workspace", cwd: "/workspace", bindings: [], masked: [], temporaryDirectory } : { path: cwd, cwd, bindings: [cwd], masked: [], temporaryDirectory };
   },
-  executeIsolated: async (request: any, workspace: { path: string }, _config: unknown, signal?: AbortSignal, privateCredentialInput?: any) => {
+  executeIsolated: async (request: any, workspace: { path: string }, _config: unknown, signal?: AbortSignal, privateCredentialInput?: any, privateGitReader?: any) => {
     const cwd = workspace.path;
     executedRequests.push(structuredClone(request));
+    if (request.tool === "git") return { content: [{ type: "text", text: privateGitReader ? "user.name\nSynthetic identity\0user.email\nsynthetic@example.invalid\0credential.helper\nprivate-synthetic-token\0" : "Synthetic commit completed" }], details: { exitCode: 0 } };
     if (request.tool === "credential_exec") {
       expect(privateCredentialInput.environment.SERVICE_TOKEN).toBe("synthetic-auth-only-after-review");
       return { content: [{ type: "text", text: "authenticated result" }], details: { exitCode: 0 } };
@@ -115,6 +116,45 @@ const bash = (command: string) => ({ tool: "bash", arguments: { command }, goal:
 const exists = async (path: string) => { try { await access(path); return true; } catch { return false; } };
 
 const credentialAction = () => ({ tool: "credential_exec", arguments: { profile: "service", argv: ["inspect"] }, network: true, goal: "Inspect authenticated service", justification: "User requested this authenticated operation" });
+const gitAction = () => ({ tool: "git", arguments: { argv: ["commit", "-m", "Synthetic change"] }, sandbox: { gitConfig: true }, goal: "Commit the requested change", justification: "Use the existing operator identity for this exact local commit" });
+async function configureGitFixture() {
+  await writeFile(configPath, JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }));
+  await writeFile(localConfigPath, JSON.stringify({ sandbox: { executable: process.execPath, runnerExecutable: process.execPath } }));
+}
+test("a denied Git configuration grant or failed audit never reads configs or starts the private getter", async () => {
+  await configureGitFixture(); mode = "deny";
+  const denied = await call(gitAction());
+  expect(denied.isError).toBe(true); expect(denied.details.reason).toBe("Nicht vom Nutzer gewollt");
+  expect(executedRequests).toEqual([]);
+  const plan = requested[0].data.sandboxPlan;
+  expect(plan.gitConfiguration.readOnly).toBe(true); expect(plan.gitConfiguration.originalsMounted).toBe(false);
+  expect(plan.temporaryStorage.lifetime).toBe("one action");
+  expect(JSON.stringify(requested)).not.toContain("Synthetic identity");
+  mode = "approve"; auditFails = true;
+  expect((await call(gitAction())).isError).toBe(true); expect(executedRequests).toEqual([]);
+});
+test("approved Git settings are read after the decision and later actions receive no grant", async () => {
+  await configureGitFixture();
+  const path = join(root, "synthetic.global.gitconfig"), previous = process.env.GIT_CONFIG_GLOBAL;
+  await writeFile(path, "[user]\nname = Synthetic identity\nemail = synthetic@example.invalid\n");
+  process.env.GIT_CONFIG_GLOBAL = path;
+  try {
+    responseHook = () => expect(executedRequests).toEqual([]);
+    const result = await call(gitAction());
+    expect(result.isError).not.toBe(true); expect(executedRequests.map((item) => item.arguments.argv[0])).toEqual(["config", "config", "commit"]);
+    expect(entries.some((entry) => entry.customType === "auto-approval-review" && entry.data.decision === "approve")).toBe(true);
+    expect(JSON.stringify(entries)).not.toContain("Synthetic identity"); expect(JSON.stringify(entries)).not.toContain("private-synthetic-token");
+    responseHook = undefined;
+    expect((await call(bash("printf later"))).isError).not.toBe(true);
+    expect(executedRequests.at(-1).sandbox?.gitConfig).toBeUndefined();
+    expect(await readFile(path, "utf8")).toContain("Synthetic identity");
+  } finally { if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = previous; }
+});
+test("Git configuration cannot be attached to bash or hidden in unknown private executor input", async () => {
+  await configureGitFixture();
+  for (const request of [{ ...bash("env"), sandbox: { gitConfig: true } }, { ...gitAction(), gitConfigReader: { home: "/private", xdg: "/private" } }, { ...gitAction(), arguments: { argv: ["push"] } }]) expect((await call(request)).isError).toBe(true);
+  expect(requested).toEqual([]); expect(executedRequests).toEqual([]);
+});
 async function configureCredentialFixture(secretPath: string) {
   await writeFile(configPath, JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }));
   await writeFile(localConfigPath, JSON.stringify({

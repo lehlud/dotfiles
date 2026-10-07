@@ -116,6 +116,28 @@ Fachliche Ablehnungen, vollständige requestgebundene Denials vor einem Streamfe
 
 Wiederholungen behalten denselben unveränderten Anfrageinhalt und produzieren eine einzelne Assistant-Nachricht. Bereits gemeldete Tokens und Kosten aller Versuche werden summiert. Endgültige Ausfallmeldungen enthalten keine rohen Provider-Daten und lösen keine weitere Retry-Serie des Pi-SDK aus. Wiederholungsnummer und Wartezeit erscheinen vorübergehend im Status und als Metadaten im Session-Protokoll.
 
+## Git-Konfiguration für einen Befehl
+
+Für einen lokalen Commit mit der vorhandenen Nutzeridentität verwendet das Modell den argv-basierten `git`-Aufruf und beantragt `sandbox.gitConfig: true`:
+
+```json
+{
+  "tool": "git",
+  "arguments": {"argv": ["commit", "-m", "Fix AArch64 indirect-call argument transport"]},
+  "sandbox": {"gitConfig": true},
+  "goal": "Die geprüfte Änderung lokal committen",
+  "justification": "Der Nutzer verlangt lokale Commits; dieser Commit benötigt seine vorhandene Git-Identität."
+}
+```
+
+Jeder Aufruf benötigt eine eigene Freigabe. Der Prüfkontext enthält Umfang und Lebensdauer der Freigabe, keine Konfigurationswerte. Erst nach protokollierter Zustimmung liest das Gate die vorhandene globale Konfiguration: `$XDG_CONFIG_HOME/git/config`, `~/.gitconfig` oder ein ausdrücklich gesetztes `GIT_CONFIG_GLOBAL`. Reguläre, symlink-basierte Dotfiles und relative, absolute sowie `~/`-Includes werden unterstützt. Git wertet `includeIf` selbst am aktuellen Projekt aus. Pro Aktion gelten höchstens 64 Dateien mit jeweils 64 KiB. Ein fester privater Offline-Leser erhält nur schreibgeschützte Snapshots und einen schreibgeschützten Projektblick; seine Rohdaten erscheinen weder im Modellkontext noch im Audit.
+
+Der eigentliche Git-Prozess erhält ausschließlich eine schreibgeschützte Kopie unterstützter öffentlicher Werte: Identität, Signierungsvorgaben, Zeilenenden, Dateimodus, Groß-/Kleinschreibung, Ausgabeformat und grundlegende Diff-/Merge-/Branch-Einstellungen. Credential-Helper, HTTP-Auth-Header, Aliases, Hooks, Filter, externe Diff-/SSH-/GPG-Programme und sonstige ausführbare Einstellungen werden nicht übertragen. Private Signierschlüssel werden ebenfalls nicht delegiert; eine verlangte Signatur wird nicht stillschweigend abgeschaltet. Die unterstützten Schlüssel stehen vollständig in `git-config.ts`.
+
+Dieser Weg verwendet natives Linux-Git innerhalb von bwrap, eine bereinigte Umgebung, keinen Netzwerkzugriff und keine Shell. Hooks, Fsmonitor und externe Diff-Aufrufe sind ausgeschaltet. Er unterstützt `status`, `diff`, `show`, `log`, `add`, `commit`, `rev-parse`, `ls-files`, `ls-tree` und `describe`. Globale Git-Optionen, Aliases, externe Textkonvertierung, destruktive und Remote-Befehle sind ausgeschlossen. Andere Git-Vorgänge können weiterhin als gesondert geprüfte normale Sandbox-Aktionen beantragt werden.
+
+Die globalen Originaldateien und die lokale Repository-Konfiguration bleiben unverändert. Der Git-Aufruf erhält ein eigenes temporäres Dateisystem; danach werden alle privaten Snapshots entfernt. Folgende Bash-/Git-Aktionen erhalten die Konfiguration nicht automatisch. Gewünschte Konfigurationsänderungen bleiben durch ausdrücklich geprüfte normale `sandbox.paths`-Freigaben mit Lese-/Schreibrechten möglich.
+
 ## Authentifizierte CLI-Aufrufe
 
 `credential_exec` delegiert ein Betreiber-Anmeldeprofil an einen einzelnen geprüften CLI-Aufruf. Das Prüfmodell beurteilt den Nutzerauftrag, alle Argumente, das gewählte Profil, den Namen und Hash des Programms und die Auswirkungen beim Dienst. Private Quellpfade und Namen der ursprünglichen Host-Variablen bleiben im Gate; die Prüfung sieht die Quellenart und die benötigten CLI-Anmeldevariablen. Eine Ablehnung ruft keine Zugangsdaten ab. Auch eine fehlgeschlagene Protokollierung oder ein Abbruch vor der Ausführung verhindert den Abruf.

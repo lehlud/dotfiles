@@ -10,6 +10,7 @@ import { isWebTool, webTools } from "../web-research/index.ts";
 import { executeWeb } from "../web-research/execute.ts";
 import { writingCheckTool } from "../public-writing/index.ts";
 import { credentialCommandTool, executeCredentialCommand } from "./credential-command.ts";
+import { gitTool, executeGit } from "./git-command.ts";
 
 const factories = {
   read: createReadToolDefinition, bash: createBashToolDefinition,
@@ -26,7 +27,10 @@ try {
   const request = JSON.parse(input);
   await mkdir("/tmp/home", { recursive: true });
   let result;
-  if (request.tool === "credential_exec") {
+  if (request.tool === "git") {
+    if (!Check(gitTool.parameters, request.arguments)) throw new Error("Invalid Git arguments");
+    result = await executeGit(request.arguments.argv, request.sandbox?.gitConfig === true, request.gitConfigReader);
+  } else if (request.tool === "credential_exec") {
     if (!Check(credentialCommandTool.parameters, request.arguments)) throw new Error("Invalid credential command arguments");
     result = await executeCredentialCommand(request.credentialExecution);
   } else if (isWebTool(request.tool)) {
