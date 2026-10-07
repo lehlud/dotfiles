@@ -148,3 +148,18 @@ test("shared receipts cannot collide across actors or turn ordinary peer prose i
   entries[3].data.multiplexAgent = "agent-b";
   expect(JSON.parse(buildReview(action, entries, config, "/project", []).text).reviewedReads).toEqual([]);
 });
+
+test("unobserved delivery snapshots do not acknowledge, duplicate or rewrite letters", () => {
+  const { names, boxes, delivered } = fixture(2);
+  boxes.send(names[0], names[1], "Dependency ready");
+  boxes.send(names[0], names[1], "Validation evidence");
+  const last = boxes.inbox(names[1]).at(-1)!;
+  expect(boxes.unobserved()).toEqual([{ name: names[1], sequence: last.sequence }]);
+  boxes.unobserved()[0].name = "forged";
+  expect(boxes.unobserved()[0].name).toBe(names[1]);
+  expect(delivered.get(names[1])).toHaveLength(2);
+  boxes.observe(names[1], last.sequence);
+  expect(boxes.unobserved()).toEqual([]);
+  expect(boxes.inbox(names[1]).map((letter) => letter.text)).toEqual(["Dependency ready", "Validation evidence"]);
+  boxes.close(); expect(boxes.unobserved()).toEqual([]);
+});

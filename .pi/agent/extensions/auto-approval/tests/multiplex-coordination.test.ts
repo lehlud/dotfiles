@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { PassThrough } from "node:stream";
+import { Quiescence } from "../../multiplex/quiescence.ts";
 import { Coordination } from "../../multiplex/coordination.ts";
 import { watchInterrupt, watchRpcAbort } from "../../multiplex/interrupt.ts";
 
@@ -61,4 +62,28 @@ test("Escape interrupts the team even when its terminal actor is idle and remove
   expect(listener("\x1b")).toEqual({ consume: true });
   await Promise.resolve(); expect(calls).toBe(1);
   expect(listener("\x1b")).toBeUndefined(); detach(); expect(removed).toBe(true);
+});
+
+test("idle goal recovery batches unread mail without repeated wakes, polls or premature checkpoints", () => {
+  const scheduler = new Quiescence(), woke: string[] = []; let checks = 0;
+  const wake = (name: string) => woke.push(name), check = () => checks++;
+  const unread = [{ name: "jay", sequence: 45 }, { name: "raven", sequence: 46 }];
+  scheduler.settle(undefined, 10, unread, wake, check);
+  expect(woke).toEqual([]); expect(checks).toBe(0);
+  scheduler.settle("goal-1", 10, unread, wake, check);
+  expect(woke).toEqual(["jay", "raven"]); expect(checks).toBe(0);
+  for (let i = 0; i < 20; i++) scheduler.settle("goal-1", 10, unread, wake, check);
+  expect(woke).toHaveLength(2); expect(checks).toBe(0);
+  scheduler.settle("goal-1", 11, [{ name: "jay", sequence: 47 }], wake, check);
+  expect(woke).toEqual(["jay", "raven", "jay"]);
+  scheduler.settle("goal-1", 11, [], wake, check);
+  for (let i = 0; i < 20; i++) scheduler.settle("goal-1", 11, [], wake, check);
+  expect(checks).toBe(1);
+  // Reviewed tool progress requires a fresh checkpoint even with no final reply.
+  scheduler.settle("goal-1", 12, [], wake, check);
+  expect(checks).toBe(2);
+  scheduler.settle(undefined, 13, [{ name: "jay", sequence: 48 }], wake, check);
+  expect(woke).toHaveLength(3); expect(checks).toBe(2);
+  scheduler.settle("goal-2", 13, [{ name: "jay", sequence: 47 }], wake, check);
+  expect(woke).toHaveLength(4);
 });

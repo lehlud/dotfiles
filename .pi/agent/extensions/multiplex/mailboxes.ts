@@ -50,6 +50,9 @@ export class Mailboxes {
     return letters.map(({ text: _text, ...receipt }) => receipt);
   }
   inbox(name: string) { return structuredClone(this.histories.get(name) ?? []); }
+  unobserved() {
+    return [...this.pending].flatMap(([name, pending]) => pending.length ? [{ name, sequence: pending.at(-1)! }] : []);
+  }
   observe(name: string, sequence: number) {
     if (!this.closed && this.pending.has(name)) this.pending.set(name, this.pending.get(name)!.filter((value) => value > sequence));
   }
