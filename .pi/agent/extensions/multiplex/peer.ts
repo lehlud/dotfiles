@@ -31,6 +31,7 @@ export class Peer {
   private stopped = false;
   private pending = 0;
   private unsubscribe: () => void;
+  private waiting = new Set<() => void>();
   constructor(readonly session: AgentSession, private report: (error: string) => void, private settled: () => void, observe: (event: ActivityEvent) => void = () => {}) {
     this.unsubscribe = session.subscribe((event) => {
       switch (event.type) {
@@ -41,11 +42,22 @@ export class Peer {
   }
   get busy() { return this.pending > 0 || this.runs.size > 0 || this.session.isStreaming; }
   canDeliver() { return !this.stopped && this.pending < 256; }
-  private enqueue(start: () => Promise<void>) {
+  private async waitForCompaction() {
+    while (!this.stopped && this.session.isCompacting) await new Promise<void>((resolve) => {
+      const done = () => { unsubscribe(); this.waiting.delete(done); resolve(); };
+      const unsubscribe = this.session.subscribe((event) => { if (event.type === "compaction_end") done(); });
+      this.waiting.add(done);
+      if (this.stopped || !this.session.isCompacting) done();
+    });
+  }
+  private enqueue(start: () => Promise<void>, operator = false) {
     if (this.stopped) return;
-    if (this.pending >= 256) throw new Error("Peer input queue is full");
+    if (!operator && this.pending >= 256) throw new Error("Peer input queue is full");
     this.pending++;
     this.admission = this.admission.then(async () => {
+      // prompt() rejects before input hooks during compaction. Retain the input
+      // until admissible; never retry an already accepted model/tool request.
+      await this.waitForCompaction();
       if (this.stopped) return;
       let ready!: () => void;
       const started = new Promise<void>((resolve) => { ready = resolve; });
@@ -59,19 +71,20 @@ export class Peer {
   }
   prompt(event: Pick<InputEvent, "text" | "images" | "streamingBehavior">) {
     const copy = structuredClone(event);
-    this.enqueue(() => this.session.prompt(copy.text, { images: copy.images, expandPromptTemplates: false, source: "interactive", streamingBehavior: copy.streamingBehavior ?? "steer" }));
+    this.enqueue(() => this.session.prompt(copy.text, { images: copy.images, expandPromptTemplates: false, source: "interactive", streamingBehavior: copy.streamingBehavior ?? "steer" }), true);
   }
-  message(message: Parameters<AgentSession["sendCustomMessage"]>[0]) {
+  message(message: Parameters<AgentSession["sendCustomMessage"]>[0], triggerTurn = true) {
     const copy = structuredClone(message);
-    this.enqueue(() => this.session.sendCustomMessage(copy, { triggerTurn: true, deliverAs: "steer" }));
+    this.enqueue(() => this.session.sendCustomMessage(copy, { triggerTurn, deliverAs: "steer" }));
   }
-  deliver(letter: Letter) { this.message(letterMessage(letter)); }
+  deliver(letter: Letter) { this.message(letterMessage(letter), letter.wake === true); }
   audit(data: Record<string, unknown>) { if (!this.stopped) this.session.sessionManager.appendCustomEntry("auto-approval-review", data); }
   result(data: Record<string, unknown>) { if (!this.stopped) this.session.sessionManager.appendCustomEntry(PEER_RESULT, data); }
   async close() {
     if (this.stopped) return;
     this.stopped = true;
     this.unsubscribe();
+    for (const done of [...this.waiting]) done();
     this.session.clearQueue();
     await this.session.abort();
     await this.admission;

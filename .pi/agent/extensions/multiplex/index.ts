@@ -6,6 +6,7 @@ import { registerEndpoint, type Endpoint } from "./endpoint.ts";
 import { letterMessage, Mailboxes, PEER_RESULT, randomNames } from "./mailboxes.ts";
 import { createPeer, peerRuntime, type Peer } from "./peer.ts";
 import { registerActivityRenderer, TeamActivity, type ActivityEvent } from "./activity.ts";
+import { FeedView, suppressNativeFeed } from "./presentation.ts";
 
 export const MULTIPLEX_STATUS = "00-multiplex";
 export const MAX_AGENTS = 16;
@@ -15,7 +16,9 @@ export default function multiplex(pi: ExtensionAPI) {
   let team: Team | undefined;
   let changing = false;
   let generation = 0;
-  registerActivityRenderer(pi);
+  const view = new FeedView();
+  registerActivityRenderer(pi, view);
+  suppressNativeFeed(pi, view, () => !!team && !team.stopped);
   const observe = (event: ActivityEvent) => team?.activity.observe(team.endpoint.name, event);
   pi.on("agent_start", observe);
   pi.on("agent_settled", observe);
@@ -33,6 +36,7 @@ export default function multiplex(pi: ExtensionAPI) {
     const previous = team;
     if (!previous) return;
     previous.stopped = true; previous.activity.close(); previous.boxes.close(); team = undefined;
+    view.select();
     sessionServices(ctx).peersBusy = undefined;
     sessionServices(ctx).peerRevision = undefined;
     sessionServices(ctx).stopTeam = undefined;
@@ -43,13 +47,20 @@ export default function multiplex(pi: ExtensionAPI) {
   };
   pi.on("session_shutdown", (_event, ctx) => stop(ctx));
   pi.on("session_tree", (_event, ctx) => stop(ctx));
-  pi.on("session_start", (_event, ctx) => display(ctx));
+  const restoreView = (_event: unknown, ctx: ExtensionContext) => {
+    view.select();
+    view.restore(ctx.sessionManager.getBranch().flatMap((entry) => entry.type === "custom" && entry.customType === "multiplex-activity" ? [entry.data as any] : []));
+    display(ctx);
+  };
+  pi.on("session_start", restoreView);
+  pi.on("session_tree", restoreView);
   pi.on("turn_end", async (event, ctx) => {
     if (team && event.outcome === "aborted") await stop(ctx);
   });
   pi.on("input", (event, ctx) => {
     if (!team || team.stopped || event.source === "extension") return;
-    if (!ctx.isIdle() && !event.streamingBehavior) return;
+    // SDK steer() can omit streamingBehavior during compaction/idle boundaries.
+    // Actual operator input still belongs to every member, regardless of view.
     if (!team.ready) { team.pending.push(structuredClone(event)); return; }
     for (const peer of team.peers) peer.prompt(event);
     display(ctx);
@@ -61,12 +72,22 @@ export default function multiplex(pi: ExtensionAPI) {
     team.goal = key;
     for (const peer of team.peers) peer.message({ customType: "multiplex-operator-goal", display: false, content: instruction });
   });
+  pi.registerCommand("multiplex-view", {
+    description: "Filter the shared feed: /multiplex-view all or <member name>",
+    async handler(args, ctx) {
+      const name = args.trim();
+      if (!team || team.stopped) { ctx.ui.notify("Start a team with /multiplex <n> first.", "warning"); return; }
+      if (name && name !== "all" && !team.boxes.names.includes(name)) { ctx.ui.notify(`Unknown member. Choose all or ${team.boxes.names.join(", ")}.`, "warning"); return; }
+      view.select(!name || name === "all" ? undefined : name);
+      team.activity.refresh(true);
+    },
+  });
   pi.registerCommand("multiplex", {
     description: "Equal peers: /multiplex <1–16>, status or off; n counts all members",
     async handler(args, ctx) {
       const value = args.trim();
       if (!value || value === "status") {
-        ctx.ui.notify(team ? `Multiplex ${team.boxes.names.length}\n${team.boxes.names.map((name, i) => `${name}${i === 0 ? " (main transcript)" : team!.peers[i - 1]?.busy ? " (working)" : " (ready)"}`).join("\n")}` : "Multiplex is off. /multiplex <1–16> starts a team.", "info");
+        ctx.ui.notify(team ? `Multiplex ${team.boxes.names.length}\n${team.boxes.names.map((name, i) => `${name}${i === 0 ? ctx.isIdle() ? " (ready)" : " (working)" : team!.peers[i - 1]?.busy ? " (working)" : " (ready)"}`).join("\n")}` : "Multiplex is off. /multiplex <1–16> starts a team.", "info");
         return;
       }
       if (changing) { ctx.ui.notify("A team change is already in progress.", "warning"); return; }
@@ -94,9 +115,10 @@ export default function multiplex(pi: ExtensionAPI) {
   });
 
   async function start(count: number, ctx: ExtensionCommandContext) {
-    const names = randomNames(count), boxes = new Mailboxes(names);
+    view.select();
+    const names = randomNames(count), boxes = new Mailboxes(names, (from, to, text) => activity.sent(from, to, text));
     const endpoint: Endpoint = { name: names[0], boxes, operatorGoal: () => sessionServices(ctx).operatorGoal?.() };
-    const activity = new TeamActivity(pi, ctx, boxes.id, endpoint.name, names);
+    const activity = new TeamActivity(pi, ctx, boxes.id, endpoint.name, names, view);
     const next: Team = { boxes, endpoint, activity, peers: [], stopped: false, ready: false, pending: [], answers: 0 };
     const initialBranch = structuredClone(ctx.sessionManager.getBranch());
     team = next;
@@ -104,7 +126,7 @@ export default function multiplex(pi: ExtensionAPI) {
     sessionServices(ctx).peersBusy = () => !next.ready || next.peers.some((peer) => peer.busy);
     sessionServices(ctx).peerRevision = () => boxes.revision;
     boxes.bind(endpoint.name, {
-      deliver: (letter) => pi.sendMessage(letterMessage(letter), { triggerTurn: true, deliverAs: "steer" }),
+      deliver: (letter) => pi.sendMessage(letterMessage(letter), { triggerTurn: letter.wake === true, deliverAs: "steer" }),
       audit: (data) => pi.appendEntry("auto-approval-review", data),
       result: (data) => pi.appendEntry(PEER_RESULT, data),
     });

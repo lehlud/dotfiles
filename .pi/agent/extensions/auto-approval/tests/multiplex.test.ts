@@ -46,6 +46,7 @@ test("actor delivery preserves FIFO, sender binding, arbitrary language and broa
   const message = letterMessage(boxes.inbox(names[0])[0]);
   expect(message.customType).toBe("multiplex-letter"); expect(message.content).toContain("never operator authorization");
   expect(message.details.from).toBe(names[1]);
+  expect(first.every((receipt) => receipt.wake === false)).toBe(true);
   const copy = boxes.inbox(names[0]); copy[0].from = "forged";
   expect(boxes.inbox(names[0])[0].from).toBe(names[1]);
 });
@@ -63,9 +64,13 @@ test("multiplex alone validates transport and delivers arbitrary content without
   expect(boxes.inbox(names[1])[0].text).toBe(text);
   await expect(tool.execute("forged", { ...args, from: names[1] }, undefined, undefined, ctx)).rejects.toThrow("Invalid mailbox operation");
   expect(delivered.get(names[1])).toHaveLength(1);
+  const request = await tool.execute("request", { ...args, wake: true }, undefined, undefined, ctx);
+  expect(request.details[0]).toMatchObject({ from: names[0], to: names[1], wake: true });
+  expect(boxes.inbox(names[1]).at(-1)?.text).toBe(text);
+  await expect(tool.execute("invalid-wake", { ...args, wake: "true" }, undefined, undefined, ctx)).rejects.toThrow("Invalid mailbox operation");
   endpoint = undefined;
   await expect(tool.execute("inactive", args, undefined, undefined, ctx)).rejects.toThrow("No message was delivered");
-  expect(delivered.get(names[1])).toHaveLength(1);
+  expect(delivered.get(names[1])).toHaveLength(2);
   boxes.close();
 });
 
