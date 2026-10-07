@@ -1,6 +1,7 @@
 import { Container, Text, parseColor, stripTerminalSequences, truncateToWidth, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, Theme, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
+import { TranscriptSpacing } from "./transcript-spacing.ts";
 import type { ActivityRecord } from "./activity.ts";
 
 export const AGENT_COLORS = ["#63b3ed", "#f6ad55", "#b794f4", "#68d391", "#f687b3", "#4fd1c5", "#fc8181", "#d6bcfa", "#90cdf4", "#faf089", "#9ae6b4", "#fbb6ce", "#81e6d9", "#7c9cf5", "#fbd38d", "#a0aec0"] as const;
@@ -12,6 +13,7 @@ export const empty = (): Component => new Container();
 export class FeedView {
   selected?: string;
   private ui?: TUI;
+  private spacing = new TranscriptSpacing((message) => this.hidesMessage(message));
   private nativeTools = new Set<string>();
   private nativeTexts = new Set<string>();
   private streamingTexts = new Set<string>();
@@ -33,6 +35,8 @@ export class FeedView {
   hidesTool(id: string) { return this.nativeTools.has(id); }
   hidesText(text: string) { const hash = this.digest(text); return this.nativeTexts.has(hash) || this.streamingTexts.has(hash); }
   restore(records: ActivityRecord[]) {
+    this.spacing.dispose();
+    if (this.ui) this.spacing.bind(this.ui);
     this.nativeTools.clear(); this.nativeTexts.clear(); this.streamingTexts.clear(); this.segments.clear();
     for (const record of records) if (record) {
       this.append(record);
@@ -42,7 +46,13 @@ export class FeedView {
       }
     }
   }
-  bind(ui: TUI) { this.ui = ui; }
+  private hidesMessage(message: any) {
+    if (!Array.isArray(message?.content)) return false;
+    const blocks = message.content.flatMap((block: any) => block.type === "text" ? [block.text] : block.type === "thinking" ? [block.thinking] : []);
+    return blocks.some((text: unknown) => typeof text === "string" && text.trim()) && blocks.every((text: unknown) => typeof text === "string" && (!text.trim() || this.hidesText(text)));
+  }
+  bind(ui: TUI) { this.ui = ui; this.spacing.bind(ui); }
+  dispose() { this.spacing.dispose(); this.ui = undefined; }
   accepts(name: string) { return !this.selected || this.selected === name; }
   select(name?: string) { this.selected = name; this.ui?.invalidate?.(); this.ui?.requestRender?.(true); }
   filter(name: string, component: Component): Component {

@@ -61,7 +61,7 @@ export default function multiplex(pi: ExtensionAPI) {
     detachInterrupt();
     detachInterrupt = watchInterrupt(ctx, () => !!team && !team.stopped, () => interrupt(ctx));
   });
-  pi.on("session_shutdown", (_event, ctx) => { detachInterrupt(); detachInterrupt = () => {}; return stop(ctx); });
+  pi.on("session_shutdown", (_event, ctx) => { detachInterrupt(); detachInterrupt = () => {}; view.dispose(); return stop(ctx); });
   pi.on("session_tree", (_event, ctx) => stop(ctx));
   const restoreView = (_event: unknown, ctx: ExtensionContext) => {
     view.select();

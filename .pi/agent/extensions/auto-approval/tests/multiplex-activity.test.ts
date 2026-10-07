@@ -2,11 +2,14 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createAgentSession, DefaultResourceLoader, initTheme, ModelRegistry, ModelRuntime, SessionManager, SettingsManager, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, initTheme, ModelRegistry, ModelRuntime, SessionManager, SettingsManager, ToolExecutionComponent, AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { foregroundAnsi, parseColor, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Spacer, Text, foregroundAnsi, parseColor, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { TeamActivity, ACTIVITY_ENTRY, ACTIVITY_WIDGET, FEED_ENTRY, registerActivityRenderer } from "../../multiplex/activity.ts";
 import { AGENT_COLORS, FeedView, mailboxRenderers, suppressNativeFeed } from "../../multiplex/presentation.ts";
+import { createChatViewport } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/chat-viewport.js";
+import { renderLayoutFrame } from "../node_modules/@earendil-works/pi-tui/dist/layout.js";
+import { CustomEntryComponent } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/custom-entry.js";
 import { Mailboxes } from "../../multiplex/mailboxes.ts";
 import { Peer } from "../../multiplex/peer.ts";
 
@@ -250,4 +253,88 @@ test("state and thinking stay in the overview and legacy records never reappear 
   }
   const feed = renderers.get(FEED_ENTRY)({ data: { segment: "old" } }, { expanded: false }, theme);
   expect(feed.render(100)).toEqual([]); activity.close();
+});
+
+test("hidden native assistant rows reserve no space after the shared feed", () => {
+  initTheme("dark", false);
+  const view = new FeedView(); let transformer: any;
+  suppressNativeFeed({ registerToolRenderer() {}, registerMarkdownTransformer(fn: any) { transformer = fn; }, registerMessageRenderer() {} } as any, view, () => true);
+  const document = new Container();
+  document.addChild(new Text("SHARED-FEED-END", 0, 0));
+  const messages = Array.from({ length: 16 }, (_, i) => ({ role: "assistant", content: [{ type: "text", text: `Already displayed reply ${i}` }], stopReason: "stop" } as any));
+  for (const message of messages) {
+    view.rootText(message.content, true);
+    document.addChild(new AssistantMessageComponent(message, false, undefined, undefined, undefined, [transformer]));
+  }
+  const ui = { children: [document], invalidate() {}, requestRender() {} } as any;
+  view.bind(ui);
+  const frame = document.render(80).map((line) => stripTerminalSequences(line).trimEnd());
+  expect(frame).toEqual(["SHARED-FEED-END"]);
+  expect(messages[0].content[0].text).toBe("Already displayed reply 0");
+});
+
+
+test("transcript compaction preserves visible spacing and warnings while catching later native rows", () => {
+  initTheme("dark", false);
+  const view = new FeedView(); let transformer: any;
+  suppressNativeFeed({ registerToolRenderer() {}, registerMarkdownTransformer(fn: any) { transformer = fn; }, registerMessageRenderer() {} } as any, view, () => true);
+  const document = new Container(), ui = { children: [document] } as any;
+  const message = (text: string, extra = {}) => ({ role: "assistant", content: [{ type: "text", text }], stopReason: "stop", ...extra } as any);
+  const row = (source: any) => new AssistantMessageComponent(source, false, undefined, undefined, undefined, [transformer]);
+  for (const source of [message("First paragraph.\n\nSecond paragraph."), message("```\n \n\n```"), message("Hidden partial text", { stopReason: "error", errorMessage: "Visible failure detail" })]) {
+    if (source.stopReason === "error") view.rootText(source.content, true);
+    document.addChild(row(source));
+  }
+  const before = document.render(80);
+  view.bind(ui); view.bind(ui);
+  expect(document.render(80)).toEqual(before);
+  const hidden = message("Newly appended backend reply"); view.rootText(hidden.content, true);
+  document.addChild(row(hidden));
+  expect(document.render(80)).toEqual(before);
+  view.restore([{ teamId: "saved", from: "otter", kind: "message", text: "Reply", body: hidden.content[0].text, backend: true, nativeTexts: view.rootText(hidden.content, true) }]);
+  expect(document.render(80).some((line) => stripTerminalSequences(line).includes(hidden.content[0].text))).toBe(false);
+  const compactHeight = document.render(80).length;
+  view.dispose();
+  expect(document.render(80)).toHaveLength(compactHeight + 1);
+});
+
+test("filtered feed anchors collapse their host spacer without changing unrelated custom entries", () => {
+  initTheme("dark", false);
+  const view = new FeedView(), renderers = new Map<string, any>(), document = new Container();
+  registerActivityRenderer({ registerEntryRenderer: (type: string, render: any) => renderers.set(type, render) } as any, view);
+  view.append({ teamId: "team", from: "maple", kind: "message", text: "Reply", body: "A visible peer reply", segment: "one" });
+  const entry = new CustomEntryComponent({ customType: FEED_ENTRY, data: { segment: "one" } } as any, renderers.get(FEED_ENTRY));
+  document.addChild(entry);
+  document.addChild(new CustomEntryComponent({ customType: "unrelated-empty-entry" } as any, () => new Container()));
+  view.bind({ children: [document] } as any);
+  const visible = document.render(80);
+  view.select("otter"); expect(document.render(80)).toEqual([""]);
+  view.select(); expect(document.render(80)).toEqual(visible);
+  view.dispose();
+  view.select("otter"); expect(document.render(80)).toEqual(["", ""]);
+});
+
+
+test("fullscreen history fills the recovered rows directly above the compact activity table", () => {
+  initTheme("dark", false);
+  const view = new FeedView(); let transformer: any;
+  suppressNativeFeed({ registerToolRenderer() {}, registerMarkdownTransformer(fn: any) { transformer = fn; }, registerMessageRenderer() {} } as any, view, () => true);
+  const document = new Container(), table = new Container();
+  document.addChild(new Text(Array.from({ length: 100 }, (_, i) => `HISTORY-${i}`).join("\n") + "\nSHARED-FEED-END", 0, 0));
+  for (let i = 0; i < 16; i++) {
+    const content = [{ type: "text", text: `Hidden backend reply ${i}` }]; view.rootText(content, true);
+    document.addChild(new AssistantMessageComponent({ role: "assistant", content, stopReason: "stop" } as any, false, undefined, undefined, undefined, [transformer]));
+  }
+  table.addChild(new Spacer(1)); table.addChild(new Text("Agent  State\njay    Ready\nraven  Ready", 0, 0));
+  const viewport = createChatViewport({ document, pendingMessages: new Container(), status: new Container(), widgetsAbove: table, editor: new Text("INPUT\n\n", 0, 0), footer: new Text("STATUS", 0, 0), scrollbar: "hidden" });
+  view.bind({ children: [document] } as any);
+  for (const [width, height] of [[100, 40], [50, 24]]) {
+    const frame = renderLayoutFrame(viewport.root, width!, height!, () => {}).lines.map((line) => stripTerminalSequences(line).trimEnd());
+    expect(frame).toHaveLength(height!);
+    const feed = frame.indexOf("SHARED-FEED-END"), overview = frame.indexOf("Agent  State");
+    expect(feed).toBeGreaterThan(0); expect(overview - feed).toBe(2);
+    expect(frame.slice(0, feed).some((line) => line.startsWith("HISTORY-"))).toBe(true);
+    expect(frame).toContain("INPUT"); expect(frame).toContain("STATUS");
+  }
+  view.dispose();
 });
