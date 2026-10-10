@@ -6,6 +6,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import autoApproval from "../auto-approval/index.ts";
 import publicWriting from "../public-writing/index.ts";
+import { registerProgress } from "../conversations/progress.ts";
 import { registerSteering } from "../conversations/steering.ts";
 import { installProviderStreams } from "../auto-approval/provider-stream.ts";
 import { sessionServices } from "../auto-approval/session-services.ts";
@@ -108,6 +109,7 @@ export async function createPeer(ctx: ExtensionContext, endpoint: Endpoint, runt
     systemPrompt: ctx.getSystemPrompt(), extensionFactories: [autoApproval, publicWriting, (pi) => {
       pi.on("session_start", (_event, child) => { sessionServices(child).operatorGoal = endpoint.operatorGoal; });
       registerSteering(pi, endpoint.operatorGoal);
+      registerProgress(pi, (_child, reason) => report(reason));
       registerEndpoint(pi, () => endpoint);
       pi.on("turn_end", (event) => {
         if (event.outcome === "error") report("Peer model run failed; its result is incomplete.");

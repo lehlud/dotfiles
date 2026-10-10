@@ -23,9 +23,10 @@ const exists = async (path: string) => { try { await access(path); return true; 
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const nativeTest = process.platform === "linux" && Bun.which("bwrap") ? test : test.skip;
 
-async function fixture(directory: string, diskLoaded = false, delayedReview = false, editFixture = false, compactionFixture = false, handoff?: "terminal-last" | "peer-last", failure?: "terminal" | "peer" | "invalid-terminal" | "invalid-peer", encoded = false) {
+async function fixture(directory: string, diskLoaded = false, delayedReview = false, editFixture = false, compactionFixture = false, handoff?: "terminal-last" | "peer-last", failure?: "terminal" | "peer" | "invalid-terminal" | "invalid-peer", encoded = false, spinning?: "terminal" | "peer") {
   const agentDir = join(directory, "agent"), project = join(directory, "project");
   await mkdir(agentDir); await mkdir(project);
+  if (spinning) await writeFile(join(project, "evidence.dat"), "unchanged accepted artifact\n");
   const runner = join(directory, "runner");
   const build = Bun.spawnSync([process.execPath, "build", "--compile", resolve(import.meta.dir, "../runner.ts"), "--outfile", runner], { stdout: "pipe", stderr: "pipe" });
   if (build.exitCode) throw new Error(build.stderr.toString());
@@ -87,7 +88,8 @@ async function fixture(directory: string, diskLoaded = false, delayedReview = fa
               await new Promise<void>((done) => { releases.push(done); options?.signal?.addEventListener("abort", () => done(), { once: true }); });
             }
             const call = (tool: string, args: any) => { if (encoded && tool === "approved_action") args = { ...args, arguments: JSON.stringify(args.arguments) }; message.stopReason = "toolUse"; message.content = [{ type: "toolCall", id: `same-id-${stage}`, name: tool, arguments: args }]; };
-            if (handoff) {
+            if (spinning && (name === names[0]) === (spinning === "terminal")) call("approved_action", { tool: "bash", arguments: { command: stage % 2 ? "cat evidence.dat; ls" : "ls; cat evidence.dat" }, goal: "Implement TEAM-TASK", justification: "Synthetic repeated inspection of accepted evidence" });
+            else if (handoff) {
               const sender = names[handoff === "terminal-last" ? 0 : 1];
               if (stage === 0) call("approved_action", { tool: "bash", arguments: { command: `printf '%s' '${name}' > ${name}.txt` }, goal: "Implement TEAM-TASK", justification: "Write the assigned synthetic deliverable" });
               else if (stage === 1 && name === sender) call("mailbox", { operation: "send", to: names.find((member) => member !== name), text: "DEPENDENCY-READY: The corrected runner is available; validation can continue." });
@@ -699,6 +701,36 @@ nativeTest("JSON-string arguments from equal peers execute only their exact deco
       expect(await exists(join(state.project, `bypass-${name}.txt`))).toBe(false);
     }
     expect(state.session.sessionManager.getBranch().some((entry) => entry.type === "custom" && entry.customType === "multiplex-team-failure")).toBe(false);
+  } finally {
+    state?.releases.forEach((release) => release()); await main?.catch(() => {});
+    await state?.session.prompt("/multiplex off").catch(() => {});
+    if (state) await sessionServices(state.root()).cleanup?.(); state?.session.dispose();
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60000);
+
+for (const spinning of ["terminal", "peer"] as const) nativeTest(`${spinning} unchanged inspection loop pauses the goal and cancels the whole team`, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-multiplex-progress-")), previous = process.env.PI_CODING_AGENT_DIR;
+  let state: Awaited<ReturnType<typeof fixture>> | undefined, main: Promise<void> | undefined;
+  try {
+    state = await fixture(directory, false, false, false, false, undefined, undefined, false, spinning);
+    await state.session.bindExtensions({ mode: "json" });
+    await state.session.prompt("/multiplex 2");
+    main = state.session.prompt("/goal Complete TEAM-TASK with separate ownership");
+    await until(() => state!.releases.length === 2);
+    state.releases.forEach((release) => release()); await main;
+    await until(() => !state!.session.isStreaming && state!.session.sessionManager.getBranch().some((entry) => entry.type === "custom" && ["conversation-progress-halt", "multiplex-team-failure"].includes(entry.customType)));
+    const branch = state.session.sessionManager.getBranch();
+    const goal = branch.filter((entry) => entry.type === "custom" && entry.customType === "auto-approval-goal").at(-1) as any;
+    expect(goal.data.status).toBe("paused"); expect(goal.data.reason).toContain("unchanged inspections");
+    expect(state.session.getActiveToolNames()).toEqual(["approved_action"]);
+    expect(sessionServices(state.root()).mailbox?.active()).not.toBe(true);
+    const repeats = state.reviews.filter((review) => review.action?.arguments?.command?.includes("cat evidence.dat"));
+    expect(repeats.length).toBeGreaterThanOrEqual(9); expect(repeats.length).toBeLessThanOrEqual(12);
+    expect(state.reviews.every((review) => !!review.action)).toBe(true);
+    const before = state.reviews.length;
+    await new Promise((resolve) => setTimeout(resolve, 50)); expect(state.reviews.length).toBe(before);
   } finally {
     state?.releases.forEach((release) => release()); await main?.catch(() => {});
     await state?.session.prompt("/multiplex off").catch(() => {});

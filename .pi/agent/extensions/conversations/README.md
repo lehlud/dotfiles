@@ -50,3 +50,13 @@ The behavior follows the [official Codex description of `/side`](https://learn.c
 ## Loading and dependencies
 
 The Pi launcher loads this extension independently of Auto-Approval. Startup links `node_modules` to Auto-Approval's pinned SDK dependencies. Regression tests currently run in the shared `../auto-approval` integration package: `bun run check` and `bun run test`.
+
+## Repeated inspections without new evidence
+
+A local progress guard observes completed approved actions separately from action approval. It does not ask the approval reviewer to assess productivity. Four consecutive inspection results containing only already observed evidence add one transient reminder to the working model's context. At eight repetitions the runtime aborts the run and pauses a running goal with completion explicitly unconfirmed. Automatic goal continuations do not reset that budget. A peer reaching the limit stops the whole Multiplex team, closes action leases and cancels its other members.
+
+The guard recognizes read/search/list/web tools and conservative batches of ordinary shell inspection commands, such as Git status/diff/log, checksums, file excerpts and tool lookup. For shell batches it tracks hashes of output lines, catching reordered commands and subsets of earlier output. For other inspection tools it retains argument identity and the complete output hash, so new source targets and reordered file contents are fresh evidence. Approval display text, durations and reviewer prose are excluded; webpage-only tools retain their complete page text. No shell command is executed, rewritten or granted permission by this detector.
+
+New evidence clears the repetition count. Writes, edits, builds and other actions outside the conservative inspection set reset the cache; they are not subject to a fixed work budget. Actual operator input, explicit `/goal resume` and session changes also reset it. Mailbox chatter neither counts as evidence nor requests approval. Warnings and halts are recorded with counts and reasons, while output hashes remain in bounded session-local memory (at most 4,096 entries and 64 KiB processed per observation).
+
+This is a bounded heuristic for unchanged inspection loops, not a proof of semantic progress or a universal loop detector. Complex shell programs and large results are excluded. Legitimate repeated monitoring can trigger a pause; use a bounded foreground wait or provide new operator guidance rather than repeatedly re-establishing the same baseline. The pause creates no denial, completion claim, fallback model or exception to sandbox/action approval.

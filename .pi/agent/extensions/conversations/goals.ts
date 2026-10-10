@@ -101,6 +101,7 @@ class GoalController {
         this.pi.appendEntry("auto-approval-operator-prompt", { goalId: next.id, text });
         this.record(next, ctx);
       }
+      sessionServices(ctx).resetProgress?.();
       started = true;
       this.pi.sendMessage(message(instruction(this.goal!)), { triggerTurn: true });
       ctx.ui.notify(`Goal ${text === "resume" ? "resumed" : "started"}: ${this.goal!.text}`, "info");

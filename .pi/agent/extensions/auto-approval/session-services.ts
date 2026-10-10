@@ -15,6 +15,7 @@ export type SessionServices = {
   peersBusy?: () => boolean;
   peerRevision?: () => number;
   interruptGoal?: (reason?: string) => void;
+  resetProgress?: () => void;
   stopTeam?: () => Promise<void>;
 };
 // Compiled Pi loads each extension with an independent module cache. A shared

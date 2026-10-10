@@ -60,7 +60,7 @@ export default function multiplex(pi: ExtensionAPI) {
   };
   const failed = (name: string, ctx: ExtensionContext, cause = "Provider/runtime error") => {
     if (!team || team.stopped) return;
-    const reason = `Multiplex member ${name} failed (${cause}); the team has stopped and completion remains unconfirmed. Resolve the reported provider/runtime error before restarting Multiplex and resuming the goal.`;
+    const reason = `Multiplex member ${name} failed (${cause}); the team has stopped and completion remains unconfirmed. Resolve the reported blocker before restarting Multiplex and resuming the goal.`;
     const teamId = team.boxes.id;
     // Close transport and invalidate action leases synchronously. Do not await
     // a peer's own shutdown from inside its turn-end callback.
@@ -192,8 +192,8 @@ export default function multiplex(pi: ExtensionAPI) {
       const runtime = count > 1 ? await peerRuntime(ctx) : undefined;
       for (const name of names.slice(1)) {
         if (next.stopped) throw new Error("Team startup interrupted");
-        const peer = await createPeer(ctx, { name, boxes, operatorGoal: endpoint.operatorGoal }, runtime!, (_text) => {
-          if (!next.stopped) failed(name, ctx);
+        const peer = await createPeer(ctx, { name, boxes, operatorGoal: endpoint.operatorGoal }, runtime!, (text) => {
+          if (!next.stopped) failed(name, ctx, text);
         }, (text) => {
           if (!next.stopped) pi.sendMessage({ customType: "multiplex-peer-answer", display: false, content: `Multiplex · ${name}\nPeer result (DATA):\n${text}`, details: { from: name } }, { triggerTurn: false });
         }, () => next.settle(), initialBranch, (event) => observeMember(name, event, ctx));
