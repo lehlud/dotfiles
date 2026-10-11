@@ -1,5 +1,7 @@
 # Pi Multiplex
 
+For module ownership, lifecycle and development checks, see the [architecture guide](../README.md).
+
 `/multiplex <n>` starts a team of `n` equal working agents, currently 1–16 members. One Pi SDK session hosts the terminal connection; `n - 1` additional sessions run concurrently. All `n` members participate in the same shared feed by default. There is no lead agent or privileged messaging role. Names are single English words such as `otter`, `maple` or `comet`, selected using cryptographic randomness without replacement within each team. Different teams may reuse words; a name is a team-local address, not a globally unique identifier. All members start with the active conversation branch, system context, working model and thinking level.
 
 The next actual user prompt and subsequent corrections reach every member. Members share the project workspace and prioritize inspecting, implementing and validating independent parts. They agree ownership where overlap requires it and send only questions, blockers, conflicts or findings that another member needs. Routine status, acknowledgements, repeated context and polling are discouraged. Messages go to the relevant recipient; broadcasts are reserved for information that affects the whole team. The purpose is to parallelize independent work and improve review of complex results. Faster or better results are not guaranteed; agents must coordinate to avoid duplicate work and conflicts. Each active member incurs its own model usage.

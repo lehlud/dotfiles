@@ -19,3 +19,9 @@
 !public-writing/rules.ts
 !public-writing/node_modules/
 !public-writing/node_modules/**
+
+!auto-approval/credential-command.ts
+!auto-approval/git-command.ts
+!shared/
+!shared/configuration/
+!shared/configuration/credential-profile.ts

@@ -1,5 +1,7 @@
 # Review Public Writing
 
+For module ownership, lifecycle and development checks, see the [architecture guide](../README.md).
+
 This Pi extension replaces the `avoid-wikipedia-ai-writing-signs` skill. Fourteen locally stored rule groups cover invented contrasts, unsupported claims of importance, vague sources, promotional language, formulaic conclusions and assistant residue in published text. The source is [this Wikipedia revision](https://en.wikipedia.org/w/index.php?oldid=1378298730&title=Wikipedia:Signs_of_AI_writing), consulted once on October 5, 2026. Wikipedia is not fetched at runtime.
 
 The existing independent reviewer assesses patterns in context and in the original language. There are no per-language word lists or regular expressions. Review applies to newly authored or materially reworded prose for website/app visitors, public articles, documentation and publication drafts, including prose inside source code, templates and localization files. Ordinary replies to the Pi operator, code syntax, non-publication data and unchanged existing wording are exempt. Necessary technical contrasts, names, required quotations and explicit operator style instructions remain intact. These are editorial rules, not evidence of AI authorship.

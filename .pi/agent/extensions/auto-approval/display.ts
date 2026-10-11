@@ -1,6 +1,11 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-export function reviewSummary(approved: boolean, reason: string, durationMs: number, reviewer: string) {
+export function reviewSummary(
+  approved: boolean,
+  reason: string,
+  durationMs: number,
+  reviewer: string,
+) {
   // Language-neutral header; the reviewer writes the reason in the user's language.
   return `${approved ? "✓" : "✗"} Auto-Approval · ${(durationMs / 1000).toFixed(1)} s · ${reviewer}\n${reason}`;
 }
@@ -16,6 +21,10 @@ export function startReviewDisplay(ctx: ExtensionContext, reviewer: string) {
   const timer = setInterval(tick, 100);
   timer.unref?.();
   return {
-    stop: () => { clearInterval(timer); ctx.ui.setStatus("auto-approval", undefined); return Math.max(0, performance.now() - started); },
+    stop: () => {
+      clearInterval(timer);
+      ctx.ui.setStatus("auto-approval", undefined);
+      return Math.max(0, performance.now() - started);
+    },
   };
 }

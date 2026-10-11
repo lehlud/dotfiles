@@ -1,5 +1,7 @@
 # Pi Auto-Approval
 
+For module ownership, lifecycle and development checks, see the [architecture guide](../README.md).
+
 Every external agent action is reviewed by an independent model. Approved actions then run in a separate sandbox. Direct external tools, `!`/`!!`, nested external tool calls and a local execution fallback are blocked. Multiplex's internal `mailbox` transport is outside approval: the hook returns immediately without inspecting message content or contacting a reviewer. The Multiplex extension owns its session-bound delivery.
 
 Built-in prompts, interface messages, source comments and extension documentation use English. Model replies and review explanations still follow the latest actual operator prompt's language. Multilingual regression inputs deliberately retain their original languages.
@@ -58,11 +60,11 @@ Example of a necessary external read:
 ```json
 {
   "tool": "read",
-  "arguments": {"path": "/absolute/shared/example.ts"},
+  "arguments": { "path": "/absolute/shared/example.ts" },
   "goal": "Inspect the shared template specified by the user",
   "justification": "The template is outside the project; only read access to this file is needed.",
   "sandbox": {
-    "paths": [{"path": "/absolute/shared/example.ts", "access": "read"}]
+    "paths": [{ "path": "/absolute/shared/example.ts", "access": "read" }]
   }
 }
 ```
@@ -80,8 +82,8 @@ For a local commit using the existing operator identity, the model uses the argv
 ```json
 {
   "tool": "git",
-  "arguments": {"argv": ["commit", "-m", "Fix AArch64 indirect-call argument transport"]},
-  "sandbox": {"gitConfig": true},
+  "arguments": { "argv": ["commit", "-m", "Fix AArch64 indirect-call argument transport"] },
+  "sandbox": { "gitConfig": true },
   "goal": "Commit the validated change locally",
   "justification": "The user requires local commits; this commit needs their existing Git identity."
 }
@@ -126,14 +128,16 @@ Additional program/credential bindings are configured once outside Pi in `auto-a
 
 ```json
 {
-  "credentialProfiles": [{
-    "name": "service",
-    "executable": "/usr/local/bin/service-cli",
-    "argumentPolicy": "review",
-    "secrets": {
-      "SERVICE_TOKEN": {"type": "environment", "name": "SERVICE_TOKEN"}
+  "credentialProfiles": [
+    {
+      "name": "service",
+      "executable": "/usr/local/bin/service-cli",
+      "argumentPolicy": "review",
+      "secrets": {
+        "SERVICE_TOKEN": { "type": "environment", "name": "SERVICE_TOKEN" }
+      }
     }
-  }]
+  ]
 }
 ```
 
@@ -151,11 +155,11 @@ Profiles remain device-specific, are loaded per action and can be changed only b
 
 For example, use three independently reviewed shell actions:
 
-| Command | Additional `approved_action` fields |
-| --- | --- |
-| `nvm use 22` | `"sandbox": {"tools": ["node"]}` |
-| `npm install` | `"sandbox": {"tools": ["node"]}, "network": true` |
-| `npm run build` | `"sandbox": {"tools": ["node"]}` |
+| Command         | Additional `approved_action` fields               |
+| --------------- | ------------------------------------------------- |
+| `nvm use 22`    | `"sandbox": {"tools": ["node"]}`                  |
+| `npm install`   | `"sandbox": {"tools": ["node"]}, "network": true` |
+| `npm run build` | `"sandbox": {"tools": ["node"]}`                  |
 
 The shell flag `network: true` requests network access only for the newly started command and its descendants. Independent review checks it alongside the exact command before startup. The extension translates the flag to `sandbox.network: "host"`; conflicting declarations are rejected. Without a request, each action starts in its own network namespace without host networking. An approved network command changes neither existing processes' namespaces nor subsequent defaults. DNS configuration and public CA certificates are also mounted read-only only for this invocation.
 

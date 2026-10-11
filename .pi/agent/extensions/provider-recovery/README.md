@@ -1,5 +1,7 @@
 # Pi Provider Recovery
 
+For module ownership, lifecycle and development checks, see the [architecture guide](../README.md).
+
 This separate extension installs transport recovery for working models. It registers no action tools and has no approval authority. Shared availability and stream helpers remain in Auto-Approval so its reviewers use the same cooldowns.
 
 ## Provider outages and retries

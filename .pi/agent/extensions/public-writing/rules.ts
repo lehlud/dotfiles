@@ -1,7 +1,8 @@
 // Frozen editorial guidance; no runtime fetches or language-specific word lists.
 export const RULE_SOURCE = {
   url: "https://en.wikipedia.org/w/index.php?oldid=1378298730&title=Wikipedia:Signs_of_AI_writing",
-  consulted: "2026-10-05", version: "2026-10-05.1",
+  consulted: "2026-10-05",
+  version: "2026-10-05.1",
 };
 export const WRITING_RULES = [
   ["invented-contrast", "Prefer affirmative claims over invented negative contrasts."],
@@ -14,10 +15,16 @@ export const WRITING_RULES = [
   ["stock-language", "Avoid clustered fashionable abstractions and canned transitions."],
   ["inflated-verbs", "Prefer direct verbs to inflated circumlocutions."],
   ["template-endings", "Skip generic future/challenge sections and recap endings."],
-  ["assistant-residue", "Keep assistant chatter, caveats and placeholder prose out of publications."],
+  [
+    "assistant-residue",
+    "Keep assistant chatter, caveats and placeholder prose out of publications.",
+  ],
   ["decorative-formatting", "Use emphasis, dashes, emoji, headings and tables purposefully."],
   ["reference-debris", "Remove fabricated references, broken citations and model markup."],
-  ["register-drift", "Keep terminology and register consistent; do not shuffle synonyms needlessly."],
+  [
+    "register-drift",
+    "Keep terminology and register consistent; do not shuffle synonyms needlessly.",
+  ],
 ] as const;
 export const WRITING_RULEBOOK = WRITING_RULES.map(([id, rule]) => `${id}: ${rule}`).join("\n");
 

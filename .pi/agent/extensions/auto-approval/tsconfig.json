@@ -7,7 +7,16 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
-    "types": ["bun"]
+    "types": ["bun"],
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
-  "include": ["*.ts", "tests/**/*.ts", "../conversations/*.ts", "../multiplex/*.ts", "../provider-recovery/*.ts"]
+  "include": [
+    "**/*.ts",
+    "tests/**/*.ts",
+    "../shared/**/*.ts",
+    "../conversations/**/*.ts",
+    "../multiplex/**/*.ts",
+    "../provider-recovery/*.ts"
+  ]
 }

@@ -1,5 +1,7 @@
 # Pi Conversations
 
+For module ownership, lifecycle and development checks, see the [architecture guide](../README.md).
+
 This extension owns conversation control: `/goal`, `/side` and steering. It has no executor and cannot approve actions. Action review uses a session service supplied by the goal controller; the actual conversation history remains the source of user instructions.
 
 ## Continue until the goal is verified

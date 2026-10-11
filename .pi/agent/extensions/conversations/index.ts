@@ -3,7 +3,7 @@ import { registerProgress } from "./progress.ts";
 import { registerGoals } from "./goals.ts";
 import { registerSide } from "./side.ts";
 import { registerSteering } from "./steering.ts";
-import { sessionServices } from "../auto-approval/session-services.ts";
+import { sessionServices } from "../shared/session/services.ts";
 
 /** Conversation control owns no executor and cannot approve actions. */
 export default function conversations(pi: ExtensionAPI) {
