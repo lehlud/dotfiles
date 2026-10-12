@@ -14,8 +14,9 @@ import {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { registerSteering, STEERING_TYPE } from "../../conversations/steering.ts";
 import { textContent } from "../../shared/review/protocol.ts";
+import { registerContinue } from "../../conversations/continue.ts";
 
-async function fixture(directory: string) {
+async function fixture(directory: string, outage = false) {
   const runtime = await ModelRuntime.create({
     authPath: join(directory, "auth.json"),
     modelsPath: join(directory, "models.json"),
@@ -71,7 +72,8 @@ async function fixture(directory: string) {
         model: model.id,
         content,
         timestamp: Date.now(),
-        stopReason: turn === 2 ? "toolUse" : "stop",
+        stopReason: outage && turn === 1 ? "error" : turn === 2 ? "toolUse" : "stop",
+        ...(outage && turn === 1 ? { errorMessage: "Synthetic temporary provider outage" } : {}),
         usage: {
           input: 0,
           output: 0,
@@ -83,12 +85,15 @@ async function fixture(directory: string) {
       };
 
       queueMicrotask(async () => {
-        if (turn === 1)
+        if (turn === 1 && !outage)
           await new Promise<void>((done) => {
             release = done;
           });
 
-        stream.push({ type: "done", reason: message.stopReason, message });
+        if (message.stopReason === "error")
+          stream.push({ type: "error", reason: "error", error: message });
+        else stream.push({ type: "done", reason: message.stopReason, message });
+
       });
 
       return stream;
@@ -106,7 +111,13 @@ async function fixture(directory: string) {
     noThemes: true,
     noContextFiles: true,
     noPromptTemplates: true,
-    extensionFactories: [(pi) => registerSteering(pi, () => undefined)],
+    extensionFactories: [
+      (pi) => {
+        registerSteering(pi, () => undefined);
+        registerContinue(pi);
+      },
+
+    ],
   });
 
   await resourceLoader.reload();
@@ -196,6 +207,48 @@ test("normal Pi steering carries its main task through the correction and subseq
     state.release();
     await main?.catch(() => {});
 
+    state.session.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+
+}, 10000);
+
+test("real Pi /continue recovers a provider-interrupted task without a synthetic user prompt", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-continue-sdk-"));
+  const state = await fixture(directory, true);
+  const notices: string[] = [];
+
+  try {
+    await state.session.bindExtensions({
+      mode: "tui",
+      uiContext: { notify: (text: string) => notices.push(text), setStatus() {} } as any,
+    });
+    await state.session.prompt(
+      "Finish the original validation; preserve the existing constraints.",
+    );
+    expect(state.contexts).toHaveLength(1);
+    expect(state.session.isStreaming).toBe(false);
+    await state.session.prompt("/continue");
+
+    for (let i = 0; i < 1000 && (state.contexts.length < 3 || state.session.isStreaming); i++)
+      await new Promise<void>((done) => setTimeout(done, 1));
+
+    expect(state.validations()).toBe(1);
+    expect(state.contexts).toHaveLength(3);
+    expect(notices).toContain("Continuing the current task.");
+
+    const context = JSON.stringify(state.contexts.at(-1));
+
+    expect(context).toContain("Finish the original validation");
+    expect(context).toContain("The operator requests continuation");
+    expect(context).not.toContain("/continue");
+    expect(
+      state.session.sessionManager
+        .getBranch()
+        .filter((entry) => entry.type === "message" && entry.message.role === "user"),
+    ).toHaveLength(1);
+  } finally {
+    await state.session.abort();
     state.session.dispose();
     await rm(directory, { recursive: true, force: true });
   }

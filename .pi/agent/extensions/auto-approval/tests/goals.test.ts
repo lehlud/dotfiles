@@ -490,6 +490,39 @@ test("resume sends the saved task without treating pause controls as missing wor
   expect(state().reason).not.toContain("/goal resume");
 });
 
+test("failed team resumption keeps the goal paused and starts no terminal turn", async () => {
+  await command("Implement and verify the parser", ctx);
+  await hooks.turn_end({ ...boundary(), outcome: "aborted" }, ctx);
+  sessionServices(ctx).continueTeam = () => {
+    expect(state().status).toBe("running");
+
+    throw new Error("A team member is still working");
+  };
+
+  expect(await sessionServices(ctx).resumeGoal?.(ctx)).toBe(true);
+  expect(state().status).toBe("paused");
+  expect(operatorGoal()).toBeUndefined();
+  expect(sent).toHaveLength(1);
+});
+
+test("goal resume must persist before any member receives continuation", async () => {
+  await command("Implement and verify the parser", ctx);
+  await hooks.turn_end({ ...boundary(), outcome: "aborted" }, ctx);
+
+  let broadcasts = 0;
+
+  sessionServices(ctx).continueTeam = () => {
+    broadcasts++;
+  };
+
+  auditFails = true;
+
+  expect(await sessionServices(ctx).resumeGoal?.(ctx)).toBe(true);
+  expect(broadcasts).toBe(0);
+  expect(operatorGoal()).toBeUndefined();
+  expect(sent).toHaveLength(1);
+});
+
 test("resume retains actual denied work across a pause and legacy checkpoint restoration", async () => {
   await command("Implement and verify the parser", ctx);
   verdicts = ["deny"];

@@ -810,6 +810,28 @@ nativeTest(
       );
 
       expect(new Set(values)).toEqual(new Set(names));
+
+      const beforeContinue = state.contexts.length;
+
+      await state.session.prompt(`/multiplex-view ${names[1]}`);
+      await state.session.prompt("/continue");
+      await until(
+        () =>
+          new Set(state!.contexts.slice(beforeContinue).map((entry) => entry.name)).size === 3 &&
+          !state!.session.isStreaming &&
+          !sessionServices(state!.root()).peersBusy?.(),
+      );
+
+      for (const entry of state.contexts.slice(beforeContinue)) {
+        const context = JSON.stringify(entry.messages);
+
+        expect(context).toContain("The operator requests continuation of the existing task.");
+        expect(context).toContain("TEAM-TASK");
+        expect(context).not.toContain("/continue");
+      }
+
+      expect(state.reviews).toHaveLength(6);
+
       await state.session.prompt("/multiplex off");
       expect(statuses.has("00-multiplex")).toBe(false);
       expect(widgets.has(ACTIVITY_WIDGET)).toBe(false);

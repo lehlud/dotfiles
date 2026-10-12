@@ -39,6 +39,14 @@ export class GoalController {
   }
 
   private bindServices(ctx: ExtensionContext) {
+    sessionServices(ctx).resumeGoal = async (commandContext) => {
+      if (this.goal?.status !== "paused") return false;
+
+      await this.command("resume", commandContext);
+
+      return true;
+    };
+
     sessionServices(ctx).operatorGoal = () =>
       this.goal?.status === "running" ? this.goal.text : undefined;
     sessionServices(ctx).interruptGoal = (reason) => {
@@ -198,8 +206,11 @@ export class GoalController {
         this.record(next, ctx);
       }
 
-      sessionServices(ctx).resetProgress?.();
       started = true;
+
+      if (text === "resume") sessionServices(ctx).continueTeam?.(instruction(this.goal!));
+
+      sessionServices(ctx).resetProgress?.();
       this.pi.sendMessage(message(instruction(this.goal!)), { triggerTurn: true });
       ctx.ui.notify(
         `Goal ${text === "resume" ? "resumed" : "started"}: ${this.goal!.text}`,

@@ -1,4 +1,4 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export type ActionLease = {
   scope?: { planId?: string; name: string; task: string; resources: string[]; waiting?: boolean };
@@ -22,6 +22,8 @@ export type SessionServices = {
   peerRevision?: () => number;
   interruptGoal?: (reason?: string) => void;
   resetProgress?: () => void;
+  resumeGoal?: (ctx: ExtensionCommandContext) => Promise<boolean>;
+  continueTeam?: (instruction: string) => void;
   stopTeam?: () => Promise<void>;
 };
 

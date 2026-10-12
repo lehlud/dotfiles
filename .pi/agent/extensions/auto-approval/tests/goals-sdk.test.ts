@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { registerGoals } from "../../conversations/goals.ts";
+import { registerContinue } from "../../conversations/continue.ts";
 import { textContent } from "../../shared/review/protocol.ts";
 import { registerSteering, STEERING_TYPE } from "../../conversations/steering.ts";
 
@@ -158,6 +159,7 @@ async function fixture(directory: string, steering = false) {
     extensionFactories: [
       (pi) => {
         registerSteering(pi, registerGoals(pi));
+        registerContinue(pi);
       },
 
     ],
@@ -181,59 +183,62 @@ async function fixture(directory: string, steering = false) {
   return { session, contexts, release: () => release?.() };
 }
 
-test("real Pi SDK resumes a legacy goal with one task instruction and no raw command", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-goal-sdk-"));
-  const previous = process.env.PI_CODING_AGENT_DIR;
+for (const command of ["/goal resume", "/continue"]) {
+  test(`real Pi SDK ${command} resumes a legacy goal with one task instruction and no raw command`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-goal-sdk-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
 
-  process.env.PI_CODING_AGENT_DIR = directory;
+    process.env.PI_CODING_AGENT_DIR = directory;
 
-  const { session, contexts } = await fixture(directory);
-  const notices: string[] = [];
+    const { session, contexts } = await fixture(directory);
+    const notices: string[] = [];
 
-  try {
-    await session.bindExtensions({
-      mode: "tui",
-      uiContext: { setStatus() {}, notify: (text: string) => notices.push(text) } as any,
-    });
+    try {
+      await session.bindExtensions({
+        mode: "tui",
+        uiContext: { setStatus() {}, notify: (text: string) => notices.push(text) } as any,
+      });
 
-    const original = structuredClone(session.sessionManager.getBranch());
+      const original = structuredClone(session.sessionManager.getBranch());
 
-    await session.prompt("/goal resume");
+      await session.prompt(command);
 
-    for (let i = 0; i < 1000 && !notices.some((text) => text.startsWith("Goal confirmed:")); i++)
-      await new Promise<void>((done) => setTimeout(done, 1));
+      for (let i = 0; i < 1000 && !notices.some((text) => text.startsWith("Goal confirmed:")); i++)
+        await new Promise<void>((done) => setTimeout(done, 1));
 
-    expect(notices.join("\n")).toContain("Goal resumed:");
-    expect(notices.join("\n")).toContain("Goal confirmed:");
+      expect(notices.join("\n")).toContain("Goal resumed:");
+      expect(notices.join("\n")).toContain("Goal confirmed:");
 
-    const working = contexts.filter((entry) => entry.model === "working");
+      const working = contexts.filter((entry) => entry.model === "working");
 
-    expect(working).toHaveLength(1);
+      expect(working).toHaveLength(1);
 
-    const input = JSON.stringify(working[0].messages);
+      const input = JSON.stringify(working[0].messages);
 
-    expect(input).toContain("Erkläre das gespeicherte Prüfergebnis.");
-    expect(input).toContain("Erkläre noch das Testergebnis.");
-    expect(input.match(/Operator goal:/g)).toHaveLength(1);
-    expect(input).not.toContain("/goal resume");
-    expect(input).not.toContain("obsolete");
-    expect(input).toContain("KEEP-UNRELATED-CONTEXT");
-    expect(session.sessionManager.getBranch().slice(0, original.length)).toEqual(original);
-    expect(
-      session.sessionManager
-        .getBranch()
-        .some((entry) => entry.type === "message" && entry.message.role === "user"),
-    ).toBe(false);
-  } finally {
-    session.dispose();
+      expect(input).toContain("Erkläre das gespeicherte Prüfergebnis.");
+      expect(input).toContain("Erkläre noch das Testergebnis.");
+      expect(input.match(/Operator goal:/g)).toHaveLength(1);
+      expect(input).not.toContain("/goal resume");
+      expect(input).not.toContain("/continue");
+      expect(input).not.toContain("obsolete");
+      expect(input).toContain("KEEP-UNRELATED-CONTEXT");
+      expect(session.sessionManager.getBranch().slice(0, original.length)).toEqual(original);
+      expect(
+        session.sessionManager
+          .getBranch()
+          .some((entry) => entry.type === "message" && entry.message.role === "user"),
+      ).toBe(false);
+    } finally {
+      session.dispose();
 
-    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = previous;
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
 
-    await rm(directory, { recursive: true, force: true });
-  }
+      await rm(directory, { recursive: true, force: true });
+    }
 
-}, 10000);
+  }, 10000);
+}
 
 test("real steering keeps a goal running after a correction until the original work passes review", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-goal-steering-sdk-"));

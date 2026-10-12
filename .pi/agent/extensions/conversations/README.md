@@ -2,7 +2,25 @@
 
 For module ownership, lifecycle and development checks, see the [architecture guide](../README.md).
 
-This extension owns conversation control: `/goal`, `/side` and steering. It has no executor and cannot approve actions. Action review uses a session service supplied by the goal controller; the actual conversation history remains the source of user instructions.
+This extension owns conversation control: `/continue`, `/goal`, `/side` and steering. It has no executor and cannot approve actions. Action review uses a session service supplied by the goal controller; the actual conversation history remains the source of user instructions.
+
+## Resume interrupted work
+
+`/continue` resumes the current task from its existing conversation context, including the latest
+corrections and constraints. Use it after an interrupted run or temporary provider outage. It takes
+no arguments; send changes to the task as ordinary messages. A continuing outage still needs to be
+resolved; the command does not change providers, authentication, cooldowns or action permissions.
+
+A paused `/goal` resumes through the same controller and independent completion checks as
+`/goal resume`. Ordinary tasks receive a hidden continuation instruction, with no synthetic user
+prompt and no raw slash command in model context. The original operator prompts remain authoritative,
+including their language and prior action denials. The command resets the local progress guard.
+
+An active Multiplex team receives the continuation in every member's session, even when viewing one
+member. Existing ownership and action review remain in force. Busy members, pending input and
+concurrent continuation requests cannot start duplicate runs. If a provider failure stopped the
+team, enable `/multiplex <n>` again before continuing as a team; `/continue` does not recreate peers.
+An empty conversation needs a task before it can continue.
 
 ## Continue until the goal is verified
 

@@ -87,6 +87,7 @@ export class TeamController {
     sessionServices(ctx).peersBusy = undefined;
     sessionServices(ctx).peerRevision = undefined;
     sessionServices(ctx).stopTeam = undefined;
+    sessionServices(ctx).continueTeam = undefined;
     this.display(ctx);
     this.attach(ctx);
     this.pi.setActiveTools(["approved_action"]);
@@ -263,6 +264,25 @@ export class TeamController {
       next.peers.some((peer) => peer.busy) ||
       (!!endpoint.operatorGoal() && boxes.unobserved().length > 0);
     sessionServices(ctx).peerRevision = () => boxes.revision;
+    sessionServices(ctx).continueTeam = (content) => {
+      if (next.stopped || this.team !== next || !next.ready)
+        throw new Error("Team startup or shutdown is still in progress.");
+
+      if (next.peers.some((peer) => peer.busy))
+        throw new Error("A team member is still working. Wait or interrupt the team first.");
+
+      const current = sessionServices(ctx);
+      const goalInstruction = current.goalInstruction?.();
+
+      if (goalInstruction) next.goal = `${current.operatorGoalId?.()}:${goalInstruction}`;
+
+      for (const peer of next.peers) {
+        sessionServices({ sessionManager: peer.session.sessionManager }).resetProgress?.();
+        peer.message({ customType: "conversation-continuation", display: false, content });
+      }
+
+    };
+
     boxes.bind(endpoint.name, {
       deliver: (letter) =>
         this.pi.sendMessage(letterMessage(letter), {
