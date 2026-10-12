@@ -13,10 +13,14 @@ export async function canonicalPath(path: string): Promise<string> {
     return await realpath(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+
     const parent = dirname(path);
+
     if (parent === path) throw error;
+
     return join(await canonicalPath(parent), basename(path));
   }
+
 }
 
 export class ProtectedPaths {
@@ -42,5 +46,8 @@ export class ProtectedPaths {
   // Catch now to avoid an unhandled rejection; awaiting below still fails closed.
   constructor() {
     void this.roots.catch(() => {});
+
   }
+
 }
+

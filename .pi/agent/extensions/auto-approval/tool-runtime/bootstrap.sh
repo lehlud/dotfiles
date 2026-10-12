@@ -6,6 +6,7 @@ ensure_directory() {
         printf 'Local tool storage is not a regular directory: %s\n' "$1" >&2
         exit 1
     fi
+
     mkdir -p -- "$1"
 }
 
@@ -26,15 +27,19 @@ while [ "$1" != -- ]; do
             printf '#!/bin/bash\nexec /bin/bash /opt/pi-tools/runtime/node.sh %q "$@"\n' "$command" > "$tool_bin/$command"
             chmod +x "$tool_bin/$command"
         done
+
         continue
     fi
+
     tool_home="/tmp/pi-tools/$tool_name/home"
     for directory in "/tmp/pi-tools/$tool_name" "$tool_home" "$tool_home/.local" "$tool_home/.local/bin" "$tool_home/.local/cache"; do
         ensure_directory "$directory"
     done
+
     if [ -f "/opt/pi-tools/source/$tool_name/helper" ]; then
         cp --remove-destination -- "/opt/pi-tools/source/$tool_name/helper" "$tool_home/.local/bin/auto-update-app.bash"
     fi
+
     cp --remove-destination -- "/opt/pi-tools/source/$tool_name/launcher" "$tool_home/.local/bin/$tool_name"
     cache="$tool_home/.local/cache/$tool_name"
     if [ -e "$cache" ] || [ -L "$cache" ]; then
@@ -42,10 +47,12 @@ while [ "$1" != -- ]; do
     elif [ -d "/opt/pi-tools/source/$tool_name/cache" ]; then
         cp -a -- "/opt/pi-tools/source/$tool_name/cache" "$cache"
     fi
+
     printf '#!/bin/bash\nexport HOME=%q XDG_CACHE_HOME=%q XDG_CONFIG_HOME=%q XDG_DATA_HOME=%q\nexec %q "$@"\n' \
         "$tool_home" "$tool_home/.cache" "$tool_home/.config" "$tool_home/.local/share" "$tool_home/.local/bin/$tool_name" > "$tool_bin/$tool_name"
     chmod +x "$tool_bin/$tool_name"
 done
+
 shift
 export PATH="$tool_bin:$PATH"
 exec "$@"

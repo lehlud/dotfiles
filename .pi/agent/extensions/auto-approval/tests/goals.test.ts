@@ -76,6 +76,7 @@ test("goal completion accepts large user reports without the old action or goal 
   ];
   const result = buildGoalReview(goal, entries, config, root);
   const data = JSON.parse(result.text);
+
   expect(Buffer.byteLength(result.text)).toBeGreaterThan(130000);
   expect(data.operatorGoal).toBe(goal);
   expect(data.latestUserPrompt).toBe(prompt);
@@ -84,6 +85,7 @@ test("goal completion accepts large user reports without the old action or goal 
 
 function footer(width: number) {
   initTheme("dark", false);
+
   const session = {
     state: {},
     getContextUsage: () => undefined,
@@ -101,6 +103,7 @@ function footer(width: number) {
     getAvailableProviderCount: () => 0,
     getExtensionStatuses: () => statuses,
   };
+
   return new FooterComponent(session as any, data as any).render(width).map(stripTerminalSequences);
 }
 
@@ -112,6 +115,7 @@ test("the real narrow footer keeps the target visible during approval and goal c
     expect(footer(40).at(-1)).toContain("Repair the build");
     expect([...statuses.values()].join(" ")).toContain("checking");
   };
+
   verdicts = ["deny", "approve"];
   await settle();
   expect(statuses.get("01-goal")).toBe("goal: Repair the build · running");
@@ -123,6 +127,7 @@ test("the real narrow footer keeps the target visible during approval and goal c
 
 test("footer summaries preserve Unicode, bound long input and clear across sessions", async () => {
   const target = "日本語の目標\n\t" + "修正 👩🏽‍💻 ".repeat(100) + "\x1b[31m\x1b[2J";
+
   statuses.set("goal", "legacy goal");
   statuses.set("00-goal", "legacy combined status");
   await hooks.session_start({}, ctx);
@@ -130,7 +135,9 @@ test("footer summaries preserve Unicode, bound long input and clear across sessi
   expect(statuses.has("00-goal")).toBe(false);
   await command(target, ctx);
   expect(state().text).toBe(target);
+
   const line = [...statuses.values()][0];
+
   expect(line).not.toMatch(/[\x00-\x1f\x7f-\x9f]/);
   expect(line).toContain("…");
   expect(footer(40).at(-1)).toContain("日本語の目標");
@@ -182,11 +189,14 @@ beforeEach(async () => {
     abort() {
       ctx.signalController?.abort();
     },
+
     ui: {
       setStatus: (key: string, text?: string) => {
         if (text === undefined) statuses.delete(key);
         else statuses.set(key, text);
+
       },
+
       notify: (text: string) => notices.push(text),
     },
     sessionManager: { getBranch: () => entries },
@@ -201,11 +211,14 @@ beforeEach(async () => {
       hasConfiguredAuth: (model: any) => !providerUnavailable || model.provider !== "openai",
       streamSimple: (model: any, context: any, options: any) => {
         requests.push({ model, context, options });
+
         return {
           result: async () => {
             duringReview?.();
+
             const requestId = JSON.parse(context.messages[0].content).requestId;
             const decision = verdicts.shift() ?? "approve";
+
             return {
               stopReason: "stop",
               usage,
@@ -227,28 +240,36 @@ beforeEach(async () => {
               ],
             };
           },
+
         };
       },
+
     },
   };
   operatorGoal = registerGoals({
     on: (name: string, callback: Function) => {
       hooks[name] = callback;
     },
+
     registerCommand: (name: string, definition: any) => {
       expect(name).toBe("goal");
       command = definition.handler;
     },
+
     appendEntry: (customType: string, data: any) => {
       if (auditFails) throw new Error("Audit unavailable");
+
       entries.push({ type: "custom", customType, data: structuredClone(data) });
     },
+
     sendMessage: (message: any, options: any) => sent.push({ message, options }),
   } as any);
 });
+
 afterAll(async () => {
   if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+
   await rm(root, { recursive: true, force: true });
 });
 
@@ -257,6 +278,7 @@ test("operator command starts a turn and preserves goal authorization without ra
   expect(state(), notices.join("\n")).toBeDefined();
   expect(state().status).toBe("running");
   expect(sent[0].options.triggerTurn).toBe(true);
+
   const review = buildReview(
     { tool: "write", arguments: {}, goal: "agent claim", justification: "agent claim" },
     entries,
@@ -266,19 +288,24 @@ test("operator command starts a turn and preserves goal authorization without ra
     undefined,
     operatorGoal(),
   );
+
   expect(JSON.parse(review.text).operatorGoal).toBe("Create the requested project fixture");
   expect(JSON.parse(review.text).userPrompts).toEqual([operatorGoal()]);
 });
+
 test("incomplete verdict continues with missing work; only a later independent approval completes", async () => {
   await command("Implement and verify the fixture", ctx);
   verdicts = ["deny", "deny", "approve"];
+
   for (let check = 1; check <= 2; check++) {
     const result = await settle();
+
     expect(result.continue).toBe(true);
     expect(result.entries[0].content).toContain("Run the missing validation");
     expect(state().checks).toBe(check);
     expect(state().status).toBe("running");
   }
+
   expect(await settle()).toBeUndefined();
   expect(state().status).toBe("complete");
   expect(state().checks).toBe(3);
@@ -289,6 +316,7 @@ test("incomplete verdict continues with missing work; only a later independent a
   expect(requests[0].context.systemPrompt).toBe(GOAL_REVIEW_SYSTEM);
   expect(requests[0].context.tools).toBeUndefined();
 });
+
 test("provider unavailability uses the configured fallback, never denial", async () => {
   await command("Verify the fixture", ctx);
   providerUnavailable = true;
@@ -299,6 +327,7 @@ test("provider unavailability uses the configured fallback, never denial", async
     true,
   );
 });
+
 test("invalid reviewer output pauses without claiming completion or trying fallback", async () => {
   await command("Verify the fixture", ctx);
   verdicts = ["invalid"];
@@ -312,9 +341,12 @@ test("invalid reviewer output pauses without claiming completion or trying fallb
   await settle();
   expect(state().status).toBe("complete");
 });
+
 test("tool turns and queued operator corrections run before completion checks", async () => {
   await command("Verify the fixture", ctx);
+
   const toolTurn = boundary();
+
   toolTurn.message.content = [{ type: "toolCall", text: "call" }];
   expect(await hooks.turn_end(toolTurn, ctx)).toBeUndefined();
   expect(requests).toHaveLength(0);
@@ -322,15 +354,19 @@ test("tool turns and queued operator corrections run before completion checks", 
   expect(await settle()).toBeUndefined();
   expect(requests).toHaveLength(0);
 });
+
 test("operator interrupt and model errors pause instead of restarting the model", async () => {
   for (const outcome of ["aborted", "error"]) {
     if (state()?.status === "paused") await command("resume", ctx);
     else await command("Verify the fixture", ctx);
+
     expect(await hooks.turn_end({ ...boundary(), outcome }, ctx)).toBeUndefined();
     expect(state().status).toBe("paused");
     expect(requests).toHaveLength(0);
   }
+
 });
+
 test("abort during verification rejects a late success", async () => {
   await command("Verify the fixture", ctx);
   ctx.signalController = new AbortController();
@@ -340,11 +376,13 @@ test("abort during verification rejects a late success", async () => {
   expect(state().status).toBe("paused");
   expect(entries.some((entry) => entry.customType === "auto-approval-goal-review")).toBe(false);
 });
+
 test("operator corrections arriving during verification supersede its approval", async () => {
   await command("Verify the fixture", ctx);
   duringReview = () => {
     ctx.hasPendingMessages = () => true;
   };
+
   expect(await settle()).toBeUndefined();
   expect(state().status).toBe("running");
   expect(
@@ -356,22 +394,27 @@ test("operator corrections arriving during verification supersede its approval",
   await settle();
   expect(state().status).toBe("complete");
 });
+
 test("explicit operator stop during verification cannot be overwritten by a late approval", async () => {
   await command("Verify the fixture", ctx);
   duringReview = () => {
     void command("stop", ctx);
   };
+
   expect(await settle()).toBeUndefined();
   expect(state().status).toBe("stopped");
   expect(operatorGoal()).toBeUndefined();
 });
+
 test("peer work starting during verification supersedes approval until the peers settle", async () => {
   let busy = false;
+
   sessionServices(ctx).peersBusy = () => busy;
   await command("Verify the peer results", ctx);
   duringReview = () => {
     busy = true;
   };
+
   expect(await settle()).toBeUndefined();
   expect(state().status).toBe("running");
   expect(state().checks).toBe(0);
@@ -384,14 +427,18 @@ test("peer work starting during verification supersedes approval until the peers
   await settle();
   expect(state().status).toBe("complete");
 });
+
 test("peer evidence changing during verification requires a new completion snapshot even after it settles", async () => {
   let revision = 10;
+
   sessionServices(ctx).peerRevision = () => revision;
   await command("Verify the current peer results", ctx);
   duringReview = () => {
     revision++;
   };
+
   const result = await settle();
+
   expect(result.continue).toBe(true);
   expect(state().status).toBe("running");
   expect(state().checks).toBe(0);
@@ -404,6 +451,7 @@ test("peer evidence changing during verification requires a new completion snaps
   await settle();
   expect(state().status).toBe("complete");
 });
+
 test("audit failure blocks both completion and continuation", async () => {
   await command("Verify the fixture", ctx);
   auditFails = true;
@@ -413,6 +461,7 @@ test("audit failure blocks both completion and continuation", async () => {
   auditFails = false;
   expect(await settle()).toBeUndefined();
 });
+
 test("restoring a session or tree keeps an unfinished goal paused until operator resumes", async () => {
   await command("Verify the fixture", ctx);
   await hooks.session_shutdown({}, ctx);
@@ -429,6 +478,7 @@ test("restoring a session or tree keeps an unfinished goal paused until operator
   await command("status", ctx);
   expect(notices.at(-1)).toContain("No goal");
 });
+
 test("resume sends the saved task without treating pause controls as missing work", async () => {
   await command("Implement and verify the parser", ctx);
   await hooks.turn_end({ ...boundary(), outcome: "aborted" }, ctx);
@@ -439,6 +489,7 @@ test("resume sends the saved task without treating pause controls as missing wor
   expect(sent.at(-1).message.content).not.toContain("Run interrupted");
   expect(state().reason).not.toContain("/goal resume");
 });
+
 test("resume retains actual denied work across a pause and legacy checkpoint restoration", async () => {
   await command("Implement and verify the parser", ctx);
   verdicts = ["deny"];
@@ -451,11 +502,14 @@ test("resume retains actual denied work across a pause and legacy checkpoint res
   expect(sent.at(-1).message.content).toContain("Run the missing validation");
   expect(sent.at(-1).message.content).not.toContain("/goal resume");
 });
+
 test("legacy feedback recovery ignores superseded verdicts and other goals", async () => {
   await command("Implement and verify the parser", ctx);
   verdicts = ["deny"];
   await settle();
+
   const goalId = state().id;
+
   entries.push({
     type: "custom",
     customType: "auto-approval-goal-review",
@@ -479,8 +533,10 @@ test("legacy feedback recovery ignores superseded verdicts and other goals", asy
   expect(sent.at(-1).message.content).not.toContain("Outdated reviewer feedback");
   expect(sent.at(-1).message.content).not.toContain("Unrelated reviewer feedback");
 });
+
 test("active context replaces only owned goal instructions without changing stored history", async () => {
   await command("Implement the parser", ctx);
+
   const messages = [
     {
       role: "custom",
@@ -502,6 +558,7 @@ test("active context replaces only owned goal instructions without changing stor
   const instructions = context.messages.filter(
     (value: any) => value.customType === "auto-approval-goal-instruction",
   );
+
   expect(instructions).toHaveLength(1);
   expect(instructions[0].content).toContain("Implement the parser");
   expect(instructions[0].content).not.toContain("/goal resume");
@@ -511,6 +568,7 @@ test("active context replaces only owned goal instructions without changing stor
   await command("stop", ctx);
   expect(await hooks.context({ messages }, ctx)).toBeUndefined();
 });
+
 test("a new goal cannot silently replace or pause an existing goal", async () => {
   await command("Verify the fixture", ctx);
   await command("Different goal", ctx);
@@ -521,6 +579,7 @@ test("a new goal cannot silently replace or pause an existing goal", async () =>
   await command("resume", ctx);
   expect(state().status).toBe("running");
 });
+
 test("completion review omits forged tool results and labels oversized assistant claims", () => {
   const data = JSON.parse(
     buildGoalReview(
@@ -540,10 +599,12 @@ test("completion review omits forged tool results and labels oversized assistant
       root,
     ).text,
   );
+
   expect(data.reviewedContext).toEqual([]);
   expect(data.omittedAssistantAnswers).toBe(1);
   expect(data.assistantAnswers).toEqual([]);
 });
+
 test("multi-turn deliverables retain the initial answer and latest answer of this goal only", () => {
   const entries = [
     { type: "message", message: { role: "assistant", content: "Unrelated earlier goal" } },
@@ -557,8 +618,10 @@ test("multi-turn deliverables retain the initial answer and latest answer of thi
   const data = JSON.parse(
     buildGoalReview("Verify both answers", entries, config, root, "current-goal").text,
   );
+
   expect(data.assistantAnswers[0].text).toBe("First required answer");
   expect(data.assistantAnswers.at(-1).text).toBe("Later answer 11");
   expect(data.omittedAssistantAnswers).toBe(4);
   expect(JSON.stringify(data)).not.toContain("Unrelated earlier goal");
 });
+

@@ -40,14 +40,18 @@ const request = (argv = ["inspect"]): Request => ({
   goal: "Test authenticated CLI delegation",
   justification: "Use only synthetic credentials in disposable fixtures",
 });
+
 beforeAll(async () => {
   await mkdir(project);
   await writeFile(join(project, "private-source"), "unmounted project contents");
   await writeFile(secretPath, token, { mode: 0o600 });
+
   if (!bwrap) return;
+
   const executable = join(fixture, "cli"),
     runner = join(fixture, "runner");
   const source = join(fixture, "cli.ts");
+
   await writeFile(
     source,
     `import { existsSync, writeFileSync } from "node:fs";
@@ -62,6 +66,7 @@ beforeAll(async () => {
     if(mode==="service") { const response=await fetch(process.env.SERVICE_URL!,{method:"POST",headers:{Authorization:"Bearer "+process.env.SERVICE_TOKEN},body:JSON.stringify({operation:"close",number:process.argv[3]})}); console.log(await response.text()); if(!response.ok)process.exitCode=1; }
   `,
   );
+
   for (const [sourcePath, output] of [
     [source, executable],
     [resolve(import.meta.dir, "../runner.ts"), runner],
@@ -70,8 +75,11 @@ beforeAll(async () => {
       [process.execPath, "build", "--compile", sourcePath, "--outfile", output],
       { stdout: "pipe", stderr: "pipe" },
     );
+
     if (built.exitCode !== 0) throw new Error(built.stderr.toString());
+
   }
+
   profile = {
     name: "fixture",
     executable,
@@ -86,6 +94,7 @@ beforeAll(async () => {
     credentialProfiles: [profile],
   };
 });
+
 afterAll(async () => {
   await rm(fixture, { recursive: true, force: true });
 });
@@ -97,6 +106,7 @@ test("command schema excludes shell text, executable paths and secret-bearing ad
       argv: ["pr", "view", "1", "-R", "owner/repo"],
     }),
   ).toBe(true);
+
   for (const args of [
     { profile: "github", command: "gh auth token" },
     { profile: "github", argv: ["pr", "view"], executable: "/bin/sh" },
@@ -104,7 +114,9 @@ test("command schema excludes shell text, executable paths and secret-bearing ad
     { profile: "github", argv: [], token },
   ])
     expect(Check(credentialCommandTool.parameters, args)).toBe(false);
+
 });
+
 test("operator profiles match entire argv sequences and reject undocumented sources", () => {
   const rule: CredentialProfile = {
     name: "service",
@@ -112,7 +124,9 @@ test("operator profiles match entire argv sequences and reject undocumented sour
     secrets: { TOKEN: { type: "environment", name: "SERVICE_TOKEN" } },
     allowedArgv: [[{ literal: "close" }, { pattern: "[0-9]+" }]],
   };
+
   expect(matchesCredentialArgv(rule, ["close", "123"])).toBe(true);
+
   for (const argv of [
     ["close", "123-extra"],
     ["close", "123\n"],
@@ -120,6 +134,7 @@ test("operator profiles match entire argv sequences and reject undocumented sour
     ["auth", "123"],
   ])
     expect(matchesCredentialArgv(rule, argv)).toBe(false);
+
   expect(
     parseLocalConfig(JSON.stringify({ credentialProfiles: [rule] })).credentialProfiles,
   ).toEqual([rule]);
@@ -133,6 +148,7 @@ test("operator profiles match entire argv sequences and reject undocumented sour
     ),
   ).toThrow();
 });
+
 test("review-mode program/login bindings do not invent operation permission or silently loosen existing allowlists", () => {
   const reviewed: CredentialProfile = {
     name: "service",
@@ -140,22 +156,27 @@ test("review-mode program/login bindings do not invent operation permission or s
     argumentPolicy: "review",
     secrets: { TOKEN: { type: "environment", name: "SERVICE_TOKEN" } },
   };
+
   expect(
     parseLocalConfig(JSON.stringify({ credentialProfiles: [reviewed] })).credentialProfiles,
   ).toEqual([reviewed]);
+
   for (const argv of [
     ["inspect"],
     ["new-command", "--target", "42"],
     ["api", "--method", "GET", "repos/owner/repo/dependabot/alerts?state=open"],
   ])
     expect(matchesCredentialArgv(reviewed, argv)).toBe(true);
+
   for (const profile of [
     { ...reviewed, allowedArgv: [[{ literal: "inspect" }]] },
     { ...reviewed, argumentPolicy: "unchecked" },
     { name: reviewed.name, executable: reviewed.executable, secrets: reviewed.secrets },
   ])
     expect(() => parseLocalConfig(JSON.stringify({ credentialProfiles: [profile] }))).toThrow();
+
 });
+
 nativeTest(
   "the GitHub binding accepts complete argv for independent review, including Dependabot and unrelated operations",
   async () => {
@@ -167,6 +188,7 @@ nativeTest(
       const action = { ...request(), arguments: { profile: "github", argv } };
       const plan = await resolveCredentialPlan(action, config),
         metadata = credentialReviewPlan(plan);
+
       expect(plan.github).toBe(true);
       expect(metadata.argv).toEqual(argv);
       expect(metadata.argumentPolicy).toBe("review");
@@ -174,7 +196,9 @@ nativeTest(
       expect(metadata.argumentAuthorization).toContain("not user authorization");
       expect(JSON.stringify(metadata)).not.toContain(token);
     }
+
   },
+
 );
 
 nativeTest("profile validation reads no credentials and fails closed before review", async () => {
@@ -182,6 +206,7 @@ nativeTest("profile validation reads no credentials and fails closed before revi
     ...profile,
     secrets: { SERVICE_TOKEN: { type: "file" as const, path: join(fixture, "missing-token") } },
   };
+
   expect(
     (await resolveCredentialPlan(request(), { ...config, credentialProfiles: [missingProfile] }))
       .profile,
@@ -190,12 +215,15 @@ nativeTest("profile validation reads no credentials and fails closed before revi
   expect(
     (await resolveCredentialPlan({ ...request(), sandbox: { network: "none" } }, config)).profile,
   ).toBe("fixture");
+
   for (const sandbox of [
     { network: "host" as const, environment: { LD_PRELOAD: "/tmp/hook" } },
     { tools: ["node"] },
   ])
     await expect(resolveCredentialPlan({ ...request(), sandbox }, config)).rejects.toThrow();
+
   const script = join(fixture, "script");
+
   await writeFile(script, "#!/bin/sh\nprintenv\n", { mode: 0o700 });
   await expect(
     resolveCredentialPlan(request(), {
@@ -214,6 +242,7 @@ nativeTest("profile validation reads no credentials and fails closed before revi
     }),
   ).rejects.toThrow("requires native Linux bwrap");
 });
+
 nativeTest(
   "credential sources and binaries stay protected from ordinary sandbox actions",
   async () => {
@@ -229,15 +258,19 @@ nativeTest(
       }),
     ).rejects.toThrow("protected");
   },
+
 );
 nativeTest(
   "only the selected CLI gets the token; output is redacted and /tmp disappears between calls",
   async () => {
     await writeFile(join(fixture, "host-only"), "outside sandbox");
+
     const plan = await resolveCredentialPlan(request(), config);
+
     expect(JSON.stringify(credentialReviewPlan(plan))).not.toContain(token);
     expect(JSON.stringify(credentialReviewPlan(plan))).not.toContain(secretPath);
     expect(JSON.stringify(credentialReviewPlan(plan))).not.toContain(plan.executable);
+
     const args = sandboxArguments(
       {
         path: "/workspace",
@@ -250,27 +283,35 @@ nativeTest(
       "test",
       request().sandbox,
     );
+
     expect(JSON.stringify(args)).not.toContain(token);
     expect(args).not.toContain("--setenv SERVICE_TOKEN");
+
     const result = await executeWithCredentials(request(), plan, config);
     const output = JSON.stringify(result);
+
     expect(result.isError).not.toBe(true);
     expect(output).not.toContain(token);
     expect(output).not.toContain(Buffer.from(token).toString("base64"));
     expect(output).toContain("[REDACTED]");
+
     const detail = JSON.parse((result.content[0] as any).text.split("\n")[0]);
+
     expect(detail.cwd).toBe("/workspace");
     expect(detail.project).toBe(false);
     expect(detail.hostTmp).toBe(false);
     expect(detail.priorTmp).toBe(false);
     expect(detail.envNames).toEqual(["HOME", "LANG", "PATH", "SERVICE_TOKEN"]);
+
     const nextRequest = request(["check"]);
     const next = await executeWithCredentials(
       nextRequest,
       await resolveCredentialPlan(nextRequest, config),
       config,
     );
+
     expect(JSON.parse((next.content[0] as any).text.split("\n")[0]).priorTmp).toBe(false);
+
     const ordinary = await executeIsolated(
       {
         tool: "bash",
@@ -281,26 +322,33 @@ nativeTest(
       await validateWorkspace(project, config.sandbox, credentialProtectedPaths(config)),
       config.sandbox,
     );
+
     expect(ordinary.isError).not.toBe(true);
     expect(await readFile(secretPath, "utf8")).toBe(token);
   },
+
 );
 nativeTest(
   "changed binaries, unavailable secrets and insecure secret files never run",
   async () => {
     const plan = await resolveCredentialPlan(request(), config);
+
     await expect(
       executeWithCredentials(request(), { ...plan, executableSha256: "changed" }, config),
     ).rejects.toThrow("changed after review");
+
     const missing = {
       ...plan,
       secrets: { SERVICE_TOKEN: { type: "file" as const, path: join(fixture, "missing-token") } },
     };
+
     await expect(executeWithCredentials(request(), missing, config)).rejects.toThrow("ENOENT");
     await chmod(secretPath, 0o644);
     await expect(executeWithCredentials(request(), plan, config)).rejects.toThrow("owner-only");
     await chmod(secretPath, 0o600);
+
     const alias = join(fixture, "alias");
+
     await symlink(secretPath, alias);
     await expect(
       executeWithCredentials(
@@ -310,6 +358,7 @@ nativeTest(
       ),
     ).rejects.toThrow();
   },
+
 );
 nativeTest("nonzero status and cancellation are preserved without credential output", async () => {
   const failed = request(["fail"]);
@@ -318,11 +367,14 @@ nativeTest("nonzero status and cancellation are preserved without credential out
     await resolveCredentialPlan(failed, config),
     config,
   );
+
   expect(result.isError).toBe(true);
   expect(result.details.exitCode).toBe(7);
+
   const sleep = request(["sleep"]),
     controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 200);
+
   try {
     await expect(
       executeWithCredentials(
@@ -335,6 +387,7 @@ nativeTest("nonzero status and cancellation are preserved without credential out
   } finally {
     clearTimeout(timeout);
   }
+
   expect(JSON.stringify(await readdir(fixture))).not.toContain("credential-leftover");
 });
 
@@ -348,6 +401,7 @@ nativeTest(
     const plan = await resolveCredentialPlan(action, config);
     const source = join(fixture, "synthetic-gh"),
       directory = join(fixture, "getter-job");
+
     await mkdir(source);
     await mkdir(directory);
     await writeFile(
@@ -356,12 +410,17 @@ nativeTest(
       { mode: 0o600 },
     );
     await writeFile(join(source, "unrelated-login"), "must not be copied", { mode: 0o600 });
+
     const executable = join(directory, "tool");
+
     await copyFile(plan.executable, executable);
     await chmod(executable, 0o500);
+
     const previous = [process.env.GH_TOKEN, process.env.GITHUB_TOKEN];
+
     delete process.env.GH_TOKEN;
     delete process.env.GITHUB_TOKEN;
+
     try {
       const value = await resolveGithubCredential(
         { ...plan, configDirectory: source },
@@ -375,6 +434,7 @@ nativeTest(
         config,
         directory,
       );
+
       expect(value).toBe(token);
       expect(await readdir(join(directory, "gh"))).toContain("hosts.yml");
       expect(await readdir(join(directory, "gh"))).not.toContain("unrelated-login");
@@ -383,9 +443,13 @@ nativeTest(
       for (const [i, name] of ["GH_TOKEN", "GITHUB_TOKEN"].entries()) {
         if (previous[i] === undefined) delete process.env[name];
         else process.env[name] = previous[i];
+
       }
+
     }
+
   },
+
 );
 
 nativeTest(
@@ -400,9 +464,12 @@ nativeTest(
         expect(request.headers.get("authorization")).toBe(`Bearer ${token}`);
         expect(request.method).toBe("POST");
         expect(await request.json()).toEqual({ operation: "close", number: "42" });
+
         return new Response("closed synthetic item 42");
       },
+
     });
+
     try {
       const serviceProfile: CredentialProfile = {
         name: profile.name,
@@ -418,6 +485,7 @@ nativeTest(
         await resolveCredentialPlan(action, serviceConfig),
         serviceConfig,
       );
+
       expect(result.isError).not.toBe(true);
       expect(JSON.stringify(result)).toContain("closed synthetic item 42");
       expect(JSON.stringify(result)).not.toContain(token);
@@ -425,7 +493,9 @@ nativeTest(
     } finally {
       server.stop(true);
     }
+
   },
+
 );
 nativeTest(
   "real gh performs an authenticated paginated API request through a general binding",
@@ -444,21 +514,26 @@ nativeTest(
       port: 0,
       fetch(request) {
         const url = new URL(request.url);
+
         calls++;
         expect(request.method).toBe("GET");
         expect(url.pathname).toBe("/repos/owner/repo/dependabot/alerts");
         expect(url.searchParams.get("state")).toBe("open");
         expect(request.headers.get("authorization")).toBe(`token ${token}`);
+
         const page = url.searchParams.get("page") === "2" ? 2 : 1;
         const headers: Record<string, string> =
           page === 1
             ? { Link: `<${url.origin}${url.pathname}?state=open&page=2>; rel="next"` }
             : {};
+
         return Response.json([{ number: page, dependency: { manifest_path: "package.json" } }], {
           headers,
         });
       },
+
     });
+
     try {
       const gh: CredentialProfile = {
         name: "fixture-gh",
@@ -485,17 +560,22 @@ nativeTest(
         await resolveCredentialPlan(action, general),
         general,
       );
+
       expect(result.isError).not.toBe(true);
       expect(result.details.exitCode).toBe(0);
       expect(calls).toBe(2);
+
       const output = (result.content[0] as any).text as string;
+
       expect(output).toContain('"number":1');
       expect(output).toContain('"number":2');
       expect(output).not.toContain(token);
     } finally {
       server.stop(true);
     }
+
   },
+
 );
 
 nativeTest(
@@ -510,26 +590,36 @@ nativeTest(
         { ...profile, secrets: { SERVICE_TOKEN: { type: "environment" as const, name } } },
       ],
     };
+
     try {
       delete process.env[name];
+
       const plan = await resolveCredentialPlan(request(), envConfig);
+
       expect(JSON.stringify(credentialReviewPlan(plan))).not.toContain(name);
       await expect(executeWithCredentials(request(), plan, envConfig)).rejects.toThrow(
         "Credential unavailable",
       );
       process.env[name] = synthetic;
+
       const result = await executeWithCredentials(request(), plan, envConfig);
       const output = (result.content[0] as any).text as string;
+
       expect(output).not.toContain(synthetic);
       expect(output).not.toContain("synthetic-unicode-password");
       expect(output.trim().split("\n").slice(1)).toEqual(["[REDACTED]", "[REDACTED]"]);
+
       const detail = JSON.parse(output.split("\n")[0]);
+
       expect(detail.envNames).not.toContain(name);
     } finally {
       if (previous === undefined) delete process.env[name];
       else process.env[name] = previous;
+
     }
+
   },
+
 );
 nativeTest(
   "any bound CLI can receive reviewed read/write project or selected-file access, with grants expiring afterwards",
@@ -550,7 +640,9 @@ nativeTest(
       credentialProtectedPaths(general),
       readScope,
     );
+
     expect(projectView.readOnlyBindings).toContain(project);
+
     const result = await executeWithCredentials(
       read,
       await resolveCredentialPlan(read, general),
@@ -558,10 +650,13 @@ nativeTest(
       undefined,
       projectView,
     );
+
     expect(result.isError).not.toBe(true);
     expect(JSON.stringify(result)).toContain("unmounted project contents");
     expect(JSON.parse((result.content[0] as any).text.split("\n")[0]).cwd).toBe(project);
+
     const deniedWrite = { ...read, arguments: { ...read.arguments, argv: ["write-file", file] } };
+
     expect(
       (
         await executeWithCredentials(
@@ -574,6 +669,7 @@ nativeTest(
       ).isError,
     ).toBe(true);
     expect(await readFile(file, "utf8")).toBe("unmounted project contents");
+
     const writeScope = { projectFiles: "write" as const },
       write = { ...deniedWrite, sandbox: writeScope };
     const writable = await validateWorkspace(
@@ -582,6 +678,7 @@ nativeTest(
       credentialProtectedPaths(general),
       writeScope,
     );
+
     expect(
       (
         await executeWithCredentials(
@@ -594,6 +691,7 @@ nativeTest(
       ).isError,
     ).not.toBe(true);
     expect(await readFile(file, "utf8")).toBe("reviewed output");
+
     const selectedScope = { paths: [{ path: file, access: "read" as const }] },
       selected = { ...read, sandbox: selectedScope };
     const selectedView = await validateWorkspace(
@@ -604,6 +702,7 @@ nativeTest(
       undefined,
       "credential",
     );
+
     expect(selectedView.bindings).toEqual([file]);
     expect(selectedView.cwd).toBe("/workspace");
     expect(
@@ -617,13 +716,16 @@ nativeTest(
         )
       ).isError,
     ).not.toBe(true);
+
     const next = request(["check"]),
       isolated = await executeWithCredentials(
         next,
         await resolveCredentialPlan(next, general),
         general,
       );
+
     expect(JSON.parse((isolated.content[0] as any).text.split("\n")[0]).project).toBe(false);
+
     for (const access of ["read", "write"] as const)
       await expect(
         validateWorkspace(
@@ -635,5 +737,7 @@ nativeTest(
           "credential",
         ),
       ).rejects.toThrow("protected");
+
   },
+
 );

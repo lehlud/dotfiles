@@ -25,6 +25,7 @@ export const configSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
 export type PortableConfig = Static<typeof configSchema>;
 
 const absolutePath = Type.String({ pattern: "^/", minLength: 1 });
@@ -56,6 +57,7 @@ export const localConfigSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
 export type LocalConfig = Static<typeof localConfigSchema>;
 
 export const resolvedConfigSchema = Type.Object(
@@ -104,15 +106,23 @@ export const resolvedConfigSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
 export type Config = Static<typeof resolvedConfigSchema>;
+
 export function parseConfig(text: string): PortableConfig {
   const value: unknown = JSON.parse(text);
+
   if (!Check(configSchema, value)) throw new Error("Invalid auto-approval.json configuration");
+
   return value;
 }
+
 export function parseLocalConfig(text: string): LocalConfig {
   const value: unknown = JSON.parse(text);
+
   if (!Check(localConfigSchema, value))
     throw new Error("Invalid auto-approval.device.json configuration");
+
   return value;
 }
+

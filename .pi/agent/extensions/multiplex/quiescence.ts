@@ -13,23 +13,32 @@ export class Quiescence {
     check: () => void,
   ) {
     if (!goal) return;
+
     if (this.goal !== goal) {
       this.goal = goal;
       this.awakened.clear();
       this.checkpoint = undefined;
     }
+
     // Read dependency deliveries before asking for a verdict on older evidence.
     if (unread.length) {
       for (const { name, sequence } of unread) {
         if (sequence <= (this.awakened.get(name) ?? 0)) continue;
+
         this.awakened.set(name, sequence);
         wake(name);
       }
+
       return;
     }
+
     const key = `${goal}:${revision}`;
+
     if (this.checkpoint === key) return;
+
     this.checkpoint = key;
     check();
   }
+
 }
+

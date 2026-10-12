@@ -19,26 +19,34 @@ const localConfigPath = join(getAgentDir(), "auto-approval.device.json");
 
 export default function autoApproval(pi: ExtensionAPI) {
   const session = new ActionSession();
+
   pi.on("session_shutdown", () => session.cleanup());
+
   function lock(ctx: ExtensionContext) {
     pi.setActiveTools([TOOL_NAME, ...(sessionServices(ctx).mailbox?.active() ? ["mailbox"] : [])]);
     // Clear a widget left by an older version after /reload.
     ctx.ui.setWidget("auto-approval", undefined);
     ctx.ui.setStatus("auto-approval", undefined);
   }
+
   pi.on("session_start", async (_event, ctx) => {
     sessionServices(ctx).cleanup = () => session.cleanup();
     lock(ctx);
+
     try {
       const config = await loadConfig(getAgentDir());
+
       await assertSandboxReady(config);
     } catch (error) {
       ctx.ui.setStatus("auto-approval", "approval: LOCKED");
       ctx.ui.notify(`Auto-Approval LOCKED: ${String(error)}`, "error");
     }
+
   });
+
   pi.on("before_agent_start", async (_event, ctx) => {
     lock(ctx);
+
     return {
       message: {
         customType: "auto-approval-policy",
@@ -47,12 +55,16 @@ export default function autoApproval(pi: ExtensionAPI) {
       },
     };
   });
+
   pi.on("tool_call", (event) => {
     // Internal transport is owned by multiplex, outside approval and audit.
     if (event.toolName === "mailbox") return;
+
     if (event.toolName !== TOOL_NAME || event.parentToolCallId)
       return { block: true, reason: LOCK_MESSAGE };
+
   });
+
   pi.on("user_bash", async () => ({
     result: {
       output:
@@ -68,6 +80,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       try {
         const config = await loadConfig(getAgentDir());
+
         await assertSandboxReady(config);
         ctx.ui.notify(
           `Auto-Approval ON\nReviewers (priority order):\n${config.reviewers.map((item, i) => `${i + 1}. ${reviewerLabel(item)}`).join("\n")}\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nDevice paths/views/credential profiles (optional): ${localConfigPath}\nChanges take effect on the next action. No bypass/off command.`,
@@ -79,7 +92,9 @@ export default function autoApproval(pi: ExtensionAPI) {
           "error",
         );
       }
+
     },
+
   });
 
   pi.registerTool({
@@ -95,3 +110,4 @@ export default function autoApproval(pi: ExtensionAPI) {
     execute: actionHandler(pi, session),
   });
 }
+

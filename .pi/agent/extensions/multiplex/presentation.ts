@@ -51,15 +51,20 @@ export class FeedView {
   records(segment: string) {
     return this.segments.get(segment) ?? [];
   }
+
   append(record: ActivityRecord) {
     if (!record.segment) return;
+
     const records = this.segments.get(record.segment) ?? [];
+
     records.push(record);
     this.segments.set(record.segment, records);
   }
+
   private digest(text: string) {
     return createHash("sha256").update(text.trim()).digest("hex");
   }
+
   rootText(blocks: any[], finalized = false) {
     const hashes = blocks.flatMap((block) =>
       block.type === "text"
@@ -68,41 +73,60 @@ export class FeedView {
           ? [this.digest(block.thinking)]
           : [],
     );
+
     this.streamingTexts = new Set(hashes);
+
     if (finalized) for (const hash of hashes) this.nativeTexts.add(hash);
+
     return hashes;
   }
+
   rootTool(id: string) {
     this.nativeTools.add(id);
   }
+
   hidesTool(id: string) {
     return this.nativeTools.has(id);
   }
+
   hidesText(text: string) {
     const hash = this.digest(text);
+
     return this.nativeTexts.has(hash) || this.streamingTexts.has(hash);
   }
+
   restore(records: ActivityRecord[]) {
     this.spacing.dispose();
+
     if (this.ui) this.spacing.bind(this.ui);
+
     this.nativeTools.clear();
     this.nativeTexts.clear();
     this.streamingTexts.clear();
     this.segments.clear();
+
     for (const record of records)
       if (record) {
         this.append(record);
+
         if (record.backend) {
           if (record.toolCallId) this.rootTool(record.toolCallId);
+
           for (const hash of record.nativeTexts ?? []) this.nativeTexts.add(hash);
+
         }
+
       }
+
   }
+
   private hidesMessage(message: any) {
     if (!Array.isArray(message?.content)) return false;
+
     const blocks = message.content.flatMap((block: any) =>
       block.type === "text" ? [block.text] : block.type === "thinking" ? [block.thinking] : [],
     );
+
     return (
       blocks.some((text: unknown) => typeof text === "string" && text.trim()) &&
       blocks.every(
@@ -110,42 +134,52 @@ export class FeedView {
       )
     );
   }
+
   bind(ui: TUI) {
     this.ui = ui;
     this.spacing.bind(ui);
   }
+
   dispose() {
     this.spacing.dispose();
     this.ui = undefined;
   }
+
   accepts(name: string) {
     return !this.selected || this.selected === name;
   }
+
   select(name?: string) {
     this.selected = name;
     this.ui?.invalidate?.();
     this.ui?.requestRender?.(true);
   }
+
   filter(name: string, component: Component): Component {
     return {
       render: (width) => (this.accepts(name) ? component.render(width) : []),
       invalidate: () => component.invalidate(),
     };
   }
+
   refresh() {
     this.ui?.invalidate?.();
     this.ui?.requestRender?.();
   }
+
 }
 
 export function messageBody(text: string, expanded: boolean) {
   const body = clean(text),
     lines = body.split("\n");
+
   if (expanded) return body;
+
   const preview = lines
     .slice(0, 5)
     .map((line) => truncateToWidth(line, 180))
     .join("\n");
+
   return (
     preview +
     (lines.length > 5 || lines.some((line) => visibleWidth(line) > 180)
@@ -171,18 +205,23 @@ export function mailboxRenderers(): ToolRenderers {
           0,
           0,
         );
+
       const args = context.args as any,
         details = result.details as any;
+
       // Successful sends have one broker entry; inbox reads do not replay letters.
       if (args?.operation === "send") return empty();
+
       const text = ["plan", "accept", "withdraw"].includes(args?.operation)
         ? `Coordination · ${details?.ready ? "Ready" : "Planning"}
 ${details?.assignments?.map((item: any) => `${item.name}: ${item.task}${item.waiting ? " (waiting)" : ""}`).join("\n") ?? "No work split"}`
         : args?.operation === "peers"
           ? `Messagebox · Members\n${details?.members?.join(", ") ?? ""}`
           : `Messagebox · Inbox · ${Array.isArray(details) ? details.length : 0} messages`;
+
       return new Text(messageBody(text, options.expanded), 0, 0);
     },
+
   };
 }
 
@@ -190,9 +229,12 @@ export function suppressNativeFeed(pi: ExtensionAPI, view: FeedView, active: () 
   // Custom activity entries replace the backend session's native tool rows.
   pi.registerToolRenderer((_name, next) => {
     const original = next();
+
     if (!original && !active()) return;
+
     const hidden = (context: any) =>
       (context.state.multiplexHidden ||= active() || view.hidesTool(context.toolCallId));
+
     return {
       ...original,
       renderShell: "self",
@@ -214,8 +256,10 @@ export function suppressNativeFeed(pi: ExtensionAPI, view: FeedView, active: () 
             )),
     };
   });
+
   pi.registerMarkdownTransformer((text, context) =>
     context.messageType !== "user" && view.hidesText(text) ? "" : text,
   );
   pi.registerMessageRenderer("multiplex-letter", () => empty());
 }
+

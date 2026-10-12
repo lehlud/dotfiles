@@ -3,6 +3,7 @@ set -euo pipefail
 wanted="${1#v}"
 [[ "$wanted" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { printf 'nvm install: use a numeric Node version\n' >&2; exit 1; }
 case "$(uname -m)" in x86_64) arch=x64 ;; aarch64) arch=arm64 ;; *) printf 'Unsupported Node architecture\n' >&2; exit 1 ;; esac
+
 download="$(mktemp -d /tmp/pi-tools/node/download.XXXXXX)"
 trap 'rm -rf -- "$download"' EXIT
 curl --fail --silent --show-error --location --connect-timeout 10 --max-time 60 https://nodejs.org/dist/index.json -o "$download/index.json"
@@ -35,4 +36,5 @@ elif [ -e "$destination" ]; then
 else
     mv -- "$download/node-$version-linux-$arch" "$destination"
 fi
+
 /bin/bash /opt/pi-tools/runtime/node.sh nvm use "$version"

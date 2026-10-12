@@ -32,9 +32,11 @@ function isTextBlock(item: unknown): boolean {
 export function reviewedReceipts(entries: readonly Entry[]): ReviewedEvidence[] {
   const approvals = new Map<string, ActionAudit>();
   const reviewedEvidence: ReviewedEvidence[] = [];
+
   for (const entry of entries) {
     if (entry.type === "custom" && entry.customType === "auto-approval-review") {
       const audit = entry.data as ActionAudit;
+
       if (
         audit?.decision === "approve" &&
         [
@@ -55,7 +57,9 @@ export function reviewedReceipts(entries: readonly Entry[]): ReviewedEvidence[] 
         audit.toolCallId
       )
         approvals.set(JSON.stringify([audit.multiplexAgent ?? "", audit.toolCallId]), audit);
+
     }
+
     // Peer evidence comes only from the extension broker; ordinary mailbox
     // text cannot create these trusted entries.
     const peer =
@@ -63,6 +67,7 @@ export function reviewedReceipts(entries: readonly Entry[]): ReviewedEvidence[] 
         ? (entry.data as { multiplexAgent?: string; message?: Entry["message"] })
         : undefined;
     const message = peer?.message ?? entry.message;
+
     if (
       (!peer && entry.type !== "message") ||
       message?.role !== "toolResult" ||
@@ -70,15 +75,19 @@ export function reviewedReceipts(entries: readonly Entry[]): ReviewedEvidence[] 
       message.isError
     )
       continue;
+
     const details = message.details as { approval?: ActionAudit; result?: unknown } | undefined;
     const receipt = details?.approval;
+
     if (peer && peer.multiplexAgent !== receipt?.multiplexAgent) continue;
+
     const audit = approvals.get(
       JSON.stringify([
         peer?.multiplexAgent ?? receipt?.multiplexAgent ?? "",
         message.toolCallId ?? "",
       ]),
     );
+
     if (
       !audit?.requestId ||
       !audit.action ||
@@ -88,11 +97,14 @@ export function reviewedReceipts(entries: readonly Entry[]): ReviewedEvidence[] 
       receipt.fingerprint !== audit.fingerprint
     )
       continue;
+
     const pageOnly = ["websearch", "webfetch"].includes(audit.action.tool);
     const content = Array.isArray(message.content)
       ? message.content.slice(pageOnly ? 0 : 1).filter(isTextBlock)
       : [];
+
     if (!content.length) continue;
+
     reviewedEvidence.push({
       tool: audit.action.tool,
       arguments: audit.action.arguments,
@@ -103,5 +115,7 @@ export function reviewedReceipts(entries: readonly Entry[]): ReviewedEvidence[] 
       details: details?.result,
     });
   }
+
   return reviewedEvidence;
 }
+

@@ -3,7 +3,9 @@ import { Container, Text, type Component } from "@earendil-works/pi-tui";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 type NativeTool = ToolDefinition<any, any>;
+
 type ToolRenderContext = Parameters<NonNullable<NativeTool["renderCall"]>>[2];
+
 type RenderState = {
   tool: string;
   native: Record<string, unknown>;
@@ -19,9 +21,12 @@ export function createApprovalRenderers(
 ): Pick<NativeTool, "renderShell" | "renderCall" | "renderResult"> {
   function slot(context: ToolRenderContext, tool: string): RenderState {
     const old = context.state.approvedActionRendering as RenderState | undefined;
+
     if (old?.tool === tool) return old;
+
     return (context.state.approvedActionRendering = { tool, native: {}, wrapper: new Container() });
   }
+
   const definition = (name: string) => (Object.hasOwn(tools, name) ? tools[name] : undefined);
   const nativeContext = (
     context: ToolRenderContext,
@@ -37,6 +42,7 @@ export function createApprovalRenderers(
     // diff from the actual, sandbox-produced result after execution instead.
     argsComplete: state.tool === "edit" ? false : context.argsComplete,
   });
+
   return {
     renderShell: "self",
     renderCall(args: any, theme, context) {
@@ -44,12 +50,15 @@ export function createApprovalRenderers(
       const state = slot(context, name);
       const tool = definition(name);
       let displayed = args?.arguments ?? {};
+
       try {
         displayed = (actionSnapshot(args) as any)?.arguments ?? {};
       } catch {
         displayed = {};
       }
+
       const command = displayed.command;
+
       if (
         ["bash", "powershell"].includes(name) &&
         typeof command === "string" &&
@@ -58,16 +67,19 @@ export function createApprovalRenderers(
       ) {
         const lines = command.split("\n");
         const preview = lines[0].slice(0, 160);
+
         displayed = {
           ...displayed,
           command: `${preview} …\n[${lines.length} lines, ${command.length} characters · ctrl+o to expand]`,
         };
       }
+
       state.call =
         tool?.renderCall?.(displayed, theme, {
           ...nativeContext(context, state, state.call),
           args: displayed,
         }) ?? new Text(theme.fg("toolTitle", theme.bold(name || "approved_action")), 0, 0);
+
       if (args?.sandbox || args?.network !== undefined) {
         const changes = {
           ...args.sandbox,
@@ -85,37 +97,47 @@ export function createApprovalRenderers(
           ...(changes.executableSearchPaths ?? []).map((path: string) => `PATH: ${path}`),
           ...Object.entries(changes.limits ?? {}).map(([key, value]) => `${key}: ${value}`),
         ];
+
         state.callWrapper ??= new Container();
         state.callWrapper.clear();
         state.callWrapper.addChild(
           new Text(theme.fg("warning", `Sandbox request · ${labels.join(" · ")}`), 0, 0),
         );
         state.callWrapper.addChild(state.call);
+
         return state.callWrapper;
       }
+
       return state.call;
     },
+
     renderResult(result, options, theme, context) {
       const args = context.args as any;
       const name = typeof args?.tool === "string" ? args.tool : "";
       const state = slot(context, name);
+
       state.wrapper.clear();
+
       const details = result.details;
       // The wrapper adds exactly one decision block before the original
       // result. Keep it out of syntax highlighting and tool-specific output.
       const completed = !options.isPartial && details?.approval && Object.hasOwn(details, "result");
+
       if (completed) {
         const decision = details.approvalSummary
           ? { type: "text", text: details.approvalSummary }
           : result.content[0];
+
         if (decision?.type === "text")
           state.wrapper.addChild(new Text(theme.fg("muted", decision.text), 0, 0));
+
         const output = {
           ...result,
           content: details.approvalSummary ? result.content : result.content.slice(1),
           details: details.result,
         };
         const tool = definition(name);
+
         state.result =
           tool?.renderResult?.(
             output,
@@ -139,9 +161,13 @@ export function createApprovalRenderers(
           .filter((item) => item.type === "text")
           .map((item) => item.text)
           .join("\n");
+
         state.wrapper.addChild(new Text(theme.fg(context.isError ? "error" : "muted", text), 0, 0));
       }
+
       return state.wrapper;
     },
+
   };
 }
+

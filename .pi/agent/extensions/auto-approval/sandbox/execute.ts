@@ -20,12 +20,15 @@ export async function executeIsolated(
   gitConfigReader?: GitConfigReader,
 ): Promise<AgentToolResult<any>> {
   signal?.throwIfAborted();
+
   const input = JSON.stringify({
     ...request,
     ...(credentialExecution ? { credentialExecution } : {}),
     ...(gitConfigReader ? { gitConfigReader } : {}),
   });
+
   if (Buffer.byteLength(input) > 100000) throw new Error("Executor input limit exceeded");
+
   const name = `pi-approved-${randomUUID()}`;
   const native = config.backend === "bwrap";
   const executable = native ? config.executable : config.dockerExecutable;
@@ -49,56 +52,80 @@ export async function executeIsolated(
                 process.kill(-child.pid, "SIGKILL");
               } catch (error) {
                 if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+
               }
+
             }
+
           })
+
         : new Promise<void>((done) => {
             const rm = spawn(executable, ["rm", "--force", name], { stdio: "ignore" });
+
             rm.once("error", () => done());
             rm.once("close", () => done());
           });
+
     return cleanup;
   };
+
   const stop = (reason: string) => {
     failure ??= new Error(reason);
     void remove();
     child.kill("SIGTERM");
   };
+
   const abort = () => stop("Isolated execution cancelled");
+
   signal?.addEventListener("abort", abort, { once: true });
+
   const watchdog = setTimeout(
     () => stop("Isolated executor exceeded the technical execution limit"),
     request.sandbox?.limits?.executionTimeoutMs ?? 600000,
   );
+
   try {
     const exited = new Promise<number | null>((done, reject) => {
       child.once("error", reject);
       child.once("close", done);
     });
+
     child.stdout.on("data", (chunk: Buffer) => {
       try {
         output.append(chunk);
       } catch {
         stop("Executor output limit exceeded");
       }
+
     });
+
     child.stderr.on("data", (chunk: Buffer) => {
       if (stderr.length < 20000) stderr += diagnosticDecoder.write(chunk);
+
     });
+
     child.stdin.on("error", () => {});
+
     if (signal?.aborted) abort();
     else child.stdin.end(input);
+
     const code = await exited;
     const stdout = output.finish();
+
     stderr += diagnosticDecoder.end();
+
     if (failure) throw failure;
+
     if (code !== 0)
       throw new Error(
         `Mandatory ${native ? "bwrap" : "Docker"} sandbox failed (${code}); no local fallback. ${stderr.trim()}`,
       );
+
     const result: unknown = JSON.parse(stdout);
+
     if (!result || typeof result !== "object" || !Array.isArray((result as any).content))
       throw new Error("Invalid executor result");
+
     return result as AgentToolResult<any>;
   } finally {
     clearTimeout(watchdog);
@@ -106,4 +133,6 @@ export async function executeIsolated(
     await remove();
     await cleanTemporaryMountpoints(workspace.temporaryDirectory, mountpoints);
   }
+
 }
+

@@ -19,7 +19,9 @@ for (const changing of [false, true])
   test(`real SDK ${changing ? "continues meaningful new inspections" : "pauses unchanged tool loops before another model call"}`, async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-progress-sdk-")),
       previous = process.env.PI_CODING_AGENT_DIR;
+
     process.env.PI_CODING_AGENT_DIR = directory;
+
     let working = 0,
       reviews = 0,
       results = 0;
@@ -30,6 +32,7 @@ for (const changing of [false, true])
       modelsStorePath: join(directory, "models-store.json"),
       allowModelNetwork: false,
     });
+
     await writeFile(
       join(directory, "auto-approval.json"),
       JSON.stringify({
@@ -77,11 +80,14 @@ for (const changing of [false, true])
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
           },
         };
+
         if (model.id === "reviewer") {
           reviews++;
+
           const request = JSON.parse(
             String(context.messages.find((entry) => entry.role === "user")?.content),
           );
+
           message.content = [
             {
               type: "text",
@@ -95,6 +101,7 @@ for (const changing of [false, true])
         } else {
           contexts.push(JSON.stringify(context.messages));
           working++;
+
           if (working > 20) message.content = [{ type: "text", text: "Fixture complete." }];
           else {
             message.stopReason = "toolUse";
@@ -117,11 +124,16 @@ for (const changing of [false, true])
               },
             ];
           }
+
         }
+
         queueMicrotask(() => stream.push({ type: "done", reason: message.stopReason, message }));
+
         return stream;
       },
+
     });
+
     const settings = SettingsManager.inMemory(),
       manager = SessionManager.inMemory(directory);
     const loader = new DefaultResourceLoader({
@@ -149,6 +161,7 @@ for (const changing of [false, true])
             }),
             async execute(_id, args) {
               results++;
+
               return {
                 content: [
                   { type: "text", text: `Approval display ${results}` },
@@ -160,11 +173,15 @@ for (const changing of [false, true])
                 details: { approval: { decision: "approve", action: args } },
               };
             },
+
           });
         },
+
       ],
     });
+
     await loader.reload();
+
     const { session } = await createAgentSession({
       cwd: directory,
       agentDir: directory,
@@ -176,25 +193,31 @@ for (const changing of [false, true])
       resourceLoader: loader,
       tools: ["approved_action"],
     });
+
     try {
       await session.bindExtensions({
         mode: "tui",
         uiContext: { setStatus() {}, notify() {} } as any,
       });
       await session.prompt("/goal Inspect and finish the fixture");
+
       for (let i = 0; i < 3000; i++) {
         const state = manager
           .getBranch()
           .filter((entry) => entry.type === "custom" && entry.customType === "auto-approval-goal")
           .at(-1) as any;
+
         if (!session.isStreaming && state?.data.status === (changing ? "complete" : "paused"))
           break;
+
         await new Promise((resolve) => setTimeout(resolve, 2));
       }
+
       const branch = manager.getBranch(),
         state = branch
           .filter((entry) => entry.type === "custom" && entry.customType === "auto-approval-goal")
           .at(-1) as any;
+
       expect(state.data.status).toBe(changing ? "complete" : "paused");
       expect(results).toBe(changing ? 20 : 9);
       expect(reviews).toBe(changing ? 1 : 0);
@@ -207,8 +230,12 @@ for (const changing of [false, true])
     } finally {
       await session.abort();
       session.dispose();
+
       if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previous;
+
       await rm(directory, { recursive: true, force: true });
     }
+
   }, 10000);
+

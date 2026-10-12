@@ -18,9 +18,12 @@ import { createAssistantMessageEventStream, getCurrentSystemPrompt } from "@eare
 import { registerSide } from "../../conversations/side.ts";
 
 const tick = () => new Promise<void>((done) => setTimeout(done, 1));
+
 async function until(check: () => boolean) {
   for (let i = 0; i < 1000 && !check(); i++) await tick();
+
   if (!check()) throw new Error("SDK fixture did not reach its expected state");
+
 }
 
 async function fixture(directory: string) {
@@ -33,6 +36,7 @@ async function fixture(directory: string) {
   let releaseMain: (() => void) | undefined,
     mainStarted = false;
   const sideContexts: any[] = [];
+
   runtime.registerProvider("side-sdk-fixture", {
     api: "side-sdk-fixture",
     apiKey: "test-fixture",
@@ -50,6 +54,7 @@ async function fixture(directory: string) {
     ],
     streamSimple(model, context, options) {
       const stream = createAssistantMessageEventStream();
+
       queueMicrotask(async () => {
         const side = getCurrentSystemPrompt(context.messages).includes(
           "temporary side conversation",
@@ -71,14 +76,18 @@ async function fixture(directory: string) {
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
           },
         };
+
         stream.push({ type: "start", partial: message });
+
         if (side) sideContexts.push(structuredClone(context));
         else {
           mainStarted = true;
           await new Promise<void>((done) => {
             releaseMain = done;
           });
+
         }
+
         message.content[0].text = side
           ? "Side answer based on the parent context."
           : "MAIN-FINISHED parser checks passed.";
@@ -88,14 +97,19 @@ async function fixture(directory: string) {
           delta: message.content[0].text,
           partial: message,
         });
+
         if (options?.signal?.aborted) {
           message.stopReason = "aborted";
           stream.push({ type: "error", reason: "aborted", error: message });
         } else stream.push({ type: "done", reason: "stop", message });
+
       });
+
       return stream;
     },
+
   });
+
   const model = new ModelRegistry(runtime).find("side-sdk-fixture", "fixture")!;
   const settingsManager = SettingsManager.inMemory();
   const resourceLoader = new DefaultResourceLoader({
@@ -109,7 +123,9 @@ async function fixture(directory: string) {
     noPromptTemplates: true,
     extensionFactories: [(pi) => registerSide(pi)],
   });
+
   await resourceLoader.reload();
+
   const { session } = await createAgentSession({
     cwd: directory,
     agentDir: directory,
@@ -121,6 +137,7 @@ async function fixture(directory: string) {
     resourceLoader,
     noTools: "all",
   });
+
   return {
     session,
     sideContexts,
@@ -134,6 +151,7 @@ test("real Pi SDK runs /side immediately during a parent turn without changing i
   const state = await fixture(directory);
   let view: any, main: Promise<void> | undefined, side: Promise<void> | undefined;
   const statuses = new Map<string, string>([["00-goal", "goal: parser"]]);
+
   try {
     initTheme("dark", false);
     await state.session.bindExtensions({
@@ -142,10 +160,13 @@ test("real Pi SDK runs /side immediately during a parent turn without changing i
         setStatus: (key: string, value?: string) => {
           if (value === undefined) statuses.delete(key);
           else statuses.set(key, value);
+
         },
+
         notify: (text: string) => {
           throw new Error(text);
         },
+
         custom: (factory: Function) =>
           new Promise<void>((done) => {
             view = factory(
@@ -155,6 +176,7 @@ test("real Pi SDK runs /side immediately during a parent turn without changing i
               done,
             );
           }),
+
       } as any,
     });
     main = state.session.prompt("MAIN-INTENT repair the parser and verify it.");
@@ -186,8 +208,11 @@ test("real Pi SDK runs /side immediately during a parent turn without changing i
     view?.dispose();
     view?.handleInput("\x03");
     await main?.catch(() => {});
+
     await side?.catch(() => {});
+
     state.session.dispose();
     await rm(directory, { recursive: true, force: true });
   }
+
 }, 15000);

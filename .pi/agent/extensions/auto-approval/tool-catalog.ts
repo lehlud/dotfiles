@@ -32,7 +32,9 @@ export const factories = {
   credential_exec: (_cwd: string) => credentialCommandTool,
   git: (_cwd: string) => gitTool,
 };
+
 export type ToolName = keyof typeof factories;
+
 const toolNames = Object.keys(factories) as ToolName[];
 export const definitions = Object.fromEntries(
   toolNames.map((name) => [name, factories[name](process.cwd())]),

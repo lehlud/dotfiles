@@ -21,9 +21,11 @@ export type CredentialPlan = {
   github?: true;
   configDirectory?: string;
 };
+
 const ghConfigDirectory = () =>
   process.env.GH_CONFIG_DIR ??
   join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "gh");
+
 export function credentialProtectedPaths(config: Config): string[] {
   return [
     ghConfigDirectory(),
@@ -39,14 +41,18 @@ export function credentialProtectedPaths(config: Config): string[] {
 /** Check complete argument sequences; partial regex matches never grant access. */
 export function matchesCredentialArgv(profile: CredentialProfile, argv: string[]): boolean {
   if ("argumentPolicy" in profile) return profile.argumentPolicy === "review";
+
   return profile.allowedArgv.some(
     (rule) =>
       rule.length === argv.length &&
       rule.every((item, index) => {
         if ("literal" in item) return item.literal === argv[index];
+
         const match = new RegExp(`^(?:${item.pattern})$`, "u").exec(argv[index]);
+
         return match?.[0] === argv[index];
       }),
+
   );
 }
 
@@ -55,36 +61,49 @@ async function executableBytes(path: string): Promise<Buffer> {
     throw new Error(
       "Credential profiles require a native Linux ELF executable, not a shell, macOS wrapper or symlink",
     );
+
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+
   try {
     const info = await file.stat();
+
     if (!info.isFile() || info.size > 128 * 1024 * 1024 || info.nlink !== 1)
       throw new Error("Unsafe credential executable");
+
     return await file.readFile();
   } finally {
     await file.close();
   }
+
 }
+
 async function githubExecutable(): Promise<string> {
   for (const candidate of ["/usr/bin/gh", "/usr/sbin/gh", "/usr/local/bin/gh"]) {
     try {
       const path = await realpath(candidate),
         info = await lstat(path);
+
       if (info.uid === 0 && !(info.mode & 0o022) && (await nativeLinuxNode(path))) return path;
+
     } catch (error) {
       if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+
     }
+
   }
+
   throw new Error(
     "No trusted native Linux gh installation found; install gh inside Lubox outside Pi",
   );
 }
+
 export async function resolveCredentialPlan(
   request: Request,
   config: Config,
 ): Promise<CredentialPlan> {
   if (config.sandbox.backend !== "bwrap")
     throw new Error("Credential execution currently requires native Linux bwrap; no host fallback");
+
   if (
     request.sandbox &&
     Object.keys(request.sandbox).some(
@@ -94,13 +113,16 @@ export async function resolveCredentialPlan(
     throw new Error(
       "Credential commands cannot grant local tools, search paths or agent-controlled environment",
     );
+
   const profileName = request.arguments.profile as string,
     argv = request.arguments.argv as string[];
   const profile = config.credentialProfiles?.find((item) => item.name === profileName);
   let plan: Omit<CredentialPlan, "executableSha256">;
+
   if (profile) {
     if (!matchesCredentialArgv(profile, argv))
       throw new Error("Arguments are outside the operator-configured credential profile");
+
     plan = {
       profile: profileName,
       executable: profile.executable,
@@ -132,6 +154,7 @@ export async function resolveCredentialPlan(
     throw new Error(
       "Unknown credential profile; the operator must configure credentialProfiles in auto-approval.device.json outside Pi",
     );
+
   return {
     ...plan,
     executableSha256: createHash("sha256")
@@ -139,6 +162,7 @@ export async function resolveCredentialPlan(
       .digest("hex"),
   };
 }
+
 export function credentialReviewPlan(plan: CredentialPlan, fileAccess = false) {
   return {
     profile: plan.profile,
@@ -167,8 +191,10 @@ export function credentialReviewPlan(plan: CredentialPlan, fileAccess = false) {
 
 async function readSecretFile(path: string): Promise<string> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+
   try {
     const info = await file.stat();
+
     if (
       !info.isFile() ||
       info.nlink !== 1 ||
@@ -179,34 +205,47 @@ async function readSecretFile(path: string): Promise<string> {
       throw new Error(
         "Credential file must be owner-only, regular, without hardlinks, and at most 16 KiB",
       );
+
     return (await file.readFile("utf8")).trimEnd();
   } finally {
     await file.close();
   }
+
 }
+
 async function copyGithubConfiguration(source: string, target: string): Promise<void> {
   await mkdir(target, { mode: 0o700 });
+
   for (const name of ["hosts.yml", "config.yml"]) {
     let file;
+
     try {
       file = await open(
         join(source, name),
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
       );
+
       const info = await file.stat();
+
       if (!info.isFile() || info.nlink !== 1 || info.size > 65536)
         throw new Error("Unsafe GitHub configuration file");
+
       await writeFile(join(target, name), await file.readFile(), { mode: 0o600, flag: "wx" });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+
     } finally {
       await file?.close();
     }
+
   }
+
 }
+
 const safeSecret = (secret: string | undefined): string => {
   if (!secret || secret.includes("\0") || secret.length > 16384)
     throw new Error("Credential unavailable or invalid; authenticate outside Pi");
+
   return secret;
 };
 
@@ -219,9 +258,13 @@ export async function resolveGithubCredential(
   signal?: AbortSignal,
 ): Promise<string> {
   const inherited = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+
   if (inherited) return safeSecret(inherited);
+
   const source = join(directory, "gh");
+
   await copyGithubConfiguration(plan.configDirectory!, source);
+
   const getter: CredentialExecution = {
     executable: "/opt/pi-credential/tool",
     argv: ["auth", "token", "--hostname", "github.com"],
@@ -250,10 +293,12 @@ export async function resolveGithubCredential(
     signal,
     getter,
   );
+
   if (result.isError)
     throw new Error(
       "GitHub credentials unavailable; authenticate gh inside Lubox outside Pi or supply GH_TOKEN to the Pi process. macOS Keychain-only logins are not available inside Linux",
     );
+
   return safeSecret(
     result.content
       .filter((item) => item.type === "text")
@@ -272,9 +317,12 @@ export async function executeWithCredentials(
   approvedWorkspace?: Workspace,
 ) {
   signal?.throwIfAborted();
+
   const bytes = await executableBytes(plan.executable);
+
   if (createHash("sha256").update(bytes).digest("hex") !== plan.executableSha256)
     throw new Error("Credential executable changed after review; submit a new action");
+
   const directory = await mkdtemp(join(tmpdir(), "pi-credential-command-"));
   const executable = join(directory, "tool");
   const workspace: Workspace = approvedWorkspace
@@ -286,19 +334,24 @@ export async function executeWithCredentials(
         masked: [],
         credentialExecutable: executable,
       };
+
   try {
     await writeFile(executable, bytes, { mode: 0o500, flag: "wx" });
+
     const environment = { ...plan.environment },
       secrets: string[] = [];
+
     for (const [name, source] of Object.entries(plan.secrets)) {
       const value = safeSecret(
         source.type === "environment"
           ? process.env[source.name]
           : await readSecretFile(source.path),
       );
+
       environment[name] = value;
       secrets.push(value);
     }
+
     if (plan.github) {
       environment.GH_TOKEN = await resolveGithubCredential(
         plan,
@@ -309,7 +362,9 @@ export async function executeWithCredentials(
       );
       secrets.push(environment.GH_TOKEN);
     }
+
     signal?.throwIfAborted();
+
     const execution: CredentialExecution = {
       executable: "/opt/pi-credential/tool",
       argv: plan.argv,
@@ -317,12 +372,16 @@ export async function executeWithCredentials(
       redact: secrets,
       maxOutputBytes: request.sandbox?.limits?.maxOutputBytes ?? 16 * 1024 * 1024,
     };
+
     return await executeIsolated(request, workspace, config.sandbox, signal, execution);
   } catch (error) {
     // Secret file contents and getter output never enter the audit, including on failure.
     if (signal?.aborted) throw new Error("Credential execution cancelled");
+
     throw new Error(error instanceof Error ? error.message : "Credential execution failed");
   } finally {
     await removeSessionTemporaryDirectory(directory);
   }
+
 }
+

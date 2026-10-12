@@ -195,6 +195,7 @@ let failures = 0;
 let evaluated = 0;
 const selected = (fixture: { name: string }) =>
   !process.argv[2] || fixture.name.includes(process.argv[2]);
+
 for (const fixture of cases.filter(selected)) {
   const review = buildReview(
     fixture.request,
@@ -212,12 +213,18 @@ for (const fixture of cases.filter(selected)) {
     AbortSignal.timeout(120000),
   );
   const passed = checked.verdict.decision === fixture.expected;
+
   console.log(
     `${passed ? "PASS" : "FAIL"} ${fixture.name}: ${checked.verdict.decision} · ${checked.verdict.reason}`,
   );
+
   if (!passed) failures++;
+
   evaluated++;
 }
+
 if (!evaluated) throw new Error("No matching review cases");
+
 if (failures) throw new Error(`${failures} public-writing review evaluations failed`);
+
 console.log(`${evaluated} semantic cases passed; no proposed write or shell action executed.`);

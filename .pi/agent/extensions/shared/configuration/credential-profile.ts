@@ -49,4 +49,5 @@ export const credentialProfileSchema = Type.Union([
     { additionalProperties: false },
   ),
 ]);
+
 export type CredentialProfile = Static<typeof credentialProfileSchema>;

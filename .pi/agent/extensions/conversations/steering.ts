@@ -16,6 +16,7 @@ export function registerSteering(
     originalTask = undefined;
     steered = false;
   };
+
   pi.on("session_start", reset);
   pi.on("session_tree", reset);
   pi.on("session_shutdown", reset);
@@ -24,22 +25,29 @@ export function registerSteering(
     originalTask = event.prompt;
     steered = false;
   });
+
   pi.on("input", (event, ctx) => {
     if (event.source === "extension" || event.streamingBehavior !== "steer") return;
+
     steered = true;
+
     if (!originalTask && !operatorGoal(ctx)) {
       const last = ctx.sessionManager
         .getBranch()
         .filter((entry) => entry.type === "message" && entry.message.role === "user")
         .at(-1);
+
       originalTask =
         last?.type === "message" && last.message.role === "user"
           ? textContent(last.message.content)
           : undefined;
     }
+
   });
+
   pi.on("context", (event, ctx) => {
     if (!steered) return;
+
     // Active /goal requests already contain the authoritative objective. Other
     // tasks receive a bounded reminder explicitly marked as quoted data.
     const target = operatorGoal(ctx)
@@ -50,6 +58,7 @@ export function registerSteering(
     const messages = event.messages.filter(
       (entry) => entry.role !== "custom" || entry.customType !== STEERING_TYPE,
     );
+
     return {
       messages: [
         ...messages,
@@ -63,4 +72,6 @@ export function registerSteering(
       ],
     };
   });
+
 }
+

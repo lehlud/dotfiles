@@ -23,6 +23,7 @@ export const writingCheckTool: ToolDefinition<any, any> = {
     // No second model call: the exact draft was judged by the mandatory reviewer.
     // This receipt is useful only with the gate's matching approval audit entry.
     const checked = args.audience === "public";
+
     return {
       content: [
         {
@@ -40,6 +41,7 @@ export const writingCheckTool: ToolDefinition<any, any> = {
       },
     };
   },
+
 };
 
 export default function publicWriting(pi: ExtensionAPI) {
@@ -51,3 +53,4 @@ export default function publicWriting(pi: ExtensionAPI) {
     },
   }));
 }
+

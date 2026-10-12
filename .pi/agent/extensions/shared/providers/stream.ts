@@ -30,10 +30,12 @@ const zeroUsage = () => ({
   totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 });
+
 export function finalReviewDenial(response: AssistantMessage, context: Context): boolean {
   try {
     const first = context.messages.find((message) => message.role === "user");
     const requestId = JSON.parse(textContent(first?.content)).requestId;
+
     return (
       typeof requestId === "string" &&
       parseVerdict(textContent(response.content), requestId).decision === "deny"
@@ -41,7 +43,9 @@ export function finalReviewDenial(response: AssistantMessage, context: Context):
   } catch {
     return false;
   }
+
 }
+
 export function unavailableResponse(response: AssistantMessage, context: Context): boolean {
   return (
     response.stopReason === "error" &&
@@ -50,7 +54,9 @@ export function unavailableResponse(response: AssistantMessage, context: Context
     transientProviderError(response.errorMessage)
   );
 }
+
 type Stream = Provider["streamSimple"];
+
 type Wrapped = {
   notice?: (event: AvailabilityNotice) => void;
   finish?: (model: Model<any>) => void;
@@ -72,20 +78,29 @@ export function resilientStream(
     const work = async () => {
       const source = original(model, structuredClone(immutable), options);
       let partial: AssistantMessage | undefined;
+
       try {
         for await (const event of source) {
           options?.signal?.throwIfAborted();
+
           if ("partial" in event) partial = event.partial;
+
           if (event.type === "done" || event.type === "error") continue;
+
           if (event.type === "start") {
             if (started) continue;
+
             started = true;
           }
+
           stream.push(event);
         }
+
         const response = await source.result();
+
         usage = sumUsage(usage, response.usage);
         last = response;
+
         return response;
       } catch (error) {
         if (
@@ -95,11 +110,15 @@ export function resilientStream(
         ) {
           last = { ...partial, stopReason: "error" };
           usage = sumUsage(usage, last.usage);
+
           return last;
         }
+
         throw error;
       }
+
     };
+
     void (async () => {
       try {
         const response = await availability.run(
@@ -110,6 +129,7 @@ export function resilientStream(
           notice,
         );
         const message = { ...response, usage: usage ?? response.usage };
+
         if (
           message.stopReason === "error" &&
           providerRefusal(`${message.rawStopReason ?? ""} ${message.errorMessage ?? ""}`)
@@ -118,12 +138,15 @@ export function resilientStream(
           message.errorMessage =
             "Provider safety check refused the request; no automatic retry or fallback. Check the provider's supported access configuration.";
         }
+
         if (unavailableResponse(response, immutable))
           message.errorMessage = new ProviderHeldError(300000).message;
+
         if (message.stopReason === "error" || message.stopReason === "aborted")
           stream.push({ type: "error", reason: message.stopReason, error: message });
         else if (message.stopReason === "pending") stream.end(message);
         else stream.push({ type: "done", reason: message.stopReason, message });
+
       } catch (error) {
         const aborted = options?.signal?.aborted;
         const message: AssistantMessage = {
@@ -142,13 +165,16 @@ export function resilientStream(
                 ? "Model request cancelled"
                 : "Model request failed without a transport recovery route",
         };
+
         if (!aborted && providerRefusal(error)) {
           message.rawStopReason = "refusal";
           message.errorMessage =
             "Provider safety check refused the request; no automatic retry or fallback. Check the provider's supported access configuration.";
         }
+
         // Do not retain incomplete tool calls after a transport failure.
         if (last && finalReviewDenial(last, immutable)) message.content = last.content;
+
         stream.push({
           type: "error",
           reason: message.stopReason as "error" | "aborted",
@@ -157,9 +183,12 @@ export function resilientStream(
       } finally {
         finish?.(model);
       }
+
     })();
+
     return stream;
   };
+
 }
 
 /** Wrap public provider objects while preserving authentication and request hooks. */
@@ -171,24 +200,33 @@ export function installProviderStreams(
 ): boolean {
   if (typeof registry.getAll !== "function" || typeof registry.getProvider !== "function")
     return false;
+
   for (const id of new Set(registry.getAll().map((model) => model.provider))) {
     const provider = registry.getProvider(id) as
       | (Provider & { [wrappedKey]?: Wrapped })
       | undefined;
+
     if (!provider) continue;
+
     if (provider[wrappedKey]) {
       if (notice) provider[wrappedKey]!.notice = notice;
+
       if (finish) provider[wrappedKey]!.finish = finish;
+
       continue;
     }
+
     const handlers: Wrapped = { notice, finish };
+
     provider.streamSimple = resilientStream(
       provider.streamSimple.bind(provider),
       availability,
       (event) => handlers.notice?.(event),
       (model) => handlers.finish?.(model),
     );
+
     const apiStream = provider.stream.bind(provider);
+
     provider.stream = resilientStream(
       apiStream as Stream,
       availability,
@@ -197,8 +235,10 @@ export function installProviderStreams(
     ) as Provider["stream"];
     provider[wrappedKey] = handlers;
   }
+
   return true;
 }
+
 export function registerProviderRecovery(pi: ExtensionAPI, availability = providerAvailability) {
   const statusKey = (model: { provider: string; id: string }) =>
     `provider-recovery:${JSON.stringify([model.provider, model.id])}`;
@@ -213,13 +253,17 @@ export function registerProviderRecovery(pi: ExtensionAPI, availability = provid
         );
         pi.appendEntry("auto-approval-provider-retry", event);
       },
+
       (model) => {
         ctx.ui.setStatus(statusKey(model), undefined);
       },
+
     );
   };
+
   pi.on("session_start", install);
   pi.on("before_agent_start", install);
   pi.on("context", install);
   pi.on("model_select", install);
 }
+

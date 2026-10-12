@@ -9,8 +9,11 @@ import {
 import type { PreparedPrompts } from "./contracts.ts";
 
 import type { Entry } from "./entries.ts";
+
 export type { Entry } from "./entries.ts";
+
 import { previousDenials, reviewedReceipts } from "./receipts.ts";
+
 export function operatorPrompts(entries: readonly Entry[], limit: number): string[] {
   // Only raw user messages and operator prompts captured by our command handler.
   // Assistant summaries, arbitrary custom messages and tool output are excluded.
@@ -19,14 +22,19 @@ export function operatorPrompts(entries: readonly Entry[], limit: number): strin
       .filter((e) => e.type === "custom" && e.customType === "auto-approval-operator-prompt")
       .map((e) => (e.data as { goalId?: string })?.goalId),
   );
+
   return entries
     .flatMap((e) => {
       if (e.type === "message" && e.message?.role === "user")
         return [textContent(e.message.content) || "[Non-text user prompt; intent unavailable]"];
+
       if (e.type === "custom" && e.customType === "auto-approval-operator-prompt") {
         const prompt = (e.data as { text?: unknown })?.text;
+
         if (typeof prompt === "string" && prompt.trim()) return [prompt];
+
       }
+
       // Sessions from before explicit prompt capture stored the original command
       // only in its initial goal snapshot. Keep its position in user chronology.
       if (e.type === "custom" && e.customType === "auto-approval-goal") {
@@ -37,6 +45,7 @@ export function operatorPrompts(entries: readonly Entry[], limit: number): strin
           reason?: string;
           status?: string;
         };
+
         if (
           typeof goal?.id === "string" &&
           typeof goal.text === "string" &&
@@ -47,11 +56,15 @@ export function operatorPrompts(entries: readonly Entry[], limit: number): strin
           goal.reason === "Goal not yet verified"
         ) {
           capturedGoals.add(goal.id);
+
           return [goal.text];
         }
+
       }
+
       return [];
     })
+
     .slice(-limit);
 }
 
@@ -69,15 +82,19 @@ export function buildEvidence(
 ) {
   const { operatorGoal, prepared, action, protectedPaths, sandboxPlan } = options;
   const originals = operatorPrompts(entries, config.recentUserPrompts);
+
   if (!originals.length && operatorGoal) originals.push(operatorGoal);
+
   if (!originals.length)
     throw new Error("No actual user prompts available; cannot establish user intent");
+
   if (
     prepared &&
     (prepared.records.length !== originals.length ||
       prepared.records.some((record, index) => record.original !== originals[index]))
   )
     throw new Error("Prepared prompt context does not match the actual operator branch");
+
   const userPrompts = prepared ? prepared.records.map((record) => record.text) : originals;
   const userPromptInfo = originals.map((original, index) => ({
     promptId: createHash("sha256").update(original).digest("hex"),
@@ -107,9 +124,11 @@ export function buildEvidence(
   const selectedEvidence: typeof reviewedEvidence = [];
   const omittedReads: unknown[] = [];
   let evidenceBytes = 0;
+
   for (const item of reviewedEvidence.slice(-8).reverse()) {
     const candidate = [...selectedEvidence, item];
     const size = Buffer.byteLength(JSON.stringify(item));
+
     if (
       evidenceBytes + size <= MAX_REVIEW_EVIDENCE_BYTES &&
       Buffer.byteLength(
@@ -131,7 +150,9 @@ export function buildEvidence(
         reason:
           "Tool evidence exceeds the context budget; inspect smaller relevant ranges only if needed for a concrete security concern",
       });
+
   }
+
   const requestId = randomUUID();
   const evidence = {
     ...core,
@@ -139,6 +160,7 @@ export function buildEvidence(
     reviewedContext: selectedEvidence.filter((item) => item.tool !== "read"),
     omittedReadEvidence: omittedReads,
   };
+
   return {
     requestId,
     fingerprint: createHash("sha256").update(JSON.stringify(evidence)).digest("hex"),
@@ -147,3 +169,4 @@ export function buildEvidence(
     compressionUsage: prepared?.usage,
   };
 }
+

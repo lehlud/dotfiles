@@ -17,6 +17,7 @@ export const gitTool: ToolDefinition<any, any> = {
   ),
   renderCall(args: any, theme, context) {
     const command = `git ${JSON.stringify(args.argv ?? [])}`;
+
     return new Text(
       theme.fg(
         "toolTitle",
@@ -28,9 +29,11 @@ export const gitTool: ToolDefinition<any, any> = {
       0,
     );
   },
+
   async execute() {
     throw new Error("Git commands require the reviewed isolated executor");
   },
+
 };
 
 const commands = new Set([
@@ -45,21 +48,26 @@ const commands = new Set([
   "ls-tree",
   "describe",
 ]);
+
 export function validateGitArgv(argv: string[]): void {
   if (!commands.has(argv[0]))
     throw new Error(
       "Unsupported local Git command; global options, aliases, remote and destructive commands are excluded",
     );
+
   if (argv.some((arg) => /^(?:--ext-diff|--textconv)(?:=|$)/.test(arg)))
     throw new Error("External Git diff programs are excluded");
+
 }
 
 // Only the fixed internal offline reader can parse original configuration snapshots.
 export type GitConfigReader = { home: string; xdg: string; file?: string; global?: string };
+
 const readerSchema = Type.Object(
   { home: value, xdg: value, file: Type.Optional(value), global: Type.Optional(value) },
   { additionalProperties: false },
 );
+
 export async function executeGit(argv: string[], share: boolean, reader?: GitConfigReader) {
   const env: NodeJS.ProcessEnv = {
     PATH: "/usr/bin:/bin",
@@ -82,12 +90,16 @@ export async function executeGit(argv: string[], share: boolean, reader?: GitCon
     "-c",
     "user.useConfigOnly=true",
   ];
+
   if (reader) {
     if (!Check(readerSchema, reader)) throw new Error("Invalid private Git configuration reader");
+
     env.HOME = reader.home;
     env.XDG_CONFIG_HOME = reader.xdg;
+
     if (reader.global !== undefined) env.GIT_CONFIG_GLOBAL = reader.global;
     else delete env.GIT_CONFIG_GLOBAL;
+
     argv = [
       "config",
       ...(reader.file ? ["--file", reader.file, "--no-includes"] : ["--global", "--includes"]),
@@ -97,6 +109,7 @@ export async function executeGit(argv: string[], share: boolean, reader?: GitCon
   } else {
     validateGitArgv(argv);
   }
+
   const child = spawn("/usr/bin/git", [...fixed, ...argv], {
     cwd: process.cwd(),
     env,
@@ -111,26 +124,36 @@ export async function executeGit(argv: string[], share: boolean, reader?: GitCon
     exceeded = false;
   const collect = (name: keyof typeof streams, chunk: Buffer) => {
     bytes += chunk.length;
+
     if (bytes > 1024 * 1024) {
       exceeded = true;
       child.kill("SIGKILL");
+
       return;
     }
+
     streams[name].text += streams[name].decoder.write(chunk);
   };
+
   child.stdout.on("data", (chunk) => collect("stdout", chunk));
   child.stderr.on("data", (chunk) => collect("stderr", chunk));
+
   const exitCode = await new Promise<number | null>((done, reject) => {
     child.once("error", reject);
     child.once("close", done);
   });
+
   if (exceeded) throw new Error("Git output limit exceeded");
+
   const stdout = streams.stdout.text + streams.stdout.decoder.end(),
     stderr = streams.stderr.text + streams.stderr.decoder.end();
+
   if (reader && exitCode !== 0) throw new Error("Global Git configuration could not be parsed");
+
   return {
     content: [{ type: "text" as const, text: stdout + (reader ? "" : stderr) }],
     details: { exitCode },
     ...(exitCode !== 0 ? { isError: true } : {}),
   };
 }
+

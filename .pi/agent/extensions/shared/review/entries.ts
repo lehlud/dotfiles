@@ -24,6 +24,7 @@ export type Entry = {
   customType?: string;
   data?: unknown;
 };
+
 export type ReviewedEvidence = {
   tool: string;
   arguments: Record<string, unknown>;

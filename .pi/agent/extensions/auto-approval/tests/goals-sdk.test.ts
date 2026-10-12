@@ -31,6 +31,7 @@ async function fixture(directory: string, steering = false) {
       sandbox: { executable: process.execPath, runnerExecutable: process.execPath },
     }),
   );
+
   const runtime = await ModelRuntime.create({
     authPath: join(directory, "auth.json"),
     modelsPath: join(directory, "models.json"),
@@ -40,6 +41,7 @@ async function fixture(directory: string, steering = false) {
   const contexts: any[] = [];
   let release: (() => void) | undefined,
     workingTurns = 0;
+
   runtime.registerProvider("goal-sdk-fixture", {
     api: "goal-sdk-fixture",
     apiKey: "test-fixture",
@@ -55,7 +57,9 @@ async function fixture(directory: string, steering = false) {
     })),
     streamSimple(model, context) {
       const stream = createAssistantMessageEventStream();
+
       contexts.push({ model: model.id, messages: structuredClone(context.messages) });
+
       const data =
         model.id === "reviewer"
           ? JSON.parse(
@@ -102,17 +106,23 @@ async function fixture(directory: string, steering = false) {
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         },
       };
+
       queueMicrotask(async () => {
         if (steering && turn === 1)
           await new Promise<void>((done) => {
             release = done;
           });
+
         stream.push({ type: "done", reason: "stop", message });
       });
+
       return stream;
     },
+
   });
+
   const sessionManager = SessionManager.inMemory(directory);
+
   sessionManager.appendCustomEntry("auto-approval-operator-prompt", {
     goalId: "saved-goal",
     text: "Erkläre das gespeicherte Prüfergebnis.",
@@ -134,6 +144,7 @@ async function fixture(directory: string, steering = false) {
     false,
   );
   sessionManager.appendCustomMessageEntry("unrelated-fixture", "KEEP-UNRELATED-CONTEXT", false);
+
   const settingsManager = SettingsManager.inMemory();
   const resourceLoader = new DefaultResourceLoader({
     cwd: directory,
@@ -148,9 +159,12 @@ async function fixture(directory: string, steering = false) {
       (pi) => {
         registerSteering(pi, registerGoals(pi));
       },
+
     ],
   });
+
   await resourceLoader.reload();
+
   const model = new ModelRegistry(runtime).find("goal-sdk-fixture", "working")!;
   const { session } = await createAgentSession({
     cwd: directory,
@@ -163,29 +177,41 @@ async function fixture(directory: string, steering = false) {
     resourceLoader,
     noTools: "all",
   });
+
   return { session, contexts, release: () => release?.() };
 }
 
 test("real Pi SDK resumes a legacy goal with one task instruction and no raw command", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-goal-sdk-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
+
   process.env.PI_CODING_AGENT_DIR = directory;
+
   const { session, contexts } = await fixture(directory);
   const notices: string[] = [];
+
   try {
     await session.bindExtensions({
       mode: "tui",
       uiContext: { setStatus() {}, notify: (text: string) => notices.push(text) } as any,
     });
+
     const original = structuredClone(session.sessionManager.getBranch());
+
     await session.prompt("/goal resume");
+
     for (let i = 0; i < 1000 && !notices.some((text) => text.startsWith("Goal confirmed:")); i++)
       await new Promise<void>((done) => setTimeout(done, 1));
+
     expect(notices.join("\n")).toContain("Goal resumed:");
     expect(notices.join("\n")).toContain("Goal confirmed:");
+
     const working = contexts.filter((entry) => entry.model === "working");
+
     expect(working).toHaveLength(1);
+
     const input = JSON.stringify(working[0].messages);
+
     expect(input).toContain("Erkläre das gespeicherte Prüfergebnis.");
     expect(input).toContain("Erkläre noch das Testergebnis.");
     expect(input.match(/Operator goal:/g)).toHaveLength(1);
@@ -200,46 +226,62 @@ test("real Pi SDK resumes a legacy goal with one task instruction and no raw com
     ).toBe(false);
   } finally {
     session.dispose();
+
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previous;
+
     await rm(directory, { recursive: true, force: true });
   }
+
 }, 10000);
 
 test("real steering keeps a goal running after a correction until the original work passes review", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-goal-steering-sdk-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
+
   process.env.PI_CODING_AGENT_DIR = directory;
+
   const state = await fixture(directory, true);
   const notices: string[] = [];
+
   try {
     await state.session.bindExtensions({
       mode: "tui",
       uiContext: { setStatus() {}, notify: (text: string) => notices.push(text) } as any,
     });
     await state.session.prompt("/goal resume");
+
     for (let i = 0; i < 1000 && !state.contexts.length; i++)
       await new Promise<void>((done) => setTimeout(done, 1));
+
     expect(state.session.isStreaming).toBe(true);
     await state.session.prompt("Unsere neuen Kommentare bitte auf Deutsch.", {
       streamingBehavior: "steer",
     });
     state.release();
+
     for (let i = 0; i < 1000 && !notices.some((text) => text.startsWith("Goal confirmed:")); i++)
       await new Promise<void>((done) => setTimeout(done, 1));
+
     expect(notices.join("\n")).toContain("Goal incomplete:");
     expect(notices.join("\n")).toContain("Goal confirmed:");
+
     const work = state.contexts.filter((entry) => entry.model === "working");
+
     expect(work).toHaveLength(3);
+
     for (const entry of work.slice(1)) {
       const text = JSON.stringify(entry.messages);
+
       expect(text).toContain("Unsere neuen Kommentare bitte auf Deutsch.");
       expect(text).toContain("Erkläre das gespeicherte Prüfergebnis.");
       expect(text).toContain("Finishing a correction alone does not finish the whole task");
     }
+
     const goals = state.session.sessionManager
       .getBranch()
       .filter((entry) => entry.type === "custom" && entry.customType === "auto-approval-goal");
+
     expect(
       goals.some((entry: any) => entry.data.status === "running" && entry.data.checks === 2),
     ).toBe(true);
@@ -253,8 +295,11 @@ test("real steering keeps a goal running after a correction until the original w
     state.release();
     await state.session.abort();
     state.session.dispose();
+
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previous;
+
     await rm(directory, { recursive: true, force: true });
   }
+
 }, 10000);

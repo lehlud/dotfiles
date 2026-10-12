@@ -7,23 +7,31 @@ type ContextEntry = {
   data?: unknown;
   summary?: string;
 };
+
 type Item = { source: string; text: string };
+
 export type SideSnapshot = { text: string; included: number; omitted: number; bytes: number };
 
 function item(entry: ContextEntry): Item | undefined {
   if (["compaction", "branch_summary"].includes(entry.type) && entry.summary)
     return { source: "parent summary", text: entry.summary };
+
   if (entry.type === "custom" && entry.customType === "auto-approval-operator-prompt") {
     const text = (entry.data as { text?: unknown })?.text;
+
     if (typeof text === "string") return { source: "operator goal", text };
+
   }
+
   const message = entry.message;
+
   if (
     entry.type !== "message" ||
     !message ||
     !["user", "assistant", "toolResult"].includes(message.role)
   )
     return;
+
   const text = textContent(message.content);
   const calls = Array.isArray(message.content)
     ? message.content
@@ -32,6 +40,7 @@ function item(entry: ContextEntry): Item | undefined {
         .join("\n")
     : "";
   const content = [text, calls].filter(Boolean).join("\n");
+
   return content
     ? {
         source:
@@ -52,18 +61,24 @@ export function sideSnapshot(entries: readonly ContextEntry[], maxBytes = 24000)
   // Keep original task context plus the latest complete items; do not cut quotes
   // or tool output in half and pretend it is the complete parent conversation.
   const order = [...new Set([firstUser, ...items.map((_value, i) => i).reverse()])];
+
   for (const index of order) {
     if (index < 0 || chosen.size >= 40) continue;
+
     const serialized = JSON.stringify(items[index]);
     const size = Buffer.byteLength(serialized) + (chosen.size ? 1 : 0);
+
     if (bytes + size > maxBytes) continue;
+
     chosen.set(index, serialized);
     bytes += size;
   }
+
   const text = [...chosen]
     .sort(([a], [b]) => a - b)
     .map(([, value]) => value)
     .join("\n");
+
   return {
     text,
     included: chosen.size,
@@ -71,3 +86,4 @@ export function sideSnapshot(entries: readonly ContextEntry[], maxBytes = 24000)
     bytes: Buffer.byteLength(text),
   };
 }
+

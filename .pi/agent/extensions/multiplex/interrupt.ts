@@ -13,27 +13,38 @@ export function watchRpcAbort(input: Readable, interrupt: () => void) {
           line = "";
           oversized = true;
         } else line += part;
+
       }
+
       if (part.endsWith("\n")) {
         if (!oversized) {
           try {
             const command = JSON.parse(line);
+
             if (command && !Array.isArray(command) && command.type === "abort") interrupt();
+
           } catch {
             /* The RPC reader owns invalid input reporting. */
           }
+
         }
+
         line = "";
         oversized = false;
       }
+
     }
+
   };
+
   input.on("data", receive);
+
   return () => {
     input.off("data", receive);
     line = "";
     oversized = false;
   };
+
 }
 
 export function watchInterrupt(
@@ -49,16 +60,25 @@ export function watchInterrupt(
           "error",
         ),
       );
+
   };
+
   if (ctx.mode === "rpc") return watchRpcAbort(process.stdin, run);
+
   if (ctx.mode === "tui")
     return (
       ctx.ui.onTerminalInput?.((data) => {
         if (active() && matchesKey(data, "escape")) {
           run();
+
           return { consume: true };
         }
+
       }) ?? (() => {})
+
     );
+
   return () => {};
+
 }
+

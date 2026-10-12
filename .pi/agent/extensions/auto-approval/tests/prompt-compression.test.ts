@@ -32,6 +32,7 @@ let calls: any[],
   mode: "approve" | "deny" | "invalid",
   missing: boolean,
   sequence: number;
+
 beforeEach(() => {
   calls = [];
   saved = [];
@@ -39,9 +40,11 @@ beforeEach(() => {
   missing = false;
   sequence = 0;
 });
+
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 });
+
 const registry: any = {
   find: (provider: string, id: string) =>
     missing && provider === "fixture"
@@ -50,7 +53,9 @@ const registry: any = {
   hasConfiguredAuth: () => true,
   streamSimple(model: any, context: any) {
     calls.push({ model, context });
+
     const data = JSON.parse(context.messages[0].content);
+
     return {
       result: async () => ({
         role: "assistant",
@@ -75,6 +80,7 @@ const registry: any = {
       }),
     };
   },
+
 };
 const branch = (text: string) => [{ type: "message", message: { role: "user", content: text } }];
 const observer = { saved: (record: any) => saved.push(record) };
@@ -92,13 +98,17 @@ test("legacy raw prompts compress on demand, persist privately and reuse across 
   const agent = join(root, "reuse");
   const entries = branch(original);
   const first = await preparePromptContext(entries, config, registry, agent, observer);
+
   expect(first.records[0].compressed).toBe(true);
   expect(first.records[0].original).toBe(original);
   expect(entries[0].message.content).toBe(original);
   expect(saved[0].original).toBeUndefined();
+
   const cache = join(agent, "cache", "approval-prompts");
+
   expect((await stat(cache)).mode & 0o077).toBe(0);
   expect((await stat(join(cache, (await readdir(cache))[0]))).mode & 0o077).toBe(0);
+
   const count = calls.length;
   const second = await preparePromptContext(
     structuredClone(entries),
@@ -107,10 +117,12 @@ test("legacy raw prompts compress on demand, persist privately and reuse across 
     agent,
     observer,
   );
+
   expect(second.records[0].cacheHit).toBe(true);
   expect(calls).toHaveLength(count);
   expect(second.usage).toBeUndefined();
   expect(first.usage?.totalTokens).toBe(12);
+
   const persisted = {
     type: "custom",
     customType: "auto-approval-prompt-compression",
@@ -122,8 +134,10 @@ test("legacy raw prompts compress on demand, persist privately and reuse across 
     registry,
     join(root, "restored"),
   );
+
   expect(restored.records[0].cacheHit).toBe(true);
   expect(calls).toHaveLength(count);
+
   const review = buildReview(
     proposed,
     entries,
@@ -134,6 +148,7 @@ test("legacy raw prompts compress on demand, persist privately and reuse across 
     undefined,
     second,
   );
+
   expect(JSON.parse(review.text).userPromptInfo[0].compressed).toBe(true);
   expect(
     readPromptOriginal(review.promptSources, {
@@ -152,6 +167,7 @@ test("every short prompt is marked original and no compression model is called",
   const data = JSON.parse(
     buildReview(proposed, entries, config, "/project", [], undefined, undefined, prepared).text,
   );
+
   expect(data.userPrompts).toEqual(["Nur die Datei lesen."]);
   expect(data.userPromptInfo[0].compressed).toBe(false);
   expect(calls).toHaveLength(0);
@@ -172,17 +188,20 @@ test("every short prompt is marked original and no compression model is called",
 test("chunked compression stays bounded and sums usage, denial preserves raw intent without fallback", async () => {
   const text = original.repeat(5);
   const prepared = await preparePromptContext(branch(text), config, registry, join(root, "chunks"));
+
   expect(prepared.records[0].compressed).toBe(true);
   expect(calls).toHaveLength(3);
   expect(prepared.usage?.totalTokens).toBe(36);
   mode = "deny";
   calls = [];
+
   const denied = await preparePromptContext(
     branch(original),
     config,
     registry,
     join(root, "denied"),
   );
+
   expect(denied.records[0].compressed).toBe(false);
   expect(denied.records[0].text).toBe(original);
   expect(calls).toHaveLength(1);
@@ -200,7 +219,9 @@ test("provider absence permits fallback, malformed summaries and cancellation ne
     preparePromptContext(branch(original), config, registry, join(root, "invalid")),
   ).rejects.toBeInstanceOf(ReviewChainError);
   expect(calls).toHaveLength(1);
+
   const cancelled = new AbortController();
+
   cancelled.abort();
   calls = [];
   await expect(
@@ -219,18 +240,21 @@ test("provider absence permits fallback, malformed summaries and cancellation ne
 test("original lookups stay within selected IDs and bounded text, including a huge JSON line", () => {
   const id = "a".repeat(64),
     sources = new Map([[id, "Anfang\n" + "x".repeat(50000) + "Keine Referenz ändern.\nEnde"]]);
+
   expect(
     readPromptOriginal(sources, { promptId: id, operation: "head", limit: 6 }).excerpts[0].text,
   ).toBe("Anfang");
   expect(
     readPromptOriginal(sources, { promptId: id, operation: "tail", limit: 4 }).excerpts[0].text,
   ).toBe("Ende");
+
   const grep = readPromptOriginal(sources, {
     promptId: id,
     operation: "grep",
     query: "Keine Referenz",
     limit: 1000,
   });
+
   expect(grep.excerpts[0].text).toContain("Keine Referenz");
   expect(grep.excerpts[0].text.length).toBeLessThanOrEqual(1000);
   expect(
@@ -264,7 +288,9 @@ test("reviewer can discover an omitted prohibition in the original and deny with
     registry,
     join(root, "review"),
   );
+
   prepared.records[0].text = "Testbericht prüfen.";
+
   const envelope = buildReview(
     proposed,
     branch(original),
@@ -280,6 +306,7 @@ test("reviewer can discover an omitted prohibition in the original and deny with
     streamSimple(model: any, context: any) {
       calls.push({ model, context });
       sequence++;
+
       const content =
         sequence === 1
           ? [
@@ -304,6 +331,7 @@ test("reviewer can discover an omitted prohibition in the original and deny with
                 }),
               },
             ];
+
       return {
         result: async () => ({
           role: "assistant",
@@ -313,13 +341,20 @@ test("reviewer can discover an omitted prohibition in the original and deny with
         }),
       };
     },
+
   };
+
   calls = [];
+
   const result = await reviewWithFallback(config, gate, envelope, {
     start() {},
+
     finish() {},
+
     failed() {},
+
   });
+
   expect(result.verdict.decision).toBe("deny");
   expect(calls).toHaveLength(2);
   expect(calls[1].context.messages.at(-1).content[0].text).toContain("Keine Referenz");
@@ -344,11 +379,13 @@ test("approval without original inspection and arbitrary reviewer tools fail wit
     undefined,
     prepared,
   );
+
   calls = [];
   await expect(
     reviewWithFallback(config, registry, envelope, { start() {}, finish() {}, failed() {} }),
   ).rejects.toThrow("inspect every compressed original");
   expect(calls).toHaveLength(1);
+
   const hostile: any = {
     ...registry,
     streamSimple() {
@@ -368,7 +405,9 @@ test("approval without original inspection and arbitrary reviewer tools fail wit
         }),
       };
     },
+
   };
+
   await expect(
     reviewWithFallback(config, hostile, envelope, { start() {}, finish() {}, failed() {} }),
   ).rejects.toThrow("no fallback");
@@ -377,6 +416,7 @@ test("approval without original inspection and arbitrary reviewer tools fail wit
 test("private cache cannot follow planted symlinks outside protected agent storage", async () => {
   const agent = join(root, "unsafe"),
     elsewhere = join(root, "elsewhere");
+
   await mkdir(agent);
   await mkdir(elsewhere);
   await symlink(elsewhere, join(agent, "cache"));
@@ -385,18 +425,23 @@ test("private cache cannot follow planted symlinks outside protected agent stora
   );
   expect(calls).toHaveLength(0);
 });
+
 test("a malformed private cache is regenerated without changing the original prompt", async () => {
   const agent = join(root, "corrupt"),
     entries = branch(original);
   const prepared = await preparePromptContext(entries, config, registry, agent);
+
   await writeFile(
     join(agent, "cache", "approval-prompts", `${prepared.records[0].cacheKey}.json`),
     "{bad JSON",
     { mode: 0o600 },
   );
   calls = [];
+
   const replacement = await preparePromptContext(entries, config, registry, agent);
+
   expect(replacement.records[0].cacheHit).toBe(false);
   expect(calls).toHaveLength(1);
   expect(replacement.records[0].original).toBe(original);
 });
+

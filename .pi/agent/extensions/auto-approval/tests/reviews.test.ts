@@ -38,6 +38,7 @@ const usage = {
   totalTokens: 6,
   cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0, total: 0.31 },
 };
+
 type Mode =
   | "approve"
   | "deny"
@@ -56,6 +57,7 @@ type Mode =
   | "timeout"
   | "invalid"
   | "mismatch";
+
 let modes: Record<string, Mode>;
 let calls: any[];
 let attempts: ReviewAttempt[];
@@ -65,6 +67,7 @@ let onResponse: (() => void) | undefined;
 let capacities: Record<string, number>;
 let availability: ProviderAvailability;
 let clock: number;
+
 beforeEach(() => {
   modes = {};
   calls = [];
@@ -80,19 +83,25 @@ beforeEach(() => {
       signal?.throwIfAborted();
       clock += ms;
     },
+
   });
 });
+
 const observer = {
   start: (candidate: { provider: string }) => {
     starts.push(candidate.provider);
   },
+
   finish: () => {
     finishes++;
   },
+
   failed: (attempt: ReviewAttempt) => {
     attempts.push(attempt);
   },
+
 };
+
 function message(provider: string) {
   const mode = modes[provider];
   const stopReason =
@@ -101,6 +110,7 @@ function message(provider: string) {
       : ["error", "error_deny", "filtered", "cyber_refusal"].includes(mode)
         ? "error"
         : "stop";
+
   return {
     stopReason,
     errorMessage:
@@ -124,6 +134,7 @@ function message(provider: string) {
     ],
   };
 }
+
 const registry: any = {
   find: (provider: string, id: string) =>
     modes[provider] === "missing"
@@ -140,28 +151,37 @@ const registry: any = {
   hasConfiguredAuth: (model: { provider: string }) => modes[model.provider] !== "auth",
   streamSimple: (model: any, context: any, options: any) => {
     calls.push({ model, context, options });
+
     return {
       result: async () => {
         onResponse?.();
+
         if (modes[model.provider] === "throw")
           throw new Error("HTTP 429 with synthetic-private-error-content");
+
         if (modes[model.provider] === "throw_cyber_refusal")
           throw new Error(
             "HTTP 503: This content was flagged for possible cybersecurity risk. Check access_programs.cyber.",
           );
+
         if (modes[model.provider] === "throw_refusal")
           throw new Error("Request blocked by safety policy with synthetic-private-error-content");
+
         if (modes[model.provider] === "timeout") await new Promise((done) => setTimeout(done, 35));
+
         return message(model.provider);
       },
+
     };
   },
+
 };
 const run = (settings = config, signal?: AbortSignal, callbacks = observer) =>
   reviewWithFallback(settings, registry, envelope, callbacks, signal, undefined, availability);
 
 test("highest-priority success stops the chain and preserves request-bound output", async () => {
   const result = await run();
+
   expect(result.selectedReviewer).toEqual(primary);
   expect(calls).toHaveLength(1);
   expect(result.usage).toEqual(usage);
@@ -171,31 +191,43 @@ test("highest-priority success stops the chain and preserves request-bound outpu
     JSON.parse(envelope.text).latestUserPrompt,
   );
   expect(calls[0].context.messages.at(-1).content).toContain("quoted language reference only");
+
   const payload = calls[0].options.onPayload({}, calls[0].model);
+
   expect(payload.text.format.schema.properties.requestId.enum).toEqual([envelope.requestId]);
 });
+
 test("explicit fallback is used for missing auth, missing models and unsupported thinking", async () => {
   for (const mode of ["auth", "missing", "unsupported"] as const) {
     modes.openai = mode;
+
     const result = await run();
+
     expect(result.selectedReviewer).toEqual(fallback);
     expect(result.attempts.map((item) => item.status)).toEqual(["failed", "approve"]);
     expect(calls.at(-1).model.provider).toBe("openrouter");
     expect(calls.at(-1).model.id).toBe("openai/gpt-6-luna");
   }
+
 });
+
 test("provider failures fall back without exposing raw provider error content", async () => {
   modes.openai = "throw";
+
   const result = await run();
+
   expect(result.selectedReviewer).toEqual(fallback);
   expect(result.attempts[0].reason).toContain("availability guard for 300 seconds");
   expect(calls.filter((item) => item.model.provider === "openai")).toHaveLength(6);
   expect(JSON.stringify(result)).not.toContain("synthetic-private-error-content");
   expect(result.usage).toEqual(usage);
 });
+
 test("failed provider responses and successful fallback usage are both counted", async () => {
   modes.openai = "error";
+
   const result = await run();
+
   expect(result.usage?.input).toBe(4);
   expect(result.usage?.totalTokens).toBe(12);
   expect(result.usage?.cost.total).toBeCloseTo(0.62);
@@ -205,17 +237,23 @@ test("failed provider responses and successful fallback usage are both counted",
     envelope.text,
   ]);
 });
+
 test("valid denial is binding even when the fallback would approve", async () => {
   modes.openai = "deny";
+
   const result = await run();
+
   expect(result.verdict.decision).toBe("deny");
   expect(result.selectedReviewer).toEqual(primary);
   expect(calls).toHaveLength(1);
   expect(attempts).toHaveLength(0);
 });
+
 test("capacity preflight includes system, repeated language reference and output reserve", async () => {
   capacities.openai = 8000;
+
   const result = await run();
+
   expect(result.selectedReviewer).toEqual(fallback);
   expect(result.attempts[0].reason).toContain("context capacity unavailable");
   expect(calls).toHaveLength(1);
@@ -225,6 +263,7 @@ test("capacity preflight includes system, repeated language reference and output
   await expect(run()).rejects.toThrow("operator context and action were not truncated");
   expect(calls).toHaveLength(0);
 });
+
 test("large operator context is sent intact to a capable model and a denial stays final", async () => {
   const prompt =
     "Prüfe diese JSON-Ergebnisse, ohne Zugangsdaten zu lesen: " + "abcdef".repeat(20000);
@@ -240,11 +279,14 @@ test("large operator context is sent intact to a capable model and a denial stay
     "/project",
     [],
   );
+
   modes.openai = "deny";
+
   const gate = {
     ...registry,
     streamSimple(model: any, context: any, options: any) {
       calls.push({ model, context, options });
+
       return {
         result: async () => ({
           ...message(model.provider),
@@ -261,21 +303,27 @@ test("large operator context is sent intact to a capable model and a denial stay
         }),
       };
     },
+
   };
   const result = await reviewWithFallback(config, gate, large, observer);
+
   expect(result.verdict.decision).toBe("deny");
   expect(calls).toHaveLength(1);
   expect(calls[0].context.messages[0].content).toBe(large.text);
   expect(calls[0].context.messages[1].content).toContain("Language sample shortened");
   expect(calls[0].context.messages[1].content.length).toBeLessThan(3500);
 });
+
 test("denial remains final when a provider error follows the complete verdict", async () => {
   modes.openai = "error_deny";
+
   const result = await run();
+
   expect(result.verdict.decision).toBe("deny");
   expect(result.selectedReviewer).toEqual(primary);
   expect(calls).toHaveLength(1);
 });
+
 test("truncated, refused or aborted model responses never consult a fallback", async () => {
   for (const mode of [
     "length",
@@ -290,37 +338,50 @@ test("truncated, refused or aborted model responses never consult a fallback", a
     await expect(run()).rejects.toThrow("no fallback");
     expect(calls).toHaveLength(1);
   }
+
 });
+
 test("malformed or mismatched verdicts fail closed without consulting the fallback", async () => {
   for (const mode of ["invalid", "mismatch"] as const) {
     modes.openai = mode;
     calls = [];
+
     try {
       await run();
+
       throw new Error("Expected invalid verdict rejection");
     } catch (error) {
       expect(error).toBeInstanceOf(ReviewChainError);
       expect((error as ReviewChainError).attempts.at(-1)?.status).toBe("invalid");
     }
+
     expect(calls).toHaveLength(1);
   }
+
 });
+
 test("an unconfigured fallback is never used and all failures retain diagnostics", async () => {
   modes.openai = "auth";
   await expect(run({ ...config, reviewers: [primary] })).rejects.toThrow("No configured reviewer");
   expect(starts).toEqual(["openai"]);
   expect(calls).toHaveLength(0);
   modes.openrouter = "auth";
+
   try {
     await run();
+
     throw new Error("Expected all reviewers unavailable");
   } catch (error) {
     expect((error as ReviewChainError).attempts).toHaveLength(2);
   }
+
 });
+
 test("timeout uses only the configured fallback and ignores late results", async () => {
   modes.openai = "timeout";
+
   const result = await run({ ...config, requestTimeoutMs: 5 });
+
   expect(result.selectedReviewer).toEqual(fallback);
   expect(result.attempts[0].reason).toContain("timed out");
   await new Promise((done) => setTimeout(done, 40));
@@ -328,17 +389,22 @@ test("timeout uses only the configured fallback and ignores late results", async
   expect(calls).toHaveLength(2);
   expect(finishes).toBe(2);
 });
+
 test("cancellation prevents fallback before and during review", async () => {
   const cancelled = new AbortController();
+
   cancelled.abort();
   await expect(run(config, cancelled.signal)).rejects.toThrow();
   expect(calls).toHaveLength(0);
+
   const controller = new AbortController();
+
   onResponse = () => controller.abort();
   await expect(run(config, controller.signal)).rejects.toThrow();
   expect(calls).toHaveLength(1);
   expect(attempts).toHaveLength(0);
 });
+
 test("failed fallback audit callbacks abort the chain", async () => {
   modes.openai = "auth";
   await expect(
@@ -347,11 +413,13 @@ test("failed fallback audit callbacks abort the chain", async () => {
       failed() {
         throw new Error("Audit unavailable");
       },
+
     }),
   ).rejects.toThrow("Audit unavailable");
   expect(starts).toEqual(["openai"]);
   expect(calls).toHaveLength(0);
 });
+
 test("each new action starts at the highest priority, with no cached route", async () => {
   modes.openai = "auth";
   expect((await run()).selectedReviewer).toEqual(fallback);
@@ -366,7 +434,9 @@ test("the same action uses the same review policy regardless of coordination and
     ...registry,
     streamSimple: (model: any, context: any) => {
       calls.push({ model, context });
+
       const data = JSON.parse(context.messages[0].content);
+
       return {
         result: async () => ({
           ...message(model.provider),
@@ -383,7 +453,9 @@ test("the same action uses the same review policy regardless of coordination and
         }),
       };
     },
+
   };
+
   for (const entries of [
     fixture.entries.filter(
       (entry) => entry.type === "message" || entry.customType === "auto-approval-review",
@@ -394,19 +466,25 @@ test("the same action uses the same review policy regardless of coordination and
       workspace: "/project",
     });
     const checked = await reviewWithFallback(config, gate, review, observer);
+
     expect(checked.verdict.decision).toBe("deny");
     expect(checked.selectedReviewer).toEqual(primary);
   }
+
   expect(calls).toHaveLength(2);
   expect(calls[0].context.systemPrompt).toEqual(calls[1].context.systemPrompt);
   expect(calls[0].context.systemPrompt).toContain(
     "The executable operation is action.tool with action.arguments",
   );
   expect(calls[0].context.systemPrompt).toContain("alternative unreviewed execution routes");
+
   for (const call of calls) {
     const data = JSON.parse(call.context.messages[0].content);
+
     expect(data.action).toEqual(fixture.action);
     expect(data.runtimeContext).toBeUndefined();
     expect(data.previousDenials[0].reason).toContain("assigns a worker");
   }
+
 });
+

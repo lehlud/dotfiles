@@ -24,7 +24,9 @@ import {
 import { installProviderStreams, unavailableResponse } from "../providers/stream.ts";
 
 export type ReviewRegistry = Pick<ModelRegistry, "find" | "hasConfiguredAuth" | "streamSimple">;
+
 type Usage = AssistantMessage["usage"];
+
 export type PromptLookup = {
   promptId: string;
   operation: string;
@@ -32,10 +34,12 @@ export type PromptLookup = {
   limit?: number;
   query?: string;
 };
+
 export type ReviewAttempt = Reviewer & {
   status: "failed" | "invalid" | "approve" | "deny";
   reason: string;
 };
+
 export type ReviewObserver = {
   start(candidate: Reviewer): void;
   finish(): void;
@@ -43,41 +47,55 @@ export type ReviewObserver = {
   lookup?(request: PromptLookup): void;
   retry?(event: AvailabilityNotice): void;
 };
+
 export const reviewerLabel = (candidate: Reviewer) =>
   `${candidate.provider}/${candidate.model} (${candidate.thinking})`;
 
 function providerFailureDetail(error: unknown): string {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+
   // Fixed labels only: provider errors can contain credentials or prompt text.
   if (/429|rate.?limit|quota/i.test(message)) return ": rate limit or quota unavailable";
+
   if (/401|403|unauthoriz|authentication|api.?key/i.test(message))
     return ": provider authentication rejected; use /login for this provider";
+
   if (/invalid.*schema|schema.*invalid|unsupported.*param|param.*not supported/i.test(message))
     return ": request schema or parameters rejected";
+
   if (/model.*not found|model.*does not exist|model.*not.*access/i.test(message))
     return ": reviewer model unavailable";
+
   if (/fetch failed|ECONN|ENOTFOUND|network|connection|socket/i.test(message))
     return ": provider connection unavailable";
+
   return "";
 }
 
 function incompleteReview(response: AssistantMessage, requestId: string) {
   if (response.errorMessage === new RecoveryAuditError().message)
     return { blocked: response.errorMessage };
+
   try {
     const verdict = parseVerdict(textContent(response.content), requestId);
+
     if (verdict.decision === "deny") return { denial: verdict };
+
   } catch {
     /* An incomplete response need not contain a complete verdict. */
   }
+
   const refused =
     /refusal/i.test(response.rawStopReason ?? "") ||
     providerRefusal(`${response.rawStopReason ?? ""} ${response.errorMessage ?? ""}`);
+
   if (refused) return { blocked: "Reviewer refused the check; no fallback, nothing executed" };
+
   if (response.stopReason !== "error")
     return {
       blocked: `Reviewer response is incomplete (${response.stopReason}); no fallback, nothing executed`,
     };
+
   return {
     failure: `Reviewer provider response failed (error)${providerFailureDetail(response.errorMessage)}`,
   };
@@ -91,6 +109,7 @@ export class ReviewChainError extends Error {
   ) {
     super(message);
   }
+
 }
 
 function unavailable(
@@ -99,20 +118,25 @@ function unavailable(
   model: ReturnType<ReviewRegistry["find"]>,
 ) {
   if (!model) return "Reviewer model not found";
+
   if (!registry.hasConfiguredAuth(model))
     return `Reviewer authentication is unavailable. Use /login and select ${candidate.provider} on this machine; credentials are private and not synced with dotfiles.`;
+
   if (
     candidate.thinking !== "off" &&
     (!model.reasoning ||
       (model.thinkingLevelMap && model.thinkingLevelMap[candidate.thinking] === undefined))
   )
     return "Reviewer does not support the configured thinking level";
+
 }
 
 function reviewContext(envelope: ReviewEnvelope, systemPrompt: string): Context {
   const { latestUserPrompt, latestUserLanguageReference } = JSON.parse(envelope.text);
+
   if (typeof latestUserPrompt !== "string" || !latestUserPrompt.trim())
     throw new Error("Latest operator prompt unavailable");
+
   return {
     systemPrompt:
       systemPrompt +
@@ -146,6 +170,7 @@ async function requestReview(
   observer: ReviewObserver,
 ) {
   const managed = installProviderStreams(registry as any, availability, observer.retry);
+
   return await withWatchdog(
     async (reviewSignal) => {
       const work = async () => {
@@ -160,9 +185,12 @@ async function requestReview(
               constrainReviewPayload(payload, providerModel, envelope.requestId),
           })
           .result();
+
         state.usage = sumUsage(state.usage, response.usage);
+
         return response;
       };
+
       return managed
         ? await work()
         : await availability.run(
@@ -173,13 +201,16 @@ async function requestReview(
             observer.retry,
           );
     },
+
     timeoutMs,
     signal,
   );
 }
 
 class ReviewerToolError extends Error {}
+
 type ReviewState = { usage?: Usage; promptLookups: PromptLookup[]; consulted: Set<string> };
+
 async function requestCandidate(
   registry: ReviewRegistry,
   candidate: Reviewer,
@@ -194,11 +225,15 @@ async function requestCandidate(
 ) {
   const context = structuredClone(initial);
   const started = Date.now();
+
   for (let round = 0; round <= 8; round++) {
     const remaining = timeoutMs - (Date.now() - started);
+
     if (remaining <= 0) throw new Error("Reviewer request timed out");
+
     if (reviewCapacityIssue(context, model))
       throw new ReviewerToolError("Reviewer lookup context exceeds model capacity");
+
     const response = await requestReview(
       registry,
       candidate,
@@ -212,26 +247,36 @@ async function requestCandidate(
       observer,
     );
     const calls = response.content.filter((block) => block.type === "toolCall");
+
     if (!calls.length) return response;
+
     try {
       if (parseVerdict(textContent(response.content), envelope.requestId).decision === "deny")
         return response;
+
     } catch {
       /* A tool turn need not contain a verdict yet. */
     }
+
     if (response.stopReason !== "toolUse" || !envelope.promptSources?.size)
       throw new ReviewerToolError("Invalid reviewer tool response");
+
     context.messages.push(response);
+
     for (const call of calls) {
       if (call.name !== promptOriginalTool.name || state.promptLookups.length >= 8)
         throw new ReviewerToolError("Reviewer original-prompt lookup limit or tool violated");
+
       try {
         const result = readPromptOriginal(envelope.promptSources, call.arguments);
         const lookup = structuredClone(call.arguments) as PromptLookup;
+
         state.promptLookups.push(lookup);
         observer.lookup?.(lookup);
+
         if (result.excerpts.some((excerpt) => excerpt.text.length))
           state.consulted.add(lookup.promptId);
+
         context.messages.push({
           role: "toolResult",
           toolCallId: call.id,
@@ -243,8 +288,11 @@ async function requestCandidate(
       } catch {
         throw new ReviewerToolError("Reviewer original-prompt lookup or audit failed");
       }
+
     }
+
   }
+
   throw new ReviewerToolError("Reviewer original-prompt lookup rounds exceeded");
 }
 
@@ -258,11 +306,13 @@ export async function requestVerdict(
   availability = providerAvailability,
 ) {
   const source = JSON.parse(envelope.text).latestUserPrompt;
+
   if (typeof source !== "string" || !source.trim())
     throw new ReviewChainError(
       "Latest operator prompt unavailable; no fallback, nothing executed",
       [],
     );
+
   const context = reviewContext(envelope, systemPrompt);
   const attempts: ReviewAttempt[] = [];
   const state: ReviewState = {
@@ -270,14 +320,20 @@ export async function requestVerdict(
     promptLookups: [],
     consulted: new Set(),
   };
+
   for (const candidate of config.reviewers) {
     signal?.throwIfAborted();
     observer.start(candidate);
+
     const model = registry.find(candidate.provider, candidate.model);
     let reason = unavailable(registry, candidate, model);
+
     if (!reason && model) reason = reviewCapacityIssue(context, model);
+
     let response: AssistantMessage | undefined;
+
     state.consulted.clear();
+
     try {
       if (!reason && model) {
         response = await requestCandidate(
@@ -293,18 +349,26 @@ export async function requestVerdict(
           availability,
         );
       }
+
     } catch (error) {
       signal?.throwIfAborted();
+
       if (error instanceof RecoveryAuditError || error instanceof ReviewerToolError) {
         const reason = "Reviewer original-prompt lookup failed; no fallback, nothing executed";
+
         attempts.push({ ...candidate, status: "invalid", reason });
+
         throw new ReviewChainError(reason, attempts, state.usage);
       }
+
       if (error instanceof Error && providerRefusal(error.message)) {
         const reason = "Reviewer refused the check; no fallback, nothing executed";
+
         attempts.push({ ...candidate, status: "invalid", reason });
+
         throw new ReviewChainError(reason, attempts, state.usage);
       }
+
       reason =
         error instanceof ProviderHeldError
           ? error.message
@@ -314,14 +378,18 @@ export async function requestVerdict(
     } finally {
       observer.finish();
     }
+
     signal?.throwIfAborted();
+
     if (response) {
       if (response.stopReason !== "stop") {
         // An explicit request-bound denial stays final even if transport fails
         // after delivering it. An approval from a failed response is never used.
         const stopped = incompleteReview(response, envelope.requestId);
+
         if (stopped.denial) {
           attempts.push({ ...candidate, status: "deny", reason: stopped.denial.reason });
+
           return {
             verdict: stopped.denial,
             selectedReviewer: candidate,
@@ -330,38 +398,54 @@ export async function requestVerdict(
             promptLookups: state.promptLookups,
           };
         }
+
         if (stopped.blocked) {
           attempts.push({ ...candidate, status: "invalid", reason: stopped.blocked });
+
           throw new ReviewChainError(stopped.blocked, attempts, state.usage);
         }
+
         reason = stopped.failure;
       }
+
     }
+
     if (reason) {
       const attempt: ReviewAttempt = { ...candidate, status: "failed", reason };
+
       attempts.push(attempt);
       // A failed audit/display callback aborts the chain, never authorizes a retry.
       observer.failed(attempt);
+
       continue;
     }
+
     let verdict: ReturnType<typeof parseVerdict>;
+
     try {
       verdict = parseVerdict(textContent(response!.content), envelope.requestId);
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Invalid reviewer verdict";
+
       attempts.push({ ...candidate, status: "invalid", reason });
+
       throw new ReviewChainError(reason, attempts, state.usage);
     }
+
     if (
       verdict.decision === "approve" &&
       [...(envelope.promptSources?.keys() ?? [])].some((id) => !state.consulted.has(id))
     ) {
       const reason =
         "Reviewer must inspect every compressed original before approval; no fallback, nothing executed";
+
       attempts.push({ ...candidate, status: "invalid", reason });
+
       throw new ReviewChainError(reason, attempts, state.usage);
     }
+
     attempts.push({ ...candidate, status: verdict.decision, reason: verdict.reason });
+
     // A valid denial is final. Never search for a model willing to approve it.
     return {
       verdict,
@@ -371,9 +455,11 @@ export async function requestVerdict(
       promptLookups: state.promptLookups,
     };
   }
+
   throw new ReviewChainError(
     `No configured reviewer completed the check: ${attempts.map((item) => `${reviewerLabel(item)}: ${item.reason}`).join("; ")}`,
     attempts,
     state.usage,
   );
 }
+

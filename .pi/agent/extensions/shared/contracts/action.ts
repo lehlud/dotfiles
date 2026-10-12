@@ -62,6 +62,7 @@ export const sandboxRequestSchema = Type.Object(
   },
   { additionalProperties: false, minProperties: 1 },
 );
+
 export type SandboxRequest = Static<typeof sandboxRequestSchema>;
 
 export type Request = {
@@ -72,15 +73,22 @@ export type Request = {
   sandbox?: SandboxRequest;
   network?: boolean;
 };
+
 export function normalizeNetworkFlag(request: Request): Request {
   if (request.network === undefined) return request;
+
   if (!["bash", "powershell", "credential_exec"].includes(request.tool))
     throw new Error(
       "The one-command network flag is only supported for shell and credential actions",
     );
+
   const mode = request.network ? "host" : "none";
+
   if (request.sandbox?.network !== undefined && request.sandbox.network !== mode)
     throw new Error("Conflicting one-command network flag and sandbox network request");
+
   const { network: _flag, ...action } = request;
+
   return { ...action, sandbox: { ...request.sandbox, network: mode } };
 }
+

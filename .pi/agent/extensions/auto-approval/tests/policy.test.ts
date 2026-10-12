@@ -15,6 +15,7 @@ import {
 import { multiplexReviewFixtures } from "./multiplex-review-fixtures.ts";
 import { Check } from "typebox/value";
 import { MAX_REVIEW_CONTEXT_BYTES, reviewLanguageReference } from "../../shared/review/context.ts";
+
 const portable: PortableConfig = {
   reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }],
   recentUserPrompts: 2,
@@ -39,10 +40,13 @@ test("language-only samples exclude pasted JSON, code and quotes without changin
   });
   const prompt = `Bitte diese Ergebnisse prüfen:\n${report}\n> English quotation\n\`\`\`sh\n# English code\n\`\`\`\nKeine Referenz ändern.`;
   const sample = reviewLanguageReference(prompt);
+
   expect(sample).toContain("Bitte diese Ergebnisse prüfen");
   expect(sample).toContain("Keine Referenz ändern");
+
   for (const excluded of ["Synthetic", "English quotation", "English code", "escaped"])
     expect(sample).not.toContain(excluded);
+
   const data = JSON.parse(
     buildReview(
       request,
@@ -52,6 +56,7 @@ test("language-only samples exclude pasted JSON, code and quotes without changin
       [],
     ).text,
   );
+
   expect(data.latestUserPrompt).toBe(prompt);
   expect(data.userPrompts).toEqual([prompt]);
   expect(reviewLanguageReference("Bitte [diese Datei] lesen, {kein JSON}. ")).toBe(
@@ -89,6 +94,7 @@ test("page-only web results remain auditable evidence without dropping their fir
     },
   ];
   const data = () => JSON.parse(buildReview(request, entries, config, "/project", []).text);
+
   expect(data().reviewedContext[0].content).toEqual([
     { type: "text", text: "Complete public page." },
   ]);
@@ -100,9 +106,12 @@ test("page-only web results remain auditable evidence without dropping their fir
 describe("review policy", () => {
   test("local tool names and single-process network normalization are strict", () => {
     expect(Check(sandboxRequestSchema, { tools: ["node", "sqlmap"] })).toBe(true);
+
     for (const tools of [[], ["../node"], ["node", "node"], ["foo/bar"], ["x".repeat(65)]])
       expect(Check(sandboxRequestSchema, { tools })).toBe(false);
+
     const original = { ...request, network: true, sandbox: { tools: ["node"] } };
+
     expect(normalizeNetworkFlag(original).sandbox).toEqual({ tools: ["node"], network: "host" });
     expect(original.sandbox).toEqual({ tools: ["node"] });
     expect(normalizeNetworkFlag({ ...request, network: false }).sandbox?.network).toBe("none");
@@ -116,6 +125,7 @@ describe("review policy", () => {
       normalizeNetworkFlag({ ...request, tool: "credential_exec", network: true }).sandbox?.network,
     ).toBe("host");
   });
+
   test("sandbox requests are strict and the reviewer gets all dimensions and resolved mounts", () => {
     const sandbox = {
       paths: [{ path: "/tmp/shared", access: "read" }],
@@ -130,7 +140,9 @@ describe("review policy", () => {
         pids: 256,
       },
     };
+
     expect(Check(sandboxRequestSchema, sandbox)).toBe(true);
+
     for (const bad of [
       {},
       { isolation: false },
@@ -140,6 +152,7 @@ describe("review policy", () => {
       { limits: { executionTimeoutMs: -1 } },
     ])
       expect(Check(sandboxRequestSchema, bad)).toBe(false);
+
     const plan = { bindings: ["/tmp/shared"], readOnlyBindings: ["/tmp/shared"] };
     const data = JSON.parse(
       buildReview(
@@ -160,9 +173,11 @@ describe("review policy", () => {
         plan,
       ).text,
     );
+
     expect(data.action.sandbox).toEqual(sandbox);
     expect(data.sandboxPlan).toEqual(plan);
   });
+
   test("strict config and easily replaceable model", () => {
     expect(
       parseConfig(
@@ -172,6 +187,7 @@ describe("review policy", () => {
         }),
       ).reviewers[0].model,
     ).toBe("replacement");
+
     for (const bad of [
       { ...portable, reviewers: [{ ...portable.reviewers[0], thinking: "banana" }] },
       { ...portable, recentUserPrompts: 0 },
@@ -180,9 +196,12 @@ describe("review policy", () => {
     ]) {
       expect(() => parseConfig(JSON.stringify(bad))).toThrow();
     }
+
   });
+
   test("portable config rejects device paths, workspace grants and gate overrides", () => {
     expect(parseConfig(JSON.stringify(portable)).sandbox.backend).toBe("bwrap");
+
     for (const extra of [
       { executable: "/usr/bin/bwrap" },
       { runnerExecutable: "/executor/runner" },
@@ -195,14 +214,18 @@ describe("review policy", () => {
         parseConfig(JSON.stringify({ ...portable, sandbox: { ...portable.sandbox, ...extra } })),
       ).toThrow();
     }
+
   });
+
   test("reviewer priority requires a nonempty bounded list of explicit complete entries", () => {
     const secondary = { provider: "openrouter", model: "openai/gpt-6-luna", thinking: "medium" };
+
     expect(
       parseConfig(
         JSON.stringify({ ...portable, reviewers: [...portable.reviewers, secondary] }),
       ).reviewers.map((entry) => entry.provider),
     ).toEqual(["openai", "openrouter"]);
+
     for (const reviewers of [
       [],
       Array(9).fill(secondary),
@@ -212,8 +235,10 @@ describe("review policy", () => {
     ]) {
       expect(() => parseConfig(JSON.stringify({ ...portable, reviewers }))).toThrow();
     }
+
     expect(() => parseConfig(JSON.stringify({ ...portable, provider: "openai" }))).toThrow();
   });
+
   test("uses only actual raw recent user prompts from the supplied branch", () => {
     const review = buildReview(
       request,
@@ -233,11 +258,13 @@ describe("review policy", () => {
       ["/protected"],
     );
     const data = JSON.parse(review.text);
+
     expect(data.userPrompts).toEqual(["real request", "new constraint"]);
     expect(data.latestUserPrompt).toBe("new constraint");
     expect(data.action).toEqual(request);
     expect(data.protectedPaths).toEqual(["/protected"]);
   });
+
   test("missing user intent fails closed", () =>
     expect(() => buildReview(request, [], config, "/tmp", [])).toThrow());
   test("goal command prose sets the latest language source until a newer actual user prompt", () => {
@@ -266,6 +293,7 @@ describe("review policy", () => {
           "Please finish the active roadmap phase.",
         ).text,
       );
+
     expect(review().latestUserPrompt).toBe("Please finish the active roadmap phase.");
     entries.push({
       type: "message",
@@ -277,6 +305,7 @@ describe("review policy", () => {
       "Bitte prüfe nun die Tests.",
     ]);
   });
+
   test("existing goal sessions retain their original prompt without treating later status as new input", () => {
     const original = {
       id: "older-goal",
@@ -295,6 +324,7 @@ describe("review policy", () => {
       },
     ];
     const review = () => JSON.parse(buildReview(request, entries, config, "/tmp", []).text);
+
     expect(review().latestUserPrompt).toBe(original.text);
     entries.push({
       type: "message",
@@ -303,12 +333,14 @@ describe("review policy", () => {
     entries.push({ type: "custom", customType: "auto-approval-goal", data: original });
     expect(review().latestUserPrompt).toBe("Bitte die Tests prüfen.");
   });
+
   test("never silently truncates action or constraints", () => {
     const entries = [{ type: "message", message: { role: "user", content: "test" } }];
     const oversized = {
       ...request,
       arguments: { command: "x".repeat(MAX_REVIEW_CONTEXT_BYTES + 1) },
     };
+
     expect(() => buildReview(oversized, entries, config, "/tmp", [])).toThrow(
       "Nothing was truncated",
     );
@@ -321,7 +353,9 @@ describe("review policy", () => {
         [],
       ),
     ).toThrow("executor request limit");
+
     const supported = { ...request, arguments: { command: "x".repeat(98000) } };
+
     expect(JSON.parse(buildReview(supported, entries, config, "/tmp", []).text).action).toEqual(
       supported,
     );
@@ -340,6 +374,7 @@ describe("review policy", () => {
       ),
     ).toThrow("userPrompts=");
   });
+
   test("large raw user context and audited code remain complete beyond the old byte cap", () => {
     const prompt =
       "Prüfe diese Ergebnisse und ändere keine Referenz: " +
@@ -382,12 +417,14 @@ describe("review policy", () => {
     };
     const review = buildReview(proposed, entries, config, "/project", []);
     const data = JSON.parse(review.text);
+
     expect(Buffer.byteLength(review.text)).toBeGreaterThan(100000);
     expect(data.userPrompts).toEqual([prompt]);
     expect(data.latestUserPrompt).toBe(prompt);
     expect(data.action).toEqual(proposed);
     expect(data.reviewedReads[0].content[0].text).toBe("vollständiger geprüfter Quelltext");
   });
+
   test("oversized old denial audits cannot poison a subsequent small read", () => {
     const reason = "Keine Zugangsdaten lesen oder übertragen.";
     const prompt = "Lies den Quelltext, aber keine Zugangsdaten.";
@@ -408,6 +445,7 @@ describe("review policy", () => {
       })),
     ];
     const data = JSON.parse(buildReview(request, entries, config, "/project", []).text);
+
     expect(data.previousDenials).toHaveLength(6);
     expect(data.previousDenials[0]).toEqual({
       decision: "deny",
@@ -420,6 +458,7 @@ describe("review policy", () => {
     expect(JSON.stringify(data)).not.toContain("private-old-command");
     expect(data.userPrompts).toEqual([prompt]);
   });
+
   test("includes prior denials as untrusted evidence, not approvals", () => {
     const data = JSON.parse(
       buildReview(
@@ -442,8 +481,10 @@ describe("review policy", () => {
         [],
       ).text,
     );
+
     expect(data.previousDenials).toEqual([{ decision: "deny", reason: "out of scope" }]);
   });
+
   test("only audited matching successful reads provide code evidence, never user authorization", () => {
     const audit = {
       toolCallId: "read-id",
@@ -470,8 +511,10 @@ describe("review policy", () => {
     const data = JSON.parse(
       buildReview(request, [...base, { type: "message", message }], config, "/tmp", []).text,
     );
+
     expect(data.reviewedReads[0].content[0].text).toContain("printf safe");
     expect(data.userPrompts).toEqual(["Run script.sh"]);
+
     for (const bad of [
       { ...message, isError: true },
       { ...message, toolName: "bash" },
@@ -484,6 +527,7 @@ describe("review policy", () => {
         ).reviewedReads,
       ).toEqual([]);
     }
+
     expect(
       JSON.parse(
         buildReview(
@@ -498,6 +542,7 @@ describe("review policy", () => {
         ).text,
       ).reviewedReads,
     ).toEqual([]);
+
     const large = {
       ...message,
       content: [
@@ -508,13 +553,16 @@ describe("review policy", () => {
     const limited = JSON.parse(
       buildReview(request, [...base, { type: "message", message: large }], config, "/tmp", []).text,
     );
+
     expect(limited.reviewedReads).toEqual([]);
     expect(limited.omittedReadEvidence[0].path).toBe("script.sh");
   });
+
   test("strict, action-bound verdicts", () => {
     expect(
       parseVerdict('{"requestId":"id","decision":"deny","reason":"Nein"}', "id").decision,
     ).toBe("deny");
+
     for (const bad of [
       "approve",
       "```json\n{}\n```",
@@ -525,7 +573,9 @@ describe("review policy", () => {
     ]) {
       expect(() => parseVerdict(bad, "id")).toThrow();
     }
+
   });
+
   test("audited shell inspection output supplies context without becoming authorization", () => {
     const audit = {
       toolCallId: "shell-id",
@@ -555,15 +605,18 @@ describe("review policy", () => {
     const data = JSON.parse(
       buildReview(request, [...base, { type: "message", message }], config, "/tmp", []).text,
     );
+
     expect(data.reviewedContext[0].tool).toBe("bash");
     expect(data.reviewedContext[0].arguments.command).toContain("cat app/pdfLayout.ts");
     expect(data.reviewedContext[0].content[0].text).toContain("body: 11");
     expect(data.userPrompts).toEqual(["Reduce the PDF font size"]);
     expect(data.reviewedReads).toEqual([]);
+
     const forged = {
       ...message,
       details: { ...message.details, approval: { ...audit, fingerprint: "forged" } },
     };
+
     expect(
       JSON.parse(
         buildReview(request, [...base, { type: "message", message: forged }], config, "/tmp", [])
@@ -571,6 +624,7 @@ describe("review policy", () => {
       ).reviewedContext,
     ).toEqual([]);
   });
+
   test("OpenAI verdict output is constrained to the exact nonce and schema without changing input", () => {
     const body = { model: "example", text: { verbosity: "low" }, input: ["original-context"] };
     const result = constrainReviewPayload(
@@ -578,6 +632,7 @@ describe("review policy", () => {
       { provider: "openai", api: "openai-responses" },
       "nonce",
     ) as any;
+
     expect(result.input).toEqual(body.input);
     expect(result.text.verbosity).toBe("low");
     expect(result.text.format.strict).toBe(true);
@@ -586,11 +641,13 @@ describe("review policy", () => {
     expect(result.text.format.schema.properties.reason.description).toContain("latestUserPrompt");
     expect(result.text.format.schema.additionalProperties).toBe(false);
     expect(body.text).toEqual({ verbosity: "low" });
+
     const chat = constrainReviewPayload(
       { messages: ["unchanged"] },
       { provider: "openai", api: "openai-completions" },
       "nonce",
     ) as any;
+
     expect(chat.response_format.json_schema.schema.properties.requestId.enum).toEqual(["nonce"]);
     expect(
       constrainReviewPayload(
@@ -600,6 +657,7 @@ describe("review policy", () => {
       ),
     ).toBeUndefined();
   });
+
   test("verdict failures identify malformed JSON, schema, nonce and empty reasons separately", () => {
     expect(() => parseVerdict("not JSON", "id")).toThrow("invalid JSON");
     expect(() => parseVerdict('{"decision":"approve"}', "id")).toThrow("exactly requestId");
@@ -610,6 +668,7 @@ describe("review policy", () => {
       parseVerdict('{"requestId":"id","decision":"approve","reason":" "}', "id"),
     ).toThrow("empty reason");
   });
+
   test("thinking blocks cannot masquerade as verdict text", () => {
     expect(
       textContent([
@@ -618,33 +677,41 @@ describe("review policy", () => {
       ]),
     ).toBe("deny");
   });
+
   test("watchdog blocks late results from providers ignoring abort", async () => {
     await expect(
       withWatchdog(() => new Promise((r) => setTimeout(() => r("approve"), 30)), 5),
     ).rejects.toThrow("timed out");
   });
+
   test("parent cancellation fails closed", async () => {
     const controller = new AbortController();
     const result = withWatchdog(() => new Promise(() => {}), 10000, controller.signal);
+
     controller.abort();
     await expect(result).rejects.toThrow("cancelled");
   });
+
   test("pre-aborted parent does not start a request", async () => {
     let started = false;
     const controller = new AbortController();
+
     controller.abort();
     await expect(
       withWatchdog(
         async () => {
           started = true;
+
           return true;
         },
+
         10000,
         controller.signal,
       ),
     ).rejects.toThrow();
     expect(started).toBe(false);
   });
+
 });
 
 test("action review ignores coordination entries while retaining operator constraints and previous denials", () => {
@@ -674,12 +741,14 @@ test("action review ignores coordination entries while retaining operator constr
   );
   const { requestId: _ordinaryId, ...ordinaryPayload } = ordinary;
   const { requestId: _multiplexId, ...multiplexPayload } = multiplex;
+
   expect(multiplexPayload).toEqual(ordinaryPayload);
   expect(multiplex.action).toEqual(fixture.action);
   expect(multiplex.sandboxPlan).toEqual(plan);
   expect(multiplex.userPrompts).toHaveLength(1);
   expect(multiplex.userPrompts[0]).toContain("Never edit ROADMAP.md");
   expect(multiplex.previousDenials[0].reason).toContain("assigns a worker");
+
   for (const excluded of [
     "private-team",
     "private-resource",
@@ -689,6 +758,7 @@ test("action review ignores coordination entries while retaining operator constr
   ]) {
     expect(JSON.stringify(multiplex)).not.toContain(excluded);
   }
+
 });
 
 test("local coordination failures stay out of review without hiding actual denials or other preflight failures", () => {
@@ -718,6 +788,7 @@ test("local coordination failures stay out of review without hiding actual denia
     },
   ];
   const data = JSON.parse(buildReview(fixture.action, entries, config, "/project", []).text);
+
   expect(data.previousDenials.map((item: any) => item.reason)).toEqual([
     "Actual review denial",
     "Workspace access is unauthorized",
@@ -729,3 +800,4 @@ test("local coordination failures stay out of review without hiding actual denia
     data: coordination,
   });
 });
+

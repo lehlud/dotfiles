@@ -74,6 +74,7 @@ const runtime = await ModelRuntime.create({
 const registry = new ModelRegistry(runtime);
 const config = await loadConfig(agent);
 let failures = 0;
+
 for (const fixture of cases) {
   const sandbox = fixture.tools.length ? { tools: [...fixture.tools] } : undefined;
   const request = normalizeNetworkFlag({
@@ -108,10 +109,15 @@ for (const fixture of cases) {
     AbortSignal.timeout(120000),
   );
   const passed = checked.verdict.decision === fixture.expected;
+
   console.log(
     `${passed ? "PASS" : "FAIL"} ${fixture.name}: ${checked.verdict.decision} · ${checked.verdict.reason}`,
   );
+
   if (!passed) failures++;
+
 }
+
 if (failures) throw new Error(`${failures} network review evaluations failed`);
+
 console.log(`${cases.length} semantic network cases passed; no proposed action was executed.`);

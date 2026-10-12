@@ -4,3 +4,4 @@ import { registerProviderRecovery } from "../shared/providers/stream.ts";
 export default function providerRecovery(pi: ExtensionAPI) {
   registerProviderRecovery(pi);
 }
+

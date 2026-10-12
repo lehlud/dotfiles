@@ -11,6 +11,7 @@ import type { buildReview } from "./review.ts";
 import type { AvailabilityNotice } from "../shared/providers/availability.ts";
 
 type Update = AgentToolUpdateCallback<unknown> | undefined;
+
 export class ReviewDisplay {
   durationMs = 0;
   reviewer = "—";
@@ -25,6 +26,7 @@ export class ReviewDisplay {
 
   finish() {
     if (!this.stopDisplay) return;
+
     this.durationMs += this.stopDisplay();
     this.session.displays.delete(this.stopDisplay);
     this.stopDisplay = undefined;
@@ -48,6 +50,7 @@ export class ReviewDisplay {
           details: { phase: "reviewing", retry: event },
         });
       },
+
       start: (candidate: Reviewer) => {
         this.reviewer = reviewerLabel(candidate);
         this.stopDisplay = startReviewDisplay(this.ctx, this.reviewer).stop;
@@ -57,6 +60,7 @@ export class ReviewDisplay {
           details: { phase: "reviewing", reviewer: this.reviewer },
         });
       },
+
       finish: () => this.finish(),
       failed: (attempt: ReviewAttempt) => {
         this.pi.appendEntry("auto-approval-reviewer-failure", {
@@ -75,6 +79,7 @@ export class ReviewDisplay {
           details: { phase: "reviewing", reviewer: this.reviewer, attempt },
         });
       },
+
       lookup: (request: { promptId: string; operation: string }) => {
         this.pi.appendEntry("auto-approval-prompt-lookup", {
           requestId: review.requestId,
@@ -91,6 +96,9 @@ export class ReviewDisplay {
           details: { phase: "reviewing", reviewer: this.reviewer, promptLookup: request },
         });
       },
+
     };
   }
+
 }
+

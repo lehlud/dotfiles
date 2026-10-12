@@ -40,6 +40,7 @@ class ActionRun {
     private ctx: Execution[4],
   ) {
     const mailbox = sessionServices(ctx).mailbox;
+
     this.audit = {
       toolCallId: id,
       decision: "deny",
@@ -54,6 +55,7 @@ class ActionRun {
       this.phase = "team coordination";
       this.assignment = sessionServices(this.ctx).mailbox?.beginAction?.();
       this.phase = "request validation";
+
       const prepared = await prepareAction(
         this.raw,
         this.ctx,
@@ -62,18 +64,23 @@ class ActionRun {
         (phase) => {
           this.phase = phase;
         },
+
       );
       const verdict = await this.review(prepared);
+
       this.signal?.throwIfAborted();
       // Persistence must succeed before approval can authorize execution.
       this.pi.appendEntry("auto-approval-review", this.audit);
       sessionServices(this.ctx).mailbox?.audit(this.audit);
       this.update?.({ content: [{ type: "text", text: this.summary }], details: this.audit });
+
       if (verdict.decision === "deny") return this.denied();
+
       this.signal?.throwIfAborted();
       this.phase = "team coordination";
       this.assignment?.assertCurrent();
       this.executionStarted = true;
+
       return await this.execute(prepared);
     } catch (error) {
       return this.failed(error);
@@ -82,6 +89,7 @@ class ActionRun {
       this.display.finish();
       this.ctx.ui.setStatus("auto-approval", undefined);
     }
+
   }
 
   private async review({
@@ -92,6 +100,7 @@ class ActionRun {
     sandboxPlan,
   }: PreparedAction) {
     this.phase = "prompt compression";
+
     const branch = this.ctx.sessionManager.getBranch();
     const prepared = await preparePromptContext(
       branch,
@@ -116,14 +125,18 @@ class ActionRun {
             )
           )
             this.pi.appendEntry("auto-approval-prompt-compression", record);
+
         },
+
         failed: (attempt) =>
           this.pi.appendEntry("auto-approval-compressor-failure", { toolCallId: this.id, attempt }),
       },
       this.signal,
       sessionServices(this.ctx).operatorGoal?.(),
     );
+
     this.phase = "review context preparation";
+
     const review = buildReview(
       request,
       branch,
@@ -137,6 +150,7 @@ class ActionRun {
       sessionServices(this.ctx).operatorGoal?.(),
       prepared,
     );
+
     this.audit = {
       ...this.audit,
       action: request,
@@ -152,6 +166,7 @@ class ActionRun {
     };
     this.phase = "independent review";
     this.display.reviewer = config.reviewers.map(reviewerLabel).join(" → ");
+
     const checked = await reviewWithFallback(
       config,
       this.ctx.modelRegistry,
@@ -159,6 +174,7 @@ class ActionRun {
       this.display.observers(review, request.tool),
       this.signal,
     );
+
     this.usage = checked.usage;
     this.signal?.throwIfAborted();
     this.audit = {
@@ -175,6 +191,7 @@ class ActionRun {
       this.display.durationMs,
       this.display.reviewer,
     );
+
     return checked.verdict;
   }
 
@@ -184,12 +201,14 @@ class ActionRun {
       : request.sandbox?.gitConfig === true
         ? await executeWithGitConfig(request, workspace, config, this.signal)
         : await executeIsolated(request, workspace, config.sandbox, this.signal);
+
     if (isWebTool(request.tool))
       return {
         ...result,
         details: { approval: this.audit, approvalSummary: this.summary, result: result.details },
         usage: this.usage,
       };
+
     return {
       ...result,
       content: [{ type: "text" as const, text: this.summary }, ...result.content],
@@ -209,18 +228,23 @@ class ActionRun {
 
   private failed(error: unknown) {
     this.display.finish();
+
     if (error instanceof ReviewChainError) {
       this.usage = error.usage;
       this.audit = { ...this.audit, reviewAttempts: error.attempts };
     }
+
     const reason = error instanceof Error ? error.message : String(error);
+
     if (this.executionStarted) {
       const failure = { approval: this.audit, executionError: reason };
+
       try {
         this.pi.appendEntry("auto-approval-execution-error", failure);
       } catch {
         /* Report failure even when persistence is unavailable. */
       }
+
       return {
         content: [
           {
@@ -233,6 +257,7 @@ class ActionRun {
         isError: true,
       };
     }
+
     this.audit = {
       ...this.audit,
       decision: "deny",
@@ -247,14 +272,17 @@ class ActionRun {
       this.display.durationMs,
       this.display.reviewer,
     );
+
     try {
       this.pi.appendEntry("auto-approval-review", this.audit);
       sessionServices(this.ctx).mailbox?.audit(this.audit);
     } catch {
       /* Failure to save a rejection must still block execution. */
     }
+
     return this.denied();
   }
+
 }
 
 export function actionHandler(
@@ -262,8 +290,10 @@ export function actionHandler(
   session: ActionSession,
 ): ToolDefinition<any, any>["execute"] {
   const protection = new ProtectedPaths();
+
   return (id, raw, signal, update, ctx) =>
     session.enqueue(() =>
       new ActionRun(pi, session, protection, id, raw, signal, update, ctx).run(),
     );
 }
+

@@ -14,6 +14,7 @@ export function dockerArguments(
   const uid = getuid?.() ?? 501;
   const gid = getgid?.() ?? 20;
   const runtimeTmpfs = `rw,nosuid,nodev,size=268435456,mode=0700,uid=${uid},gid=${gid}`;
+
   return [
     "run",
     "--rm",
@@ -81,3 +82,4 @@ export function dockerArguments(
     "/executor/runner.ts",
   ];
 }
+

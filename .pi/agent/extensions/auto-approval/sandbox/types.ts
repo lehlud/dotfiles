@@ -3,6 +3,7 @@ import type { LocalTool } from "../local-tools.ts";
 import type { WebRuntime } from "../../web-research/runtime.ts";
 
 export type SandboxConfig = Config["sandbox"];
+
 export type Workspace = {
   path: string;
   cwd: string;

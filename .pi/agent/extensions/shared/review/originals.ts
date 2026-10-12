@@ -26,6 +26,7 @@ export const promptOriginalTool: Tool = {
 export function readPromptOriginal(sources: ReadonlyMap<string, string>, args: unknown) {
   if (!Check(promptOriginalTool.parameters, args))
     throw new Error("Invalid original-prompt lookup; no other tools or paths are allowed");
+
   const request = args as {
     promptId: string;
     operation: string;
@@ -34,24 +35,33 @@ export function readPromptOriginal(sources: ReadonlyMap<string, string>, args: u
     query?: string;
   };
   const text = sources.get(request.promptId);
+
   if (text === undefined)
     throw new Error("Original prompt is not in this review's selected branch context");
+
   const limit = request.limit ?? 4000;
   const excerpts: { offset: number; text: string }[] = [];
   let more = false;
+
   if (request.operation === "grep") {
     if (!request.query) throw new Error("Literal grep query is required");
+
     let offset = request.offset ?? 0,
       remaining = limit;
+
     while (excerpts.length < 8 && remaining > 0) {
       const match = text.indexOf(request.query, offset);
+
       if (match < 0) break;
+
       const start = Math.max(offset, match - 160);
       const end = Math.min(text.length, start + Math.min(remaining, 1000));
+
       excerpts.push({ offset: start, text: text.slice(start, end) });
       remaining -= end - start;
       offset = Math.max(end, match + request.query.length);
     }
+
     more =
       text.indexOf(
         request.query,
@@ -64,10 +74,13 @@ export function readPromptOriginal(sources: ReadonlyMap<string, string>, args: u
         : request.operation === "tail"
           ? Math.max(0, text.length - limit)
           : (request.offset ?? 0);
+
     if (start > text.length) throw new Error("Original prompt offset is outside the text");
+
     excerpts.push({ offset: start, text: text.slice(start, start + limit) });
     more = start + limit < text.length;
   }
+
   return {
     promptId: request.promptId,
     operation: request.operation,
@@ -79,3 +92,4 @@ export function readPromptOriginal(sources: ReadonlyMap<string, string>, args: u
       : (request.offset ?? 0),
   };
 }
+

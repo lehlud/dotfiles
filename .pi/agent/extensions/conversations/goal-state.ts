@@ -8,20 +8,24 @@ export type Goal = {
   reason: string;
   feedback?: string;
 };
+
 export type GoalReview = {
   goalId?: string;
   superseded?: boolean;
   verdict?: { decision?: string; reason?: string };
 };
+
 export const STATE_ENTRY = "auto-approval-goal";
 export const INSTRUCTION_TYPE = "auto-approval-goal-instruction";
 // Pi sorts footer statuses by key: team size, target, then transient review.
 export const STATUS_KEY = "01-goal";
+
 export function goalTitle(text: string) {
   const plain = stripTerminalSequences(text)
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
     .replace(/\s+/gu, " ")
     .trim();
+
   return stripTerminalSequences(truncateToWidth(plain, 100, "…"));
 }
 

@@ -24,6 +24,7 @@ import type { ActivityEvent } from "./activity.ts";
 /** All peers use the same trusted providers; credentials never enter model context. */
 export async function peerRuntime(ctx: ExtensionContext) {
   installProviderStreams(ctx.modelRegistry);
+
   const agentDir = getAgentDir();
   const runtime = await ModelRuntime.create({
     authPath: join(agentDir, "auth.json"),
@@ -32,10 +33,14 @@ export async function peerRuntime(ctx: ExtensionContext) {
     allowModelNetwork: false,
     refreshOnCreate: false,
   });
+
   for (const id of new Set(ctx.modelRegistry.getAll().map((model) => model.provider))) {
     const provider = ctx.modelRegistry.getProvider(id);
+
     if (provider) runtime.registerNativeProvider(provider);
+
   }
+
   return runtime;
 }
 
@@ -51,6 +56,7 @@ export class Peer {
     private report: (error: string) => void,
     private settled: () => void,
     observe: (event: ActivityEvent) => void = () => {},
+
   ) {
     this.unsubscribe = session.subscribe((event) => {
       switch (event.type) {
@@ -63,14 +69,19 @@ export class Peer {
         case "tool_execution_end":
           observe(event);
       }
+
     });
+
   }
+
   get busy() {
     return this.pending > 0 || this.runs.size > 0 || this.session.isStreaming;
   }
+
   canDeliver() {
     return !this.stopped && this.pending < 256;
   }
+
   private async waitForCompaction() {
     while (!this.stopped && this.session.isCompacting)
       await new Promise<void>((resolve) => {
@@ -79,53 +90,79 @@ export class Peer {
           this.waiting.delete(done);
           resolve();
         };
+
         const unsubscribe = this.session.subscribe((event) => {
           if (event.type === "compaction_end") done();
+
         });
+
         this.waiting.add(done);
+
         if (this.stopped || !this.session.isCompacting) done();
+
       });
+
   }
+
   private enqueue(start: () => Promise<void>, operator = false) {
     if (this.stopped) return;
+
     if (!operator && this.pending >= 256) throw new Error("Peer input queue is full");
+
     this.pending++;
     this.admission = this.admission
       .then(async () => {
         // prompt() rejects before input hooks during compaction. Retain the input
         // until admissible; never retry an already accepted model/tool request.
         await this.waitForCompaction();
+
         if (this.stopped) return;
+
         let ready!: () => void;
         const started = new Promise<void>((resolve) => {
           ready = resolve;
         });
+
         const unsubscribe = this.session.subscribe((event) => {
           if (event.type === "agent_start") ready();
+
         });
+
         const run = start().catch(() => {
           if (!this.stopped)
             this.report("Peer request failed; the task will not be automatically repeated.");
+
         });
+
         this.runs.add(run);
         void run.finally(() => {
           this.runs.delete(run);
+
           if (!this.stopped && !this.busy) this.settled();
+
         });
+
         try {
           await Promise.race([started, run]);
         } finally {
           unsubscribe();
         }
+
       })
+
       .catch(() => this.report("Peer delivery failed."))
       .finally(() => {
         this.pending--;
+
         if (!this.stopped && !this.busy) this.settled();
+
       });
+
   }
+
   prompt(event: Pick<InputEvent, "text" | "images" | "streamingBehavior">) {
     const copy = structuredClone(event);
+
     this.enqueue(
       () =>
         this.session.prompt(copy.text, {
@@ -137,24 +174,35 @@ export class Peer {
       true,
     );
   }
+
   message(message: Parameters<AgentSession["sendCustomMessage"]>[0], triggerTurn = true) {
     const copy = structuredClone(message);
+
     this.enqueue(() => this.session.sendCustomMessage(copy, { triggerTurn, deliverAs: "steer" }));
   }
+
   deliver(letter: Letter) {
     this.message(letterMessage(letter), letter.wake === true);
   }
+
   audit(data: Record<string, unknown>) {
     if (!this.stopped) this.session.sessionManager.appendCustomEntry("auto-approval-review", data);
+
   }
+
   result(data: Record<string, unknown>) {
     if (!this.stopped) this.session.sessionManager.appendCustomEntry(PEER_RESULT, data);
+
   }
+
   async close() {
     if (this.stopped) return;
+
     this.stopped = true;
     this.unsubscribe();
+
     for (const done of [...this.waiting]) done();
+
     this.session.clearQueue();
     await this.session.abort();
     await this.admission;
@@ -163,12 +211,15 @@ export class Peer {
     // the first abort. Cancel that late start as well.
     await this.session.abort();
     await Promise.allSettled([...this.runs]);
+
     try {
       await sessionServices({ sessionManager: this.session.sessionManager }).cleanup?.();
     } finally {
       this.session.dispose();
     }
+
   }
+
 }
 
 export async function createPeer(
@@ -210,17 +261,21 @@ export async function createPeer(
         pi.on("session_start", (_event, child) => {
           sessionServices(child).operatorGoal = endpoint.operatorGoal;
         });
+
         registerSteering(pi, endpoint.operatorGoal);
         registerProgress(pi, (_child, reason) => report(reason));
         registerEndpoint(pi, () => endpoint);
         pi.on("turn_end", (event) => {
           if (event.outcome === "error") report("Peer model run failed; its result is incomplete.");
+
         });
+
         pi.on("agent_settled", (_event, child) => {
           const last = child.sessionManager
             .getBranch()
             .filter((entry) => entry.type === "message" && entry.message.role === "assistant")
             .at(-1);
+
           if (
             last?.type === "message" &&
             last.message.role === "assistant" &&
@@ -232,13 +287,20 @@ export async function createPeer(
                   .map((block) => (block.type === "text" ? block.text : ""))
                   .join("\n")
               : "";
+
             if (text) answer(text);
+
           }
+
         });
+
       },
+
     ],
   });
+
   await loader.reload();
+
   const { session } = await createAgentSession({
     cwd: ctx.cwd,
     agentDir: getAgentDir(),
@@ -250,22 +312,31 @@ export async function createPeer(
     resourceLoader: loader,
     tools: ["approved_action", "mailbox"],
   });
+
   try {
     await session.bindExtensions({
       mode: "json",
       onError: () => report("Peer extension reported an error."),
       uiContext: {
         setStatus() {},
+
         setWidget() {},
+
         notify: (_text: string, kind?: string) => {
           if (kind === "error") report("Peer sandbox or configuration unavailable.");
+
         },
+
       } as any,
     });
+
     return new Peer(session, report, settled, observe);
   } catch (error) {
     await sessionServices({ sessionManager: manager }).cleanup?.();
     session.dispose();
+
     throw error;
   }
+
 }
+

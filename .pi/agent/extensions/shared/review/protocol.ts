@@ -17,7 +17,9 @@ export const reviewerSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
 export type Reviewer = Static<typeof reviewerSchema>;
+
 export type ReviewSettings = {
   reviewers: Reviewer[];
   recentUserPrompts: number;
@@ -28,7 +30,9 @@ export const REVIEW_LANGUAGE = `Write the reason in the language of latestUserPr
 
 export function textContent(content: unknown): string {
   if (typeof content === "string") return content;
+
   if (!Array.isArray(content)) return "";
+
   return content
     .flatMap((block) =>
       block?.type === "text" && typeof block.text === "string" ? [block.text] : [],
@@ -46,8 +50,10 @@ export function constrainReviewPayload(
     !["openai-responses", "openai-completions"].includes(model.api ?? "")
   )
     return undefined;
+
   if (!payload || typeof payload !== "object" || Array.isArray(payload))
     throw new Error("Invalid reviewer provider payload");
+
   const body = payload as Record<string, unknown>;
   const format = {
     type: "json_schema",
@@ -70,10 +76,13 @@ export function constrainReviewPayload(
       },
     },
   };
+
   if (model.api === "openai-completions") {
     const { type, ...json_schema } = format;
+
     return { ...body, response_format: { type, json_schema } };
   }
+
   return {
     ...body,
     text: { ...(body.text && typeof body.text === "object" ? body.text : {}), format },
@@ -88,21 +97,27 @@ const verdictSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
 export function parseVerdict(text: string, requestId: string) {
   let verdict: unknown;
+
   try {
     verdict = JSON.parse(text);
   } catch {
     throw new Error("Reviewer returned invalid JSON; nothing executed");
   }
+
   if (!Check(verdictSchema, verdict))
     throw new Error(
       "Reviewer verdict must contain exactly requestId, approve/deny decision, and a reason of 1–600 characters; nothing executed",
     );
+
   if (verdict.requestId !== requestId)
     throw new Error("Reviewer verdict belongs to a different requestId; nothing executed");
+
   if (!verdict.reason.trim())
     throw new Error("Reviewer verdict has an empty reason; nothing executed");
+
   return verdict;
 }
 
@@ -113,23 +128,31 @@ export async function withWatchdog<T>(
   parent?: AbortSignal,
 ): Promise<T> {
   parent?.throwIfAborted();
+
   const controller = new AbortController();
   let rejectAbort: (error: Error) => void = () => {};
+
   const cancelled = new Promise<never>((_resolve, reject) => {
     rejectAbort = reject;
   });
+
   const abort = () => {
     controller.abort();
     rejectAbort(new Error(parent?.aborted ? "Approval cancelled" : "Reviewer request timed out"));
   };
+
   const timer = setTimeout(abort, timeoutMs);
+
   parent?.addEventListener("abort", abort, { once: true });
+
   try {
     return await Promise.race([
       Promise.resolve().then(() => {
         controller.signal.throwIfAborted();
+
         return work(controller.signal);
       }),
+
       cancelled,
     ]);
   } finally {
@@ -137,4 +160,6 @@ export async function withWatchdog<T>(
     parent?.removeEventListener("abort", abort);
     controller.abort();
   }
+
 }
+

@@ -25,6 +25,7 @@ async function fixture(directory: string) {
   let release: (() => void) | undefined,
     validations = 0;
   const contexts: any[] = [];
+
   runtime.registerProvider("steering-sdk-fixture", {
     api: "steering-sdk-fixture",
     apiKey: "test-fixture",
@@ -54,6 +55,7 @@ async function fixture(directory: string) {
                 : "MAIN-VALIDATION-COMPLETE",
         },
       ];
+
       if (turn === 2)
         content.push({
           type: "toolCall",
@@ -61,6 +63,7 @@ async function fixture(directory: string) {
           name: "validation_fixture",
           arguments: {},
         });
+
       const message: any = {
         role: "assistant",
         api: model.api,
@@ -78,16 +81,21 @@ async function fixture(directory: string) {
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         },
       };
+
       queueMicrotask(async () => {
         if (turn === 1)
           await new Promise<void>((done) => {
             release = done;
           });
+
         stream.push({ type: "done", reason: message.stopReason, message });
       });
+
       return stream;
     },
+
   });
+
   const settingsManager = SettingsManager.inMemory();
   const resourceLoader = new DefaultResourceLoader({
     cwd: directory,
@@ -100,7 +108,9 @@ async function fixture(directory: string) {
     noPromptTemplates: true,
     extensionFactories: [(pi) => registerSteering(pi, () => undefined)],
   });
+
   await resourceLoader.reload();
+
   const model = new ModelRegistry(runtime).find("steering-sdk-fixture", "working")!;
   const tool = {
     name: "validation_fixture",
@@ -109,8 +119,10 @@ async function fixture(directory: string) {
     parameters: Type.Object({}),
     async execute() {
       validations++;
+
       return { content: [{ type: "text" as const, text: "MAIN-TESTS-PASSED" }], details: {} };
     },
+
   };
   const { session } = await createAgentSession({
     cwd: directory,
@@ -124,6 +136,7 @@ async function fixture(directory: string) {
     noTools: "builtin",
     customTools: [tool],
   });
+
   return { session, contexts, release: () => release?.(), validations: () => validations };
 }
 
@@ -131,33 +144,43 @@ test("normal Pi steering carries its main task through the correction and subseq
   const directory = await mkdtemp(join(tmpdir(), "pi-steering-sdk-"));
   const state = await fixture(directory);
   let main: Promise<void> | undefined;
+
   try {
     await state.session.bindExtensions({
       mode: "tui",
       uiContext: { setStatus() {}, notify() {} } as any,
     });
+
     const original = "Implementiere die Snail-Tests und validiere auch ihre Fehlerpfade.";
     const correction = "Unsere Kommentare sollen auf Deutsch sein.";
+
     main = state.session.prompt(original);
+
     for (let i = 0; i < 1000 && !state.contexts.length; i++)
       await new Promise<void>((done) => setTimeout(done, 1));
+
     expect(state.session.isStreaming).toBe(true);
     await state.session.prompt(correction, { streamingBehavior: "steer" });
     state.release();
     await main;
     expect(state.contexts).toHaveLength(3);
     expect(state.validations()).toBe(1);
+
     for (const messages of state.contexts.slice(1)) {
       const text = JSON.stringify(messages);
+
       expect(text).toContain(original);
       expect(text).toContain(correction);
       expect(text.match(/Finishing a correction alone/g)).toHaveLength(1);
     }
+
     expect(JSON.stringify(state.contexts.at(-1))).toContain("MAIN-TESTS-PASSED");
+
     const branch = state.session.sessionManager.getBranch();
     const users = branch.filter(
       (entry) => entry.type === "message" && entry.message.role === "user",
     );
+
     expect(users).toHaveLength(2);
     expect(
       users.map((entry) =>
@@ -172,7 +195,9 @@ test("normal Pi steering carries its main task through the correction and subseq
   } finally {
     state.release();
     await main?.catch(() => {});
+
     state.session.dispose();
     await rm(directory, { recursive: true, force: true });
   }
+
 }, 10000);

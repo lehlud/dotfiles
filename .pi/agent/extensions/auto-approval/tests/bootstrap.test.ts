@@ -15,26 +15,33 @@ const portable = {
   requestTimeoutMs: 120000,
   sandbox: { backend: "bwrap" },
 };
+
 beforeAll(async () => {
   await mkdir(source, { recursive: true });
   await mkdir(join(source, "../web-research"), { recursive: true });
+
   for (const name of ["index.ts", "execute.ts", "package.json", "bun.lock"])
     await copyFile(
       join(import.meta.dir, "../../web-research", name),
       join(source, "../web-research", name),
     );
+
   await mkdir(join(source, "../public-writing"), { recursive: true });
+
   for (const name of ["index.ts", "rules.ts", "package.json", "bun.lock"])
     await copyFile(
       join(import.meta.dir, "../../public-writing", name),
       join(source, "../public-writing", name),
     );
+
   await cp(join(import.meta.dir, "../../shared"), join(source, "../shared"), {
     recursive: true,
     filter: (path) => !path.includes("node_modules"),
   });
+
   for (const name of ["package.json", "bun.lock", "credential-command.ts", "git-command.ts"])
     await copyFile(join(import.meta.dir, "..", name), join(source, name));
+
   await writeFile(join(source, "runner.ts"), 'console.log("first executor");\n');
   await writeFile(join(agent, "auto-approval.json"), JSON.stringify(portable));
   await writeFile(
@@ -42,6 +49,7 @@ beforeAll(async () => {
     JSON.stringify({ sandbox: { executable: process.execPath } }),
   );
 });
+
 afterAll(async () => {
   await rm(fixture, { recursive: true, force: true });
 });
@@ -49,7 +57,9 @@ afterAll(async () => {
 test("startup installs dependencies, rebuilds missing or changed executors, and preserves a good binary on build failure", async () => {
   await prepareExecutor(source, home, agent);
   expect(Bun.spawnSync([runner]).stdout.toString()).toContain("first executor");
+
   const initial = await stat(runner);
+
   await prepareExecutor(source, home, agent);
   expect((await stat(runner)).ino).toBe(initial.ino);
   expect((await stat(runner)).mtimeMs).toBe(initial.mtimeMs);
@@ -59,7 +69,9 @@ test("startup installs dependencies, rebuilds missing or changed executors, and 
   await rm(runner);
   await prepareExecutor(source, home, agent);
   expect(Bun.spawnSync([runner]).stdout.toString()).toContain("second executor");
+
   const beforeFailure = await readFile(`${runner}.sources.sha256`, "utf8");
+
   await writeFile(join(source, "runner.ts"), 'import "missing-bootstrap-test-dependency";\n');
   await expect(prepareExecutor(source, home, agent)).rejects.toThrow("setup failed");
   expect(await readFile(`${runner}.sources.sha256`, "utf8")).toBe(beforeFailure);
@@ -69,6 +81,7 @@ test("startup installs dependencies, rebuilds missing or changed executors, and 
 test("startup validates custom executors without overwriting them", async () => {
   const custom = join(fixture, "custom-runner");
   const local = join(agent, "auto-approval.device.json");
+
   await writeFile(
     local,
     JSON.stringify({ sandbox: { executable: process.execPath, runnerExecutable: custom } }),
@@ -88,7 +101,9 @@ test("startup rebuilds compiled web code after an extension update", async () =>
     join(agent, "auto-approval.device.json"),
     JSON.stringify({ sandbox: { executable: process.execPath } }),
   );
+
   const web = join(source, "../web-research/execute.ts");
+
   await writeFile(web, 'export const fixture = "first web implementation";\n');
   await writeFile(
     join(source, "runner.ts"),
@@ -104,6 +119,7 @@ test("startup rebuilds compiled web code after an extension update", async () =>
 test("a frozen editorial-rule change rebuilds the native executor", async () => {
   const rules = join(source, "../public-writing/rules.ts");
   const original = await readFile(rules, "utf8");
+
   await writeFile(rules, `${original}\nexport const fixture = "first editorial rules";\n`);
   await writeFile(
     join(source, "runner.ts"),
@@ -128,17 +144,22 @@ test("Docker startup leaves the native executor untouched", async () => {
     join(agent, "auto-approval.device.json"),
     JSON.stringify({ sandbox: { dockerExecutable: "/custom/docker" } }),
   );
+
   const before = await stat(runner);
+
   await prepareExecutor(source, home, agent);
   expect((await stat(runner)).ino).toBe(before.ino);
 });
 
 test("split extensions share pinned dependencies at startup and reject a conflicting installation", async () => {
   const companion = join(source, "../conversations");
+
   await mkdir(companion, { recursive: true });
   await writeFile(join(companion, "index.ts"), "export default () => {};\n");
   await prepareCompanionDependencies(source);
+
   const { realpath } = await import("node:fs/promises");
+
   expect(await realpath(join(companion, "node_modules"))).toBe(
     await realpath(join(source, "node_modules")),
   );
@@ -149,3 +170,4 @@ test("split extensions share pinned dependencies at startup and reject a conflic
     "pinned Auto-Approval SDK dependencies",
   );
 });
+

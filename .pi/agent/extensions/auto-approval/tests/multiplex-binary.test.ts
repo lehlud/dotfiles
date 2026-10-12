@@ -43,6 +43,7 @@ binaryTest(
     const agentDir = join(directory, "agent"),
       project = join(directory, "project"),
       fixture = join(directory, "provider.ts");
+
     await mkdir(agentDir);
     await mkdir(project);
     await writeFile(fixture, source);
@@ -64,6 +65,7 @@ binaryTest(
         },
       }),
     );
+
     const extensions = ["auto-approval", "conversations", "multiplex", "provider-recovery"].flatMap(
       (name) => ["--extension", resolve(import.meta.dir, "../..", name, "index.ts")],
     );
@@ -99,26 +101,37 @@ binaryTest(
     const events: any[] = [];
     const reader = (async () => {
       let pending = "";
+
       for await (const chunk of child.stdout) {
         pending += Buffer.from(chunk).toString();
+
         const lines = pending.split("\n");
+
         pending = lines.pop()!;
+
         for (const line of lines) {
           try {
             events.push(JSON.parse(line));
           } catch {}
+
         }
+
       }
+
     })();
     const errors = new Response(child.stderr).text();
     const until = async (check: () => boolean) => {
       for (let i = 0; i < 1000; i++) {
         if (check()) return;
+
         if (child.exitCode !== null) throw new Error(await errors);
+
         await Bun.sleep(10);
       }
+
       throw new Error(`Binary fixture timed out: ${JSON.stringify(events)}`);
     };
+
     try {
       child.stdin.write(
         JSON.stringify({ id: "team", type: "prompt", message: "/multiplex 2" }) + "\n",
@@ -135,21 +148,27 @@ binaryTest(
       await until(() =>
         events.some((event) => event.type === "tool_execution_end" && /-0$/.test(event.toolCallId)),
       );
+
       const result = events.find(
         (event) => event.type === "tool_execution_end" && /-0$/.test(event.toolCallId),
       ).result;
+
       expect(result.details.self).toMatch(/^[a-z]+$/);
       expect(result.details.members).toHaveLength(2);
+
       const name = result.details.self;
+
       await until(() =>
         events.some(
           (event) => event.type === "tool_execution_end" && event.toolCallId === `${name}-3`,
         ),
       );
+
       const output = (stage: number) =>
         events.find(
           (event) => event.type === "tool_execution_end" && event.toolCallId === `${name}-${stage}`,
         );
+
       expect(output(1).isError).toBe(false);
       expect(output(1).result.details[0].from).toBe(name);
       expect(output(1).result.details[0].to).toBe(
@@ -163,10 +182,12 @@ binaryTest(
             event.type === "message_start" && event.message?.customType === "multiplex-letter",
         ),
       );
+
       const received = events.find(
         (event) =>
           event.type === "message_start" && event.message?.customType === "multiplex-letter",
       ).message;
+
       expect(received.details.from).toBe(
         result.details.members.find((member: string) => member !== name),
       );
@@ -178,7 +199,9 @@ binaryTest(
           (event) => event.type === "tool_execution_start" && event.toolCallId === `${name}-1`,
         ),
       ).toHaveLength(1);
+
       const peerName = result.details.members.find((member: string) => member !== name);
+
       await until(() =>
         events.some(
           (event) =>
@@ -188,11 +211,13 @@ binaryTest(
             event.entry.data?.kind === "message",
         ),
       );
+
       const activity = events
         .filter(
           (event) => event.type === "entry_appended" && event.entry?.customType === ACTIVITY_ENTRY,
         )
         .map((event) => event.entry.data);
+
       expect(new Set(activity.map((record) => record.from))).toEqual(
         new Set(result.details.members),
       );
@@ -214,7 +239,9 @@ binaryTest(
       await errors;
       await rm(directory, { recursive: true, force: true });
     }
+
   },
+
   30000,
 );
 
@@ -247,6 +274,7 @@ binaryTest(
     const agentDir = join(directory, "agent"),
       project = join(directory, "project"),
       fixture = join(directory, "provider.ts");
+
     await mkdir(agentDir);
     await mkdir(project);
     await writeFile(fixture, interruptSource);
@@ -268,6 +296,7 @@ binaryTest(
         },
       }),
     );
+
     const extensions = ["auto-approval", "conversations", "multiplex", "provider-recovery"].flatMap(
       (name) => ["--extension", resolve(import.meta.dir, "../..", name, "index.ts")],
     );
@@ -304,25 +333,36 @@ binaryTest(
       errors = new Response(child.stderr).text();
     const reader = (async () => {
       let pending = "";
+
       for await (const chunk of child.stdout) {
         pending += Buffer.from(chunk).toString();
+
         const lines = pending.split("\n");
+
         pending = lines.pop()!;
+
         for (const line of lines) {
           try {
             events.push(JSON.parse(line));
           } catch {}
+
         }
+
       }
+
     })();
     const until = async (check: () => boolean) => {
       for (let i = 0; i < 1000; i++) {
         if (check()) return;
+
         if (child.exitCode !== null) throw new Error(await errors);
+
         await Bun.sleep(10);
       }
+
       throw new Error("Compiled RPC cancellation fixture timed out");
     };
+
     const phases = (phase: string) =>
       events.filter(
         (event) =>
@@ -330,6 +370,7 @@ binaryTest(
           event.entry?.customType === "interrupt-fixture" &&
           event.entry.data.phase === phase,
       );
+
     try {
       child.stdin.write('{"id":"team","type":"prompt","message":"/multiplex 3"}\n');
       await until(() => events.some((event) => event.id === "team" && event.type === "response"));
@@ -367,6 +408,8 @@ binaryTest(
       await errors;
       await rm(directory, { recursive: true, force: true });
     }
+
   },
+
   30000,
 );

@@ -24,6 +24,7 @@ test("real Pi working streams retry once internally, retain one assistant entry 
     wait: async (ms) => {
       now += ms;
     },
+
   });
   const runtime = await ModelRuntime.create({
     authPath: join(directory, "auth.json"),
@@ -31,6 +32,7 @@ test("real Pi working streams retry once internally, retain one assistant entry 
     modelsStorePath: join(directory, "models-store.json"),
     allowModelNetwork: false,
   });
+
   runtime.registerProvider("availability-sdk", {
     api: "availability-sdk",
     apiKey: "synthetic",
@@ -48,6 +50,7 @@ test("real Pi working streams retry once internally, retain one assistant entry 
     ],
     streamSimple(model) {
       calls++;
+
       const stream = createAssistantMessageEventStream(),
         failed = fail-- > 0;
       const message: any = {
@@ -70,14 +73,20 @@ test("real Pi working streams retry once internally, retain one assistant entry 
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         },
       };
+
       queueMicrotask(() => {
         stream.push({ type: "start", partial: message });
+
         if (failed) stream.push({ type: "error", reason: "error", error: message });
         else stream.push({ type: "done", reason: "stop", message });
+
       });
+
       return stream;
     },
+
   });
+
   const settingsManager = SettingsManager.inMemory({
     retry: { enabled: true, maxRetries: 5, baseDelayMs: 1 },
   });
@@ -92,7 +101,9 @@ test("real Pi working streams retry once internally, retain one assistant entry 
     noPromptTemplates: true,
     extensionFactories: [(pi) => registerProviderRecovery(pi, availability)],
   });
+
   await resourceLoader.reload();
+
   const model = new ModelRegistry(runtime).find("availability-sdk", "working")!;
   const { session } = await createAgentSession({
     cwd: directory,
@@ -105,6 +116,7 @@ test("real Pi working streams retry once internally, retain one assistant entry 
     resourceLoader,
     noTools: "all",
   });
+
   try {
     await session.bindExtensions({
       mode: "tui",
@@ -112,11 +124,13 @@ test("real Pi working streams retry once internally, retain one assistant entry 
     });
     await session.prompt("Synthetic provider recovery check");
     expect(calls).toBe(3);
+
     const messages = session.sessionManager
       .getBranch()
       .filter(
         (entry: any) => entry.type === "message" && entry.message.role === "assistant",
       ) as any[];
+
     expect(messages).toHaveLength(1);
     expect(messages[0].message.content[0].text).toBe("success");
     expect(messages[0].message.usage.totalTokens).toBe(9);
@@ -139,4 +153,5 @@ test("real Pi working streams retry once internally, retain one assistant entry 
     session.dispose();
     await rm(directory, { recursive: true, force: true });
   }
+
 }, 10000);

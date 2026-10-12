@@ -7,6 +7,7 @@ import { requestVerdict } from "../shared/review/client.ts";
 import { REVIEW_SYSTEM } from "./review-policy.ts";
 
 type VerdictArguments = Parameters<typeof requestVerdict>;
+
 /** The shared verdict client receives policy explicitly and cannot authorize an action on its own. */
 export function reviewWithFallback(
   config: VerdictArguments[0],
@@ -31,6 +32,7 @@ export function buildReview(
   prepared?: PreparedPrompts,
 ) {
   checkActionSize(request);
+
   return buildEvidence(entries, config, cwd, {
     action: request,
     protectedPaths,
@@ -39,3 +41,4 @@ export function buildReview(
     prepared,
   });
 }
+

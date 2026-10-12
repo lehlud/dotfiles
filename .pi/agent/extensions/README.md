@@ -92,5 +92,15 @@ Web research and public writing keep their own type checks and tests. The Python
 `unittest` suite. Docker sources and build context are checked statically; an actual Docker build
 requires the operator's container engine and pinned image availability.
 
-Use `bun run format` for the shared TypeScript, JSON and Markdown style. Add behavior tests in the
-appropriate existing suite, and update architecture checks when deliberately adding a dependency.
+Use `bun run format` for the shared TypeScript, JSON and Markdown style. Prettier normalizes
+syntax first; the syntax-aware layout pass then separates setup, effects and exits and inserts a
+blank line after completed control-flow and function bodies, including nested bodies and callbacks.
+Connected `else`, `catch`, `finally` and `do`/`while` clauses stay attached. Leading comments remain
+with their statements; literal prompt text is never rewritten. `bun run check:format` applies the
+same pipeline without writing. Python and shell sources use equivalent logical block spacing.
+A completed body at the end of a file also keeps its trailing blank line. Use
+`git -c core.whitespace=-blank-at-eof diff --check` to allow that deliberate layout while still
+checking trailing spaces and other whitespace errors.
+
+Add behavior tests in the appropriate existing suite, and update architecture checks when
+deliberately adding a dependency.

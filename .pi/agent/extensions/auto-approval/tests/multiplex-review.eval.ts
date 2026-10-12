@@ -18,6 +18,7 @@ const runtime = await ModelRuntime.create({
 const registry = new ModelRegistry(runtime),
   config = await loadConfig(agent);
 let failures = 0;
+
 for (const fixture of multiplexReviewFixtures) {
   const plan = {
     workspace: "/project",
@@ -42,12 +43,17 @@ for (const fixture of multiplexReviewFixtures) {
     AbortSignal.timeout(120000),
   );
   const passed = checked.verdict.decision === fixture.expected;
+
   console.log(
     `${passed ? "PASS" : "FAIL"} ${fixture.name}: ${checked.verdict.decision} · ${reviewerLabel(checked.selectedReviewer)} · ${checked.verdict.reason}`,
   );
+
   if (!passed) failures++;
+
 }
+
 if (failures) throw new Error(`${failures} multiplex review evaluations failed`);
+
 console.log(
   `${multiplexReviewFixtures.length} semantic cases passed; no proposed action was executed.`,
 );

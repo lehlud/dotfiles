@@ -38,7 +38,9 @@ export function buildGoalReview(
           (entry.data as { id?: string })?.id === goalId,
       )
     : 0;
+
   if (start < 0) throw new Error("Original goal entry missing from this branch");
+
   const answers = entries
     .slice(start)
     .filter((entry) => entry.type === "message" && entry.message?.role === "assistant")
@@ -48,6 +50,7 @@ export function buildGoalReview(
   // require both. Never silently truncate a deliverable or exceed the budget.
   const selected = new Map<number, string>();
   let bytes = 0;
+
   for (const index of [
     ...new Set([
       0,
@@ -58,12 +61,17 @@ export function buildGoalReview(
     ]),
   ]) {
     const answer = answers[index];
+
     if (!answer) continue;
+
     const size = Buffer.byteLength(answer);
+
     if (size > 10000 || bytes + size > 25000) continue;
+
     selected.set(index, answer);
     bytes += size;
   }
+
   const checkpoint = entries
     .filter(
       (entry) =>
@@ -79,6 +87,7 @@ export function buildGoalReview(
     omittedAssistantAnswers: answers.length - selected.size,
   };
   const serialized = checkReviewSize(evidence);
+
   return {
     requestId: base.requestId,
     fingerprint: createHash("sha256").update(serialized).digest("hex"),
@@ -117,7 +126,9 @@ export async function verifyGoal(
           )
         )
           pi.appendEntry("auto-approval-prompt-compression", record);
+
       },
+
       failed: (attempt) =>
         pi.appendEntry("auto-approval-compressor-failure", { goalId: current.id, attempt }),
     },
@@ -126,7 +137,9 @@ export async function verifyGoal(
   );
   const envelope = buildGoalReview(current.text, branch, config, ctx.cwd, current.id, prepared);
   const requestId = envelope.requestId;
+
   onPrepared(envelope);
+
   return await requestVerdict(
     config,
     ctx.modelRegistry,
@@ -134,6 +147,7 @@ export async function verifyGoal(
     {
       start: () => display("checking"),
       finish() {},
+
       failed: (attempt) =>
         pi.appendEntry("auto-approval-goal-reviewer-failure", {
           goalId: current.id,
@@ -147,3 +161,4 @@ export async function verifyGoal(
     GOAL_REVIEW_SYSTEM,
   );
 }
+

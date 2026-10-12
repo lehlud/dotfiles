@@ -12,8 +12,11 @@ const split = [
 test("all members must agree one exact split before discovery; waiting members cannot duplicate work", () => {
   const changes: boolean[] = [],
     board = new Coordination(["otter", "maple"], (ready) => changes.push(ready));
+
   expect(() => board.acquire("otter")).toThrow("agree one work split");
+
   const plan = board.propose("otter", split);
+
   expect(plan.accepted).toEqual(["otter"]);
   expect(board.ready).toBe(false);
   expect(() => board.acquire("otter")).toThrow("agree one work split");
@@ -23,14 +26,18 @@ test("all members must agree one exact split before discovery; waiting members c
   board.accept("maple", plan.id!);
   expect(changes).toEqual([false, true]);
   expect(() => board.acquire("maple")).toThrow("waiting");
+
   const lease = board.acquire("otter");
+
   expect(() => board.propose("maple", split)).toThrow("current external actions");
   expect(() => board.withdraw("maple", plan.id!)).toThrow("current external actions");
   lease.release();
   lease.release();
   board.withdraw("maple", plan.id!);
   expect(() => lease.assertCurrent()).toThrow("agree one work split");
+
   const next = board.propose("maple", split);
+
   expect(next.accepted).toEqual(["maple"]);
   board.close();
   expect(() => board.accept("otter", next.id!)).toThrow("inactive");
@@ -38,6 +45,7 @@ test("all members must agree one exact split before discovery; waiting members c
 
 test("ownership rejects duplicate tasks, subtree overlap, missing actors, impersonation and traversal", () => {
   const board = new Coordination(["otter", "maple"]);
+
   expect(() => board.propose("forged", split)).toThrow("unknown");
   expect(() => board.propose("otter", [split[0]])).toThrow("every member");
   expect(() =>
@@ -70,8 +78,11 @@ test("RPC interrupt observes split/coalesced commands, skips large prompts and d
   const input = new PassThrough(),
     original: string[] = [];
   let aborts = 0;
+
   input.on("data", (chunk) => original.push(chunk.toString()));
+
   const detach = watchRpcAbort(input, () => aborts++);
+
   input.write('{"type":"prompt","message":"abort"}\n{"ty');
   input.write('pe":"abort"}\n');
   input.write('{"type":"prompt","message":"' + "x".repeat(8000));
@@ -97,11 +108,15 @@ test("Escape interrupts the team even when its terminal actor is idle and remove
     ui: {
       onTerminalInput(handler: any) {
         listener = handler;
+
         return () => {
           removed = true;
         };
+
       },
+
       notify() {},
+
     },
   };
   const detach = watchInterrupt(
@@ -111,7 +126,9 @@ test("Escape interrupts the team even when its terminal actor is idle and remove
       calls++;
       active = false;
     },
+
   );
+
   expect(listener("ordinary input")).toBeUndefined();
   expect(listener("\x1b")).toEqual({ consume: true });
   await Promise.resolve();
@@ -131,19 +148,24 @@ test("idle goal recovery batches unread mail without repeated wakes, polls or pr
     { name: "jay", sequence: 45 },
     { name: "raven", sequence: 46 },
   ];
+
   scheduler.settle(undefined, 10, unread, wake, check);
   expect(woke).toEqual([]);
   expect(checks).toBe(0);
   scheduler.settle("goal-1", 10, unread, wake, check);
   expect(woke).toEqual(["jay", "raven"]);
   expect(checks).toBe(0);
+
   for (let i = 0; i < 20; i++) scheduler.settle("goal-1", 10, unread, wake, check);
+
   expect(woke).toHaveLength(2);
   expect(checks).toBe(0);
   scheduler.settle("goal-1", 11, [{ name: "jay", sequence: 47 }], wake, check);
   expect(woke).toEqual(["jay", "raven", "jay"]);
   scheduler.settle("goal-1", 11, [], wake, check);
+
   for (let i = 0; i < 20; i++) scheduler.settle("goal-1", 11, [], wake, check);
+
   expect(checks).toBe(1);
   // Reviewed tool progress requires a fresh checkpoint even with no final reply.
   scheduler.settle("goal-1", 12, [], wake, check);
@@ -154,3 +176,4 @@ test("idle goal recovery batches unread mail without repeated wakes, polls or pr
   scheduler.settle("goal-2", 13, [{ name: "jay", sequence: 47 }], wake, check);
   expect(woke).toHaveLength(4);
 });
+

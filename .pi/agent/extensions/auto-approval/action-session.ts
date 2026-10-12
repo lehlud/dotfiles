@@ -15,19 +15,28 @@ export class ActionSession {
 
   enqueue<T>(run: () => Promise<T>): Promise<T> {
     const result = this.queue.then(run, run);
+
     this.queue = result.then(
       () => undefined,
       () => undefined,
     );
+
     return result;
   }
 
   async cleanup() {
     for (const stop of this.displays) stop();
+
     this.displays.clear();
     await this.queue;
+
     const directory = this.temporaryDirectory;
+
     this.temporaryDirectory = undefined;
+
     if (directory) await removeSessionTemporaryDirectory(await directory);
+
   }
+
 }
+

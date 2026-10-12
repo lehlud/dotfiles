@@ -56,14 +56,18 @@ beforeEach(() => {
       setStatus: (key: string, value?: string) => {
         if (value === undefined) statuses.delete(key);
         else statuses.set(key, value);
+
       },
+
       notify: (value: string) => notices.push(value),
     },
     modelRegistry: {
       hasConfiguredAuth: () => true,
       streamSimple(selected: any, context: any, options: any) {
         calls.push({ selected, context: structuredClone(context), options });
+
         if (mode === "throw") throw new Error("private provider token must not be printed");
+
         const activeMode = mode;
         const response: any = {
           role: "assistant",
@@ -75,6 +79,7 @@ beforeEach(() => {
           stopReason: activeMode === "error" ? "error" : "stop",
           usage,
         };
+
         if (activeMode === "tool")
           response.content.push({
             type: "toolCall",
@@ -82,18 +87,23 @@ beforeEach(() => {
             name: "bash",
             arguments: { command: "must not execute" },
           });
+
         return {
           async *[Symbol.asyncIterator]() {
             yield { type: "text_delta", delta: response.content[0].text, partial: response };
+
             if (activeMode === "pending")
               await new Promise<void>((done) => {
                 release = done;
               });
+
             yield { type: "done", message: response };
           },
+
           result: async () => response,
         };
       },
+
     },
   };
 });
@@ -118,6 +128,7 @@ test("snapshot copies resolved prose, goals, summaries and tool arguments as ine
     { type: "custom_message", customType: "policy", content: "hidden instruction" },
   ];
   const snapshot = sideSnapshot(source);
+
   expect(snapshot.text).toContain("Repair parser");
   expect(snapshot.text).toContain("Earlier task summary");
   expect(snapshot.text).toContain("parser.zig");
@@ -137,6 +148,7 @@ test("snapshot preserves original intent and recent output, omitting whole overs
     ],
     250,
   );
+
   expect(result.text).toContain("original task");
   expect(result.text).toContain("最新の結果");
   expect(result.text).not.toContain("xxxxx");
@@ -149,6 +161,7 @@ test("snapshot preserves original intent and recent output, omitting whole overs
 test("questions use the parent context while it is busy, with a separate multi-turn history", async () => {
   const original = structuredClone(branch);
   const side = new SideConversation(ctx, () => changes++);
+
   await side.ask("¿Qué estás revisando?");
   expect(calls[0].context.messages[0].content).toContain("compilador");
   expect(calls[0].context.tools).toBeUndefined();
@@ -169,11 +182,15 @@ test("questions use the parent context while it is busy, with a separate multi-t
 
 test("cancellation stops only the side request and rejects an ignored late response", async () => {
   mode = "pending";
+
   const side = new SideConversation(ctx, () => changes++);
   const pending = side.ask("Question");
+
   await tick();
   expect(side.busy).toBe(true);
+
   const request = calls[0];
+
   side.cancel();
   await pending;
   expect(request.options.signal.aborted).toBe(true);
@@ -189,16 +206,20 @@ test("cancellation stops only the side request and rejects an ignored late respo
 test("tool calls and provider failures cannot execute actions or leak provider errors", async () => {
   for (const failure of ["tool", "error", "throw"] as const) {
     mode = failure;
+
     const side = new SideConversation(ctx, () => {});
+
     await side.ask("Question");
     expect(side.history).toHaveLength(0);
     expect(side.turns[0].error).toContain("failed");
     expect(JSON.stringify(side.turns)).not.toContain("private provider token");
   }
+
 });
 
 test("new side history retains billing and uses new request identities", async () => {
   const side = new SideConversation(ctx, () => {});
+
   await side.ask("First");
   side.reset();
   expect(side.turns).toHaveLength(0);
@@ -211,6 +232,7 @@ test("new side history retains billing and uses new request identities", async (
 
 test("input and history limits fail before a paid request; unsupported models fail closed", async () => {
   const side = new SideConversation(ctx, () => {});
+
   await expect(side.ask(" ")).rejects.toThrow("1–8,000");
   await expect(side.ask("x".repeat(8001))).rejects.toThrow("1–8,000");
   side.history.push({ role: "user", content: "x".repeat(side.maxBytes), timestamp: 0 });
@@ -222,6 +244,7 @@ test("input and history limits fail before a paid request; unsupported models fa
 
 function panel(initial = "") {
   initTheme("dark", false);
+
   const tui: any = { terminal: { rows: 24, columns: 80 }, requestRender() {} };
   let closed = false;
   const view = new SideView(
@@ -232,20 +255,27 @@ function panel(initial = "") {
       closed = true;
       view.dispose();
     },
+
     initial,
   );
+
   return { view, tui, closed: () => closed };
 }
 
 test("side panel renders parent progress and preserves the parent's footer state", async () => {
   const { view, tui } = panel("What is the task?");
+
   await tick();
+
   const rows = view.render(40).map(stripTerminalSequences);
+
   expect(rows.join("\n")).toContain("Main conversation");
   expect(rows.every((row) => visibleWidth(row) <= 40)).toBe(true);
   expect(rows.length).toBeLessThanOrEqual(tui.terminal.rows - 5);
   tui.terminal.rows = 80;
+
   const tall = view.render(80).map(stripTerminalSequences);
+
   expect(tall.length).toBeLessThanOrEqual(64);
   expect(tall.at(-1)).toContain("Escape");
   ctx.isIdle = () => true;
@@ -257,7 +287,9 @@ test("side panel renders parent progress and preserves the parent's footer state
 
 test("Escape cancels the side stream, then returns without interrupting the parent", async () => {
   mode = "pending";
+
   const { view, closed } = panel("Question");
+
   await tick();
   view.handleInput("\x1b");
   await tick();
@@ -273,13 +305,16 @@ test("Escape cancels the side stream, then returns without interrupting the pare
 test("/side is UI-only, cannot nest, and is closed on parent session navigation", async () => {
   const hooks: Record<string, Function> = {};
   let command: any, view: any, finish: (() => void) | undefined;
+
   registerSide({
     on: (name: string, handler: Function) => {
       hooks[name] = handler;
     },
+
     registerCommand: (_name: string, definition: any) => {
       command = definition.handler;
     },
+
   } as any);
   ctx.mode = "json";
   await command("Question", ctx);
@@ -291,7 +326,9 @@ test("/side is UI-only, cannot nest, and is closed on parent session navigation"
       finish = done;
       view = factory({ terminal: { rows: 24, columns: 80 }, requestRender() {} }, theme, {}, done);
     });
+
   const open = command("Question", ctx);
+
   await tick();
   await command("nested", ctx);
   expect(notices.at(-1)).toContain("already");
@@ -302,3 +339,4 @@ test("/side is UI-only, cannot nest, and is closed on parent session navigation"
   expect(branch).toHaveLength(2);
   expect(typeof finish).toBe("function");
 });
+

@@ -74,7 +74,9 @@ export function bwrapArguments(
     "LANG",
     "C.UTF-8",
   ];
+
   if (request?.network === "host") args.push("--share-net");
+
   if (request?.network === "host") {
     for (const path of [
       "/etc/resolv.conf",
@@ -86,25 +88,36 @@ export function bwrapArguments(
       "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
     ])
       args.push("--ro-bind-try", path, path);
+
   }
+
   for (const [key, value] of Object.entries(environment)) args.push("--setenv", key, value);
+
   if (!workspace.bindings.includes(workspace.path))
     args.push("--size", "16777216", "--tmpfs", workspace.path);
+
   for (const path of workspace.bindings)
     args.push(workspace.readOnlyBindings?.includes(path) ? "--ro-bind" : "--bind", path, path);
+
   for (const entry of workspace.masked) {
     if (entry.directory)
       args.push("--perms", "000", "--tmpfs", entry.path, "--remount-ro", entry.path);
     else args.push("--ro-bind", "/dev/null", entry.path);
+
   }
+
   args.push(...localToolArguments(workspace, true));
   args.push(...webRuntimeArguments(workspace, true));
+
   if (workspace.credentialExecutable)
     args.push("--ro-bind", workspace.credentialExecutable, "/opt/pi-credential/tool");
+
   for (const { source, target } of workspace.gitSnapshots ?? [])
     args.push("--ro-bind", source, target);
+
   // Projected parent directories are ephemeral and read-only. Only mounts persist.
   if (!workspace.bindings.includes(workspace.path)) args.push("--remount-ro", workspace.path);
+
   args.push(
     "--chdir",
     workspace.cwd,
@@ -118,5 +131,7 @@ export function bwrapArguments(
       : []),
     "/executor/runner",
   );
+
   return args;
 }
+

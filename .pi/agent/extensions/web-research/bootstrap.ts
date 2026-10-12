@@ -10,24 +10,34 @@ const digest = createHash("sha256")
   .digest("hex");
 const stamp = join(directory, "node_modules/.web-research-dependencies");
 let previous = "";
+
 try {
   previous = await readFile(stamp, "utf8");
 } catch (error) {
   if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+
 }
+
 if (previous !== digest) {
   const result = Bun.spawnSync(
     [process.execPath, "install", "--frozen-lockfile", "--ignore-scripts"],
     { cwd: directory, stdout: "inherit", stderr: "inherit" },
   );
+
   if (result.exitCode) throw new Error("Web-research extension dependencies unavailable");
+
   await writeFile(stamp, digest);
 }
+
 await access(join(directory, "worker.py"));
+
 if (process.platform === "linux") {
   const setup = Bun.spawnSync(["/usr/bin/python3", join(directory, "setup.py")], {
     stdout: "inherit",
     stderr: "inherit",
   });
+
   if (setup.exitCode) throw new Error("Web-research Python setup failed; startup blocked");
+
 }
+

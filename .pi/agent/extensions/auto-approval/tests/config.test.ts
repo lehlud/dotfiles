@@ -26,34 +26,42 @@ const portable: PortableConfig = {
 };
 let directory: string;
 let bin: string;
+
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), "pi-config-test-"));
   bin = join(directory, "bin");
   await mkdir(bin);
+
   for (const name of ["bwrap", "docker"])
     await writeFile(join(bin, name), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
   await writeFile(join(directory, "auto-approval.json"), JSON.stringify(portable));
 });
+
 afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
 test("same portable config resolves against each device home without adding workspace grants", async () => {
   const snapshot = JSON.stringify(portable);
+
   for (const home of [join(directory, "device-one"), join(directory, "device-two")]) {
     const config = await resolveConfig(portable, {}, { home, searchPath: bin });
+
     expect(config.sandbox).toEqual({
       backend: "bwrap",
       executable: await realpath(join(bin, "bwrap")),
       runnerExecutable: join(home, ".local/cache/pi-auto-approval/executor"),
     });
   }
+
   expect(JSON.stringify(portable)).toBe(snapshot);
 });
 
 test("normal project configuration loads without a local file or persistent changes", async () => {
   const before = await readFile(join(directory, "auto-approval.json"), "utf8");
   const config = await loadConfig(directory, { home: directory, searchPath: bin });
+
   expect(config.reviewers[0].model).toBe("gpt-6-luna");
   expect(await readFile(join(directory, "auto-approval.json"), "utf8")).toBe(before);
   expect((await readdir(directory)).sort()).toEqual(["auto-approval.json", "bin"]);
@@ -66,8 +74,11 @@ test("local paths and restricted views merge without changing shared settings an
     runnerExecutable: "/custom/runner",
     workspaceViews: [{ root: directory, paths: [join(directory, "public-file")] }],
   };
+
   await writeFile(localPath, JSON.stringify({ sandbox }));
+
   const config = await loadConfig(directory, { searchPath: "" });
+
   expect(config.sandbox).toEqual({ backend: "bwrap", ...sandbox });
   expect(config.reviewers[0].model).toBe(portable.reviewers[0].model);
   await writeFile(
@@ -84,6 +95,7 @@ test("local paths and restricted views merge without changing shared settings an
 
 test("malformed local files and filesystem errors fail closed instead of dropping restrictions", async () => {
   const localPath = join(directory, "auto-approval.device.json");
+
   for (const contents of [
     "not-json",
     '{"sandbox":{"workspaceViews":"invalid"}}',
@@ -92,6 +104,7 @@ test("malformed local files and filesystem errors fail closed instead of droppin
     await writeFile(localPath, contents);
     await expect(loadConfig(directory, { searchPath: bin })).rejects.toThrow();
   }
+
   await rm(localPath);
   await mkdir(localPath);
   await expect(loadConfig(directory, { searchPath: bin })).rejects.toThrow();
@@ -102,6 +115,7 @@ test("malformed local files and filesystem errors fail closed instead of droppin
 
 test("local schema accepts only absolute device paths and views, never reviewer or gate overrides", () => {
   expect(parseLocalConfig("{}")).toEqual({});
+
   for (const invalid of [
     { model: "other" },
     { enabled: false },
@@ -114,6 +128,7 @@ test("local schema accepts only absolute device paths and views, never reviewer 
   ]) {
     expect(() => parseLocalConfig(JSON.stringify(invalid))).toThrow();
   }
+
 });
 
 test("previous filename preserves restrictions until the device configuration is renamed", async () => {
@@ -125,6 +140,7 @@ test("previous filename preserves restrictions until the device configuration is
       workspaceViews: [{ root: directory, paths: [join(directory, "public-file")] }],
     },
   };
+
   await writeFile(legacyPath, JSON.stringify(local));
   expect((await loadConfig(directory, { searchPath: "" })).sandbox).toEqual({
     backend: "bwrap",
@@ -146,6 +162,7 @@ test("Docker resolves its program on each device and requires the shared immutab
       sandbox: { backend: "docker", image: `sha256:${"a".repeat(64)}` },
     }),
   );
+
   expect((await resolveConfig(docker, {}, { searchPath: bin })).sandbox).toEqual({
     backend: "docker",
     image: `sha256:${"a".repeat(64)}`,
@@ -184,6 +201,7 @@ test("native readiness rejects missing, non-executable and directory executors b
     { sandbox: { runnerExecutable: runner } },
     { searchPath: bin },
   );
+
   await expect(assertSandboxReady(config)).rejects.toThrow(
     `Sandbox executable unavailable: ${runner}`,
   );
@@ -206,6 +224,7 @@ test("credential profiles are device-owned, reloadable, uniquely named and absen
     allowedArgv: [[{ literal: "inspect" }]],
     secrets: { SERVICE_TOKEN: { type: "environment" as const, name: "SERVICE_TOKEN" } },
   };
+
   await writeFile(
     join(directory, "auto-approval.device.json"),
     JSON.stringify({ credentialProfiles: [profile] }),
@@ -220,3 +239,4 @@ test("credential profiles are device-owned, reloadable, uniquely named and absen
   );
   await expect(loadConfig(directory, { searchPath: bin })).rejects.toThrow("must be unique");
 });
+

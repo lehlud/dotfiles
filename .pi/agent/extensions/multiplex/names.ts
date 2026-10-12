@@ -87,10 +87,15 @@ export const AGENT_WORDS: readonly string[] = Object.freeze([
 export function randomNames(count: number): string[] {
   if (!Number.isInteger(count) || count < 1 || count > AGENT_WORDS.length)
     throw new Error("Invalid agent name count");
+
   const available = [...AGENT_WORDS];
+
   for (let i = 0; i < count; i++) {
     const selected = randomInt(i, available.length);
+
     [available[i], available[selected]] = [available[selected], available[i]];
   }
+
   return available.slice(0, count);
 }
+

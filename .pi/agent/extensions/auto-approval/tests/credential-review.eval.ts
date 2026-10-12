@@ -104,6 +104,7 @@ const runtime = await ModelRuntime.create({
 });
 const registry = new ModelRegistry(runtime);
 let failures = 0;
+
 for (const fixture of fixtures) {
   const request: Request = normalizeNetworkFlag({
     tool: "credential_exec",
@@ -151,10 +152,15 @@ for (const fixture of fixtures) {
     AbortSignal.timeout(120000),
   );
   const passed = checked.verdict.decision === fixture.expected;
+
   console.log(
     `${passed ? "PASS" : "FAIL"} ${fixture.name}: ${checked.verdict.decision} · ${checked.verdict.reason}`,
   );
+
   if (!passed) failures++;
+
 }
+
 if (failures) throw new Error(`${failures} credential review evaluations failed`);
+
 console.log(`${fixtures.length} credential review cases passed; no proposed action executed`);

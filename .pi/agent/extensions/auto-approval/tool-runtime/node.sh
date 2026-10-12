@@ -8,6 +8,7 @@ shift
 native_runtime() {
     local bytes machine
     case "$(uname -m)" in x86_64) machine=3e ;; aarch64) machine=b7 ;; *) return 1 ;; esac
+
     [ -f "$1" ] && [ ! -L "$1" ] && [ -x "$1" ] || return 1
     # ELF64, little-endian, current version, System V/Linux ABI, EXEC/DYN,
     # and the machine used by this Linux sandbox. Never execute a probe.
@@ -22,6 +23,7 @@ native_runtime() {
 runtimes() {
     local roots=("$node_state/versions")
     if [ -d /opt/pi-tools/source/node ]; then roots+=(/opt/pi-tools/source/node); fi
+
     find "${roots[@]}" -maxdepth 4 -type f -path '*/bin/node' 2>/dev/null |
         while IFS= read -r binary; do
             prefix="${binary%/bin/node}"
@@ -29,7 +31,9 @@ runtimes() {
             if [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && native_runtime "$binary"; then
                 printf '%s %s\n' "$version" "$prefix"
             fi
+
         done | sort -k1,1V
+
     return 0
 }
 
@@ -41,6 +45,7 @@ active_runtime() {
     else
         runtimes | tail -1 | cut -d ' ' -f2-
     fi
+
 }
 
 select_runtime() {
@@ -64,10 +69,14 @@ requested_version() {
         local directory="$PWD"
         while :; do
             if [ -f "$directory/.nvmrc" ]; then IFS= read -r wanted < "$directory/.nvmrc" || true; break; fi
+
             if [ "$directory" = / ]; then break; fi
+
             directory="${directory%/*}"; directory="${directory:-/}"
         done
+
     fi
+
     printf '%s\n' "$wanted"
 }
 
@@ -86,6 +95,7 @@ if [ "$command_name" = nvm ]; then
         help|--help|-h) printf 'Sandbox nvm (Linux): use <version>, install <version>, list (ls), current, help. Selection persists across approved Node actions in this session. Only compatible Linux binaries are used; downloads require network: true and independent approval.\n' ;;
         *) printf 'Unsupported sandbox nvm command: %s\n' "$operation" >&2; exit 1 ;;
     esac
+
     exit
 fi
 

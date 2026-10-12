@@ -10,12 +10,16 @@ export class BoundedOutput {
 
   append(chunk: Buffer) {
     if (this.bytes + chunk.length > this.limit) throw new Error("Executor output limit exceeded");
+
     this.bytes += chunk.length;
     this.text += this.decoder.write(chunk);
   }
 
   finish(): string {
     this.text += this.decoder.end();
+
     return this.text;
   }
+
 }
+

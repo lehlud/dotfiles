@@ -14,6 +14,7 @@ export function describeSandbox(
 ) {
   const name = request.tool;
   const credential = name === "credential_exec";
+
   return {
     workspace: workspace.path,
     bindings: workspace.bindings,
@@ -52,3 +53,4 @@ export function describeSandbox(
     backend: config.sandbox.backend ?? "docker",
   };
 }
+

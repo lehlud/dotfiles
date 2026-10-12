@@ -6,6 +6,7 @@ export const isWebTool = (name: string) => name === "websearch" || name === "web
 const unavailable = async (): Promise<never> => {
   throw new Error("Web operations require the isolated approval executor");
 };
+
 const definitions: Record<"websearch" | "webfetch", ToolDefinition<any, any>> = {
   websearch: {
     name: "websearch",
@@ -41,6 +42,7 @@ const definitions: Record<"websearch" | "webfetch", ToolDefinition<any, any>> = 
     execute: unavailable,
   },
 };
+
 function rendered(name: "websearch" | "webfetch"): ToolDefinition<any, any> {
   return {
     ...definitions[name],
@@ -51,6 +53,7 @@ function rendered(name: "websearch" | "webfetch"): ToolDefinition<any, any> {
         0,
       );
     },
+
     renderResult(result, options, theme, context) {
       const text = result.content
         .filter((item) => item.type === "text")
@@ -64,14 +67,17 @@ function rendered(name: "websearch" | "webfetch"): ToolDefinition<any, any> {
       const continuation = result.details?.hasMore
         ? `\n[More page text: offset ${result.details.nextOffset}]`
         : "";
+
       return new Text(
         theme.fg(context.isError ? "error" : "toolOutput", visible + continuation),
         0,
         0,
       );
     },
+
   };
 }
+
 export const webTools = { websearch: rendered("websearch"), webfetch: rendered("webfetch") };
 
 export default function webResearch(pi: ExtensionAPI) {
@@ -84,3 +90,4 @@ export default function webResearch(pi: ExtensionAPI) {
     },
   }));
 }
+
