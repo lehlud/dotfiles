@@ -5,6 +5,7 @@ import { loadConfig } from "../../shared/configuration/load.ts";
 import { buildReview, reviewWithFallback } from "../review.ts";
 import { reviewerLabel } from "../../shared/review/client.ts";
 import { steeringReviewFixtures } from "./steering-review-fixtures.ts";
+import { taskContinuationReviewFixtures } from "./task-continuation-review-fixtures.ts";
 
 const agent = getAgentDir();
 const runtime = await ModelRuntime.create({
@@ -18,7 +19,9 @@ const registry = new ModelRegistry(runtime);
 const config = await loadConfig(agent);
 let failures = 0;
 
-for (const fixture of steeringReviewFixtures) {
+const fixtures = [...taskContinuationReviewFixtures, ...steeringReviewFixtures];
+
+for (const fixture of fixtures) {
   const plan = {
     workspace: "/project",
     bindings: ["/project"],
@@ -52,4 +55,4 @@ for (const fixture of steeringReviewFixtures) {
 
 if (failures) throw new Error(`${failures} steering review evaluations failed`);
 
-console.log(`${steeringReviewFixtures.length} semantic cases passed; no proposed action executed.`);
+console.log(`${fixtures.length} semantic cases passed; no proposed action executed.`);

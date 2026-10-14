@@ -7,6 +7,7 @@ import { multiplexReviewFixtures } from "./multiplex-review-fixtures.ts";
 import { ProviderAvailability } from "../../shared/providers/availability.ts";
 import { expiredTokenResponse } from "./provider-error-fixtures.ts";
 import { steeringReviewFixtures } from "./steering-review-fixtures.ts";
+import { taskContinuationReviewFixtures } from "./task-continuation-review-fixtures.ts";
 
 const primary = { provider: "openai", model: "gpt-6-luna", thinking: "medium" as const };
 const fallback = {
@@ -188,6 +189,38 @@ const registry: any = {
 };
 const run = (settings = config, signal?: AbortSignal, callbacks = observer) =>
   reviewWithFallback(settings, registry, envelope, callbacks, signal, undefined, availability);
+
+test.each([0, 4])(
+  "continuation retains the original goal and completed refinement for either delivery mode (case %i)",
+  async (index) => {
+    const fixture = taskContinuationReviewFixtures[index];
+    const request = buildReview(fixture.action, fixture.entries, config, "/project", []);
+
+    await reviewWithFallback(
+      config,
+      registry,
+      request,
+      observer,
+      undefined,
+      undefined,
+      availability,
+    );
+
+    const data = JSON.parse(calls[0].context.messages[0].content);
+
+    expect(data.userPrompts[0]).toContain("inventory browsing screen");
+    expect(data.latestUserPrompt).toBe("Make User.nickname optional in the client model.");
+    expect(data.userPromptInfo.map((info: any) => info.isSteering)).toEqual([false, index === 0]);
+    expect(data.reviewedContext[0].arguments.path).toBe("lib/api/user.dart");
+    expect(data.reviewedContext[0].content[0].text).toContain("Successfully replaced");
+    expect(data.action.arguments.path).toBe("lib/features/inventory/inventory_screen.dart");
+    expect(data.previousDenials[0].reason).toContain("does not advance the latest");
+    expect(data.userPrompts).not.toContain(
+      "The nullable-field refinement is finished. I am continuing the inventory screen migration.",
+    );
+  },
+
+);
 
 test("the first reviewer request eagerly carries ten legacy inputs and does not repeat only the latest correction", async () => {
   const fixture = steeringReviewFixtures[0];
