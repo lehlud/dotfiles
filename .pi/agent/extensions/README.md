@@ -55,7 +55,10 @@ storage. `ActionRun` preserves this sequence:
 `prepare-action.ts` performs preflight. `sandbox-plan.ts` describes the reviewed scope without
 resolving credentials. `review-display.ts` owns review callbacks and presentation. `sandbox/` separates
 workspace discovery and grants, inode boundary checks, temporary mount scaffolding, pure backend
-argument builders and process execution. The small `isolation.ts` facade keeps test doubles and
+argument builders and process execution. Local applications execute original read-only
+`~/.local/bin` entry points and necessary public helpers; Pi never copies those launchers or
+implements their application behavior. Caches/state remain private, and application-owned sandbox
+modes prepare platform runtimes where needed. The small `isolation.ts` facade keeps test doubles and
 callers on one stable interface.
 
 ## State and lifecycle

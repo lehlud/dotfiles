@@ -179,11 +179,12 @@ export async function resolveLocalTools(
       continue;
     }
 
-    const launcher = join(home, ".local/bin", name);
+    const commandDirectory = join(home, ".local/bin");
+    const launcher = join(commandDirectory, name);
 
     await regularExecutable(launcher);
 
-    const sources = [{ source: launcher, target: `/opt/pi-tools/source/${name}/launcher` }];
+    const sources = [{ source: launcher, target: launcher }];
     const cache = join(home, ".local/cache", name);
 
     if (await existing(cache))
@@ -193,7 +194,12 @@ export async function resolveLocalTools(
 
     if (await existing(helper)) await regularExecutable(helper, false);
 
-    tools.push({ name, sources, ...((await existing(helper)) ? { helper } : {}) });
+    tools.push({
+      name,
+      commandDirectory,
+      sources,
+      ...((await existing(helper)) ? { helper } : {}),
+    });
   }
 
   return tools;

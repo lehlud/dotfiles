@@ -214,7 +214,30 @@ can run offline once their dependencies and artifacts are cached. Package downlo
 and SDK updates need another reviewed `network: true` action. Android and Linux desktop builds
 also need their platform toolchains in the container; this core integration does not provision them.
 
-Other regular executable launchers from `~/.local/bin` can be requested by name, such as `sandbox.tools: ["sqlmap"]`. The launcher and its public `~/.local/cache/<name>` cache are mounted read-only. The sandbox creates a private copy with its own home and copies the existing `auto-update-app.bash` helper. Updates affect only this copy, never the host installation. Downloads require separately approved networking; an existing cache works offline. Standalone executables need no update helper. Tools requiring other private files, services or runtimes need further integration. The current WPScan launcher requires external container-engine access and is unsupported.
+### Original launchers for every local application
+
+Other regular executable launchers from `~/.local/bin` can be requested by name, such as
+`sandbox.tools: ["sqlmap"]` or `["bat"]`. Pi mounts the selected original launcher read-only at
+its real path and forwards PATH calls to that executable. It never copies launcher code into Pi
+or replaces it with an application implementation. The original `auto-update-app.bash` helper is
+also mounted read-only when installed. HOME compatibility links point to those exact files;
+these links live only in the current action's private HOME.
+
+Public `~/.local/cache/<name>` code is mounted read-only and seeds a private cache copy. Standard cache,
+XDG configuration and `.local/share` application data survive in session-private storage; installation updates
+modify only that state. Changes made by the operator to the original launcher/helper are picked
+up on the next approved action without reusing stale code copies. An existing cache works offline;
+all downloads still need separately approved networking. Tool access and its PATH entries expire
+when the action ends. Other files created directly in action HOME are temporary; applications
+that need additional persistent directories declare them in their own sandbox runtime. Standalone executables require neither a cache nor an update helper.
+
+This is the integration rule for additional local applications: use the original read-only
+entry point, declare only its necessary public dependencies, and keep mutable state private.
+Application-specific sandbox behavior belongs to that application's runtime, as with Flutter;
+Pi owns access, review and process isolation. The Node bundle supplies native installed runtime
+executables and an nvm adapter; this setup's nvm is a Fish function, not a `~/.local/bin` launcher.
+Tools needing additional private files, services or runtimes require further integration.
+The current WPScan launcher needs external engine access and remains unsupported.
 
 To assess existing code, reviewers receive text results of previously approved actions from the same session branch: reads, file searches and shell output from commands such as `cat`, `sed`, `git diff` or tests. Tool results must match their approval record, request ID and fingerprint. Contents and output are evidence, never user instructions. At most eight recent results are included. Results exceeding the context budget are omitted in full and explicitly identified.
 

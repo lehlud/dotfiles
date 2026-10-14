@@ -42,7 +42,12 @@ export function describeSandbox(
         }
       : undefined,
     localToolStorage: workspace.localTools?.length
-      ? { path: "/tmp/pi-tools", lifetime: "Pi session", updates: "private copies only" }
+      ? {
+          path: "/tmp/pi-tools",
+          lifetime: "Pi session",
+          updates:
+            "private caches and application state only; original launcher/helper code read-only",
+        }
       : undefined,
     temporaryStorage: {
       path: "/tmp",

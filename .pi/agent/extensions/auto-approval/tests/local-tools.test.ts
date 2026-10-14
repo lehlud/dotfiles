@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { nativeLinuxNode, resolveLocalTools } from "../local-tools.ts";
 import { executeIsolated, validateWorkspace, type SandboxConfig } from "../isolation.ts";
+import { dockerArguments } from "../sandbox/docker.ts";
 
 const fixture = await mkdtemp(join(tmpdir(), "pi-local-tools-test-"));
 const home = join(fixture, "fake-home");
@@ -45,7 +46,21 @@ beforeAll(async () => {
   await writeFile(join(cache, "marker"), "host-seed");
   await writeFile(
     launcher,
-    '#!/bin/bash\nsource "$HOME/.local/bin/auto-update-app.bash"\nsample_helper\ncat "$HOME/.local/cache/sampleapp/marker"\nprintf private-update > "$HOME/.local/cache/sampleapp/marker"\n',
+    `#!/bin/bash
+set -eu
+printf 'launcher:%s\\n' "\${BASH_SOURCE[0]}"
+source "$HOME/.local/bin/auto-update-app.bash"
+sample_helper
+
+cat "$HOME/.local/cache/sampleapp/marker"
+printf private-update > "$HOME/.local/cache/sampleapp/marker"
+if [ -f "$XDG_CONFIG_HOME/setting" ]; then
+  cat "$XDG_CONFIG_HOME/setting"
+fi
+
+printf private-config > "$XDG_CONFIG_HOME/setting"
+printf private-data > "$XDG_DATA_HOME/setting"
+`,
     { mode: 0o755 },
   );
 
@@ -128,10 +143,42 @@ test("shared macOS versions, guarded launchers and wrong CPU binaries never ente
 
 });
 
+test("Docker combines original launcher grants and shared helpers without duplicate mount destinations", async () => {
+  await copyFile("/usr/bin/echo", join(home, ".local/bin/secondapp"));
+
+  const tools = await resolveLocalTools(["sampleapp", "secondapp"], home);
+  const paths = tools.flatMap((tool) => tool.sources.map(({ source }) => source));
+  const args = dockerArguments(
+    {
+      path: project,
+      cwd: project,
+      bindings: [project, ...paths],
+      readOnlyBindings: paths,
+      masked: [],
+      localTools: tools,
+    },
+    { backend: "docker", dockerExecutable: "/docker", image: `sha256:${"a".repeat(64)}` },
+    "fixture",
+    undefined,
+    {},
+  );
+  const destinations = args.flatMap((argument, index) =>
+    argument === "--mount"
+      ? [args[index + 1].split(",").find((field) => field.startsWith("dst="))!]
+      : [],
+  );
+
+  expect(destinations).toHaveLength(new Set(destinations).size);
+  expect(destinations).toContain(`dst=${launcher}`);
+  expect(destinations).toContain(`dst=${helper}`);
+});
+
 test("generic tools include only their launcher/cache and a readable sourced updater", async () => {
   const [tool] = await resolveLocalTools(["sampleapp"], home);
 
   expect(tool.sources.map((entry) => entry.source)).toEqual([launcher, cache]);
+  expect(tool.sources[0].target).toBe(launcher);
+  expect(tool.commandDirectory).toBe(join(home, ".local/bin"));
   expect(tool.helper).toBe(helper);
   await expect(resolveLocalTools(["../sampleapp"], home)).rejects.toThrow(
     "Invalid local tool name",
@@ -152,14 +199,13 @@ test("generic tools include only their launcher/cache and a readable sourced upd
 
 });
 
-const run = async (command: string, enabled = true) => {
-  const tools = enabled ? await resolveLocalTools(["sampleapp"], home) : [];
-  const paths = tools.flatMap((tool) => [
-    ...tool.sources.map(({ source: path }) => ({ path, access: "read" as const })),
-    ...(tool.helper ? [{ path: tool.helper, access: "read" as const }] : []),
-  ]);
+const run = async (command: string, enabled = true, toolHome = home, name = "sampleapp") => {
+  const tools = enabled ? await resolveLocalTools([name], toolHome) : [];
+  const paths = tools.flatMap((tool) =>
+    tool.sources.map(({ source: path }) => ({ path, access: "read" as const })),
+  );
   const scope = paths.length ? { paths } : undefined;
-  const workspace = await validateWorkspace(project, native, [], scope, storage);
+  const workspace = await validateWorkspace(project, native, [helper], scope, storage);
 
   workspace.localTools = tools;
 
@@ -177,13 +223,30 @@ const run = async (command: string, enabled = true) => {
 };
 
 nativeTest(
-  "updates persist in private copies while installed code stays read-only and PATH grants expire",
+  "original launchers stay read-only while private state persists and PATH grants expire",
   async () => {
-    const first = await run(`sampleapp; test ! -w '${launcher}'; test ! -w '${cache}/marker'`);
+    const first = await run(
+      `sampleapp; test ! -w '${launcher}'; test ! -w '${helper}'; test ! -w '${cache}/marker'`,
+    );
 
     expect(first.isError).not.toBe(true);
     expect(JSON.stringify(first.content)).toContain("host-seed");
-    expect(JSON.stringify((await run("sampleapp")).content)).toContain("private-update");
+    expect(JSON.stringify(first.content)).toContain(`launcher:${launcher}`);
+
+    const original = await readFile(launcher, "utf8");
+
+    await writeFile(
+      launcher,
+      original.replace("sample_helper\n", "sample_helper\nprintf launcher-updated\n"),
+    );
+    await writeFile(helper, "sample_helper() { printf helper-updated; }\n");
+
+    const later = JSON.stringify((await run("sampleapp")).content);
+
+    expect(later).toContain("private-update");
+    expect(later).toContain("private-config");
+    expect(later).toContain("launcher-updated");
+    expect(later).toContain("helper-updated");
     expect(await readFile(join(cache, "marker"), "utf8")).toBe("host-seed");
     expect(
       JSON.stringify((await run("! command -v sampleapp && printf expired", false)).content),
@@ -192,32 +255,67 @@ nativeTest(
 
 );
 
-nativeTest("tool bootstrap cannot follow planted launcher or storage symlinks", async () => {
-  const victim = join(project, "victim");
+nativeTest(
+  "standalone executables need no helper or cache and preserve spaced paths and argv",
+  async () => {
+    const standalone = join(fixture, "standalone home");
+    const directory = join(standalone, ".local/bin");
 
-  await writeFile(victim, "unchanged");
+    await mkdir(directory, { recursive: true });
+    await copyFile("/usr/bin/echo", join(directory, "nativeecho"));
 
-  const copy = join(storage, "pi-tools/sampleapp/home/.local/bin/sampleapp");
+    const result = await run("nativeecho 'argument with spaces'", true, standalone, "nativeecho");
 
-  await run("sampleapp");
-  await rm(copy);
-  await symlink(victim, copy);
-  expect((await run("sampleapp")).isError).not.toBe(true);
-  expect(await readFile(victim, "utf8")).toBe("unchanged");
+    expect(result.isError).not.toBe(true);
+    expect(JSON.stringify(result.content)).toContain("argument with spaces");
+  },
 
-  const bin = join(storage, "pi-tools/sampleapp/home/.local/bin");
+);
 
-  await rm(bin, { recursive: true });
-  await symlink(project, bin);
+nativeTest(
+  "an older loaded interface fails clearly without starting the requested program",
+  async () => {
+    const result = await run(
+      "/bin/bash /opt/pi-tools/runtime/bootstrap.sh sampleapp -- /usr/bin/touch legacy-started",
+    );
 
-  try {
-    await expect(run("sampleapp")).rejects.toThrow("not a regular directory");
-  } finally {
-    await rm(bin);
-  }
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("reload or restart Pi");
+    await expect(access(join(project, "legacy-started"))).rejects.toThrow();
+  },
 
-  await access(victim);
-});
+);
+
+nativeTest(
+  "stale launcher copies are ignored and storage directory symlinks are rejected",
+  async () => {
+    const victim = join(project, "victim");
+
+    await writeFile(victim, "unchanged");
+
+    const copy = join(storage, "pi-tools/sampleapp/home/.local/bin/sampleapp");
+
+    await run("sampleapp");
+    await mkdir(join(copy, ".."), { recursive: true });
+    await symlink(victim, copy);
+    expect((await run("sampleapp")).isError).not.toBe(true);
+    expect(await readFile(victim, "utf8")).toBe("unchanged");
+
+    const bin = join(storage, "pi-tools/sampleapp/home/.local/cache");
+
+    await rm(bin, { recursive: true });
+    await symlink(project, bin);
+
+    try {
+      await expect(run("sampleapp")).rejects.toThrow("not a regular directory");
+    } finally {
+      await rm(bin);
+    }
+
+    await access(victim);
+  },
+
+);
 
 nativeTest("Node installations cannot be combined with overlapping writable grants", async () => {
   const sources = (await resolveLocalTools(["node"]))[0].sources;
