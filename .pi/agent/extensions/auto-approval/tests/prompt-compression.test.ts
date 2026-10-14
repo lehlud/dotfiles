@@ -139,6 +139,7 @@ test("recorded task frames keep compressed anchors and old restrictions beyond t
     "steering",
     "steering",
   ]);
+  expect(data.userPromptInfo.map((record: any) => record.isSteering)).toEqual([false, true, true]);
   expect(envelope.promptSources?.get(prepared.records[0].promptId)).toBe(original);
   expect(data.userPrompts[1]).toContain("Do not upload source");
   expect(data.latestUserPrompt).toBe(prompts[2]);
@@ -461,6 +462,78 @@ test("approval without original inspection and arbitrary reviewer tools fail wit
   await expect(
     reviewWithFallback(config, hostile, envelope, { start() {}, finish() {}, failed() {} }),
   ).rejects.toThrow("no fallback");
+});
+
+test("ten compressed prompts are eager and all ten originals can be checked before approval", async () => {
+  const entries = Array.from(
+    { length: 10 },
+    (_, index) => branch(`Actual operator prompt ${index}. ${original}`)[0],
+  );
+  const prepared = await preparePromptContext(entries, config, registry, join(root, "ten-prompts"));
+  const envelope = buildReview(
+    proposed,
+    entries,
+    config,
+    "/project",
+    [],
+    undefined,
+    undefined,
+    prepared,
+  );
+  const contexts: any[] = [];
+  const gate: any = {
+    ...registry,
+    streamSimple(_model: any, context: any) {
+      contexts.push(context);
+
+      const content =
+        contexts.length === 1
+          ? prepared.records.map((record, index) => ({
+              type: "toolCall",
+              id: `original-${index}`,
+              name: "prompt_original",
+              arguments: { promptId: record.promptId, operation: "head", limit: 200 },
+            }))
+          : [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  requestId: envelope.requestId,
+                  decision: "approve",
+                  reason: "The bounded source read supports the requested review.",
+                }),
+              },
+            ];
+
+      return {
+        result: async () => ({
+          role: "assistant",
+          stopReason: contexts.length === 1 ? "toolUse" : "stop",
+          usage,
+          content,
+        }),
+      };
+    },
+
+  };
+
+  const result = await reviewWithFallback(config, gate, envelope, {
+    start() {},
+
+    finish() {},
+
+    failed() {},
+
+  });
+  const eager = JSON.parse(contexts[0].messages[0].content);
+
+  expect(eager.userPrompts).toHaveLength(10);
+  expect(eager.userPrompts).toEqual(prepared.records.map((record) => record.text));
+  expect(eager.userPromptInfo.every((info: any) => info.compressed)).toBe(true);
+  expect(contexts[0].messages).toHaveLength(1);
+  expect(contexts).toHaveLength(2);
+  expect(result.verdict.decision).toBe("approve");
+  expect(result.promptLookups).toHaveLength(10);
 });
 
 test("private cache cannot follow planted symlinks outside protected agent storage", async () => {

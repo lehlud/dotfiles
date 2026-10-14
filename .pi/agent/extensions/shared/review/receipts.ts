@@ -1,18 +1,20 @@
 import type { ActionAudit, Entry, ReviewedEvidence } from "./entries.ts";
+import { operatorPromptRecords } from "./prompts.ts";
 
 /** Only verdict audits are review evidence; a local coordination failure grants or denies no action. */
 export function previousDenials(entries: readonly Entry[]) {
   // Local coordination failures are preflight results, not action-review verdicts.
   return entries
-    .filter((e) => e.type === "custom" && e.customType === "auto-approval-review")
-    .map((e) => e.data as ActionAudit)
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => entry.type === "custom" && entry.customType === "auto-approval-review")
+    .map(({ entry, index }) => ({ audit: entry.data as ActionAudit, index }))
     .filter(
-      (d) =>
-        d?.decision === "deny" &&
-        !(d.technicalFailure === true && d.technicalStage === "team coordination"),
+      ({ audit }) =>
+        audit?.decision === "deny" &&
+        !(audit.technicalFailure === true && audit.technicalStage === "team coordination"),
     )
     .slice(-6)
-    .map((d) => ({
+    .map(({ audit: d, index }) => ({
       decision: d.decision,
       reason: d.reason,
       requestId: d.requestId,
@@ -20,6 +22,7 @@ export function previousDenials(entries: readonly Entry[]) {
       tool: d.action?.tool,
       technicalFailure: d.technicalFailure,
       technicalStage: d.technicalStage,
+      laterOperatorPromptCount: operatorPromptRecords(entries.slice(index + 1)).length,
       ...(d.action ? { actionOmitted: true } : {}),
     }));
 }

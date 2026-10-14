@@ -3,7 +3,7 @@
     { "provider": "openrouter", "model": "deepseek/deepseek-v4.1-flash", "thinking": "medium" },
     { "provider": "openai", "model": "gpt-6-luna", "thinking": "medium" }
   ],
-  "recentUserPrompts": 6,
+  "recentUserPrompts": 10,
   "requestTimeoutMs": 120000,
   "sandbox": {
     "backend": "bwrap"

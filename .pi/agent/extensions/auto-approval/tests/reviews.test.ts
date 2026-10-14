@@ -6,6 +6,7 @@ import { type Config } from "../../shared/configuration/schemas.ts";
 import { multiplexReviewFixtures } from "./multiplex-review-fixtures.ts";
 import { ProviderAvailability } from "../../shared/providers/availability.ts";
 import { expiredTokenResponse } from "./provider-error-fixtures.ts";
+import { steeringReviewFixtures } from "./steering-review-fixtures.ts";
 
 const primary = { provider: "openai", model: "gpt-6-luna", thinking: "medium" as const };
 const fallback = {
@@ -105,7 +106,7 @@ const observer = {
 
 };
 
-function message(provider: string) {
+function message(provider: string, requestId = envelope.requestId) {
   const mode = modes[provider];
   const stopReason =
     mode === "length" || mode === "aborted"
@@ -133,7 +134,7 @@ function message(provider: string) {
           mode === "invalid"
             ? "not JSON"
             : JSON.stringify({
-                requestId: mode === "mismatch" ? "other-action" : envelope.requestId,
+                requestId: mode === "mismatch" ? "other-action" : requestId,
                 decision: ["deny", "error_deny", "expired_deny"].includes(mode)
                   ? "deny"
                   : "approve",
@@ -178,7 +179,7 @@ const registry: any = {
 
         if (modes[model.provider] === "timeout") await new Promise((done) => setTimeout(done, 35));
 
-        return message(model.provider);
+        return message(model.provider, JSON.parse(context.messages[0].content).requestId);
       },
 
     };
@@ -187,6 +188,27 @@ const registry: any = {
 };
 const run = (settings = config, signal?: AbortSignal, callbacks = observer) =>
   reviewWithFallback(settings, registry, envelope, callbacks, signal, undefined, availability);
+
+test("the first reviewer request eagerly carries ten legacy inputs and does not repeat only the latest correction", async () => {
+  const fixture = steeringReviewFixtures[0];
+  const request = buildReview(fixture.action, fixture.entries, config, "/project", []);
+
+  await reviewWithFallback(config, registry, request, observer, undefined, undefined, availability);
+
+  expect(calls).toHaveLength(1);
+  expect(calls[0].context.messages).toHaveLength(1);
+
+  const data = JSON.parse(calls[0].context.messages[0].content);
+
+  expect(data.userPrompts).toHaveLength(10);
+  expect(data.userPrompts[0]).toContain("Finish the Flutter client migration");
+  expect(data.userPrompts[1]).toContain("human readability");
+  expect(data.latestUserPrompt).toContain("Make nullable fields optional");
+  expect(data.userPromptInfo.every((info: any) => info.inputKind === "unknown")).toBe(true);
+  expect(data.userPromptInfo.every((info: any) => info.isSteering === null)).toBe(true);
+  expect(data.previousDenials[0].reason).toContain("formatting-only");
+  expect(calls[0].context.tools).toBeUndefined();
+});
 
 test("highest-priority success stops the chain and preserves request-bound output", async () => {
   const result = await run();
@@ -199,7 +221,7 @@ test("highest-priority success stops the chain and preserves request-bound outpu
   expect(calls[0].context.messages.at(-1).content).toContain(
     JSON.parse(envelope.text).latestUserPrompt,
   );
-  expect(calls[0].context.messages.at(-1).content).toContain("quoted language reference only");
+  expect(calls[0].context.messages).toHaveLength(1);
 
   const payload = calls[0].options.onPayload({}, calls[0].model);
 
@@ -258,7 +280,7 @@ test("valid denial is binding even when the fallback would approve", async () =>
   expect(attempts).toHaveLength(0);
 });
 
-test("capacity preflight includes system, repeated language reference and output reserve", async () => {
+test("capacity preflight includes system, envelope language metadata and output reserve", async () => {
   capacities.openai = 8000;
 
   const result = await run();
@@ -319,8 +341,13 @@ test("large operator context is sent intact to a capable model and a denial stay
   expect(result.verdict.decision).toBe("deny");
   expect(calls).toHaveLength(1);
   expect(calls[0].context.messages[0].content).toBe(large.text);
-  expect(calls[0].context.messages[1].content).toContain("Language sample shortened");
-  expect(calls[0].context.messages[1].content.length).toBeLessThan(3500);
+  expect(calls[0].context.messages).toHaveLength(1);
+  expect(JSON.parse(calls[0].context.messages[0].content).latestUserLanguageReference).toContain(
+    "Language sample shortened",
+  );
+  expect(
+    JSON.parse(calls[0].context.messages[0].content).latestUserLanguageReference.length,
+  ).toBeLessThan(3500);
 });
 
 test("denial remains final when a provider error follows the complete verdict", async () => {

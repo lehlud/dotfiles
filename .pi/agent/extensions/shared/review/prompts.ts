@@ -5,6 +5,8 @@ import { textContent } from "./protocol.ts";
 
 export const promptDigest = (text: string) => createHash("sha256").update(text).digest("hex");
 
+export const MIN_RECENT_USER_PROMPTS = 10;
+
 export type OperatorPrompt = {
   text: string;
   entryId?: string;
@@ -100,30 +102,40 @@ export function operatorPromptRecords(entries: readonly Entry[]): OperatorPrompt
   return prompts;
 }
 
-/** Preserve the recent window and the recorded task frame, including every later correction. */
+/** Delivery metadata identifies an anchor without deciding whether later input replaces it. */
+export function recordedTaskIndex(prompts: readonly OperatorPrompt[]): number {
+  const latest = prompts.at(-1);
+  const referenced =
+    latest?.kind === "steering" && latest.taskEntryId
+      ? prompts.findIndex(
+          (prompt) => prompt.entryId === latest.taskEntryId && prompt.kind === "task",
+        )
+      : -1;
+
+  return referenced >= 0 ? referenced : prompts.findLastIndex((prompt) => prompt.kind === "task");
+}
+
+/** Eagerly retain ten recent inputs plus the recorded task and all subsequent instructions. */
 export function selectedOperatorPrompts(
   entries: readonly Entry[],
   limit: number,
 ): OperatorPrompt[] {
   const prompts = operatorPromptRecords(entries);
-  const selected = prompts.slice(-limit);
+  const selected = prompts.slice(-Math.max(MIN_RECENT_USER_PROMPTS, limit));
   const latest = selected.at(-1);
+  let start = recordedTaskIndex(prompts);
 
-  if (latest?.kind !== "steering") {
-    return selected;
-  }
-
-  let start = latest.taskEntryId
-    ? prompts.findIndex((prompt) => prompt.entryId === latest.taskEntryId && prompt.kind === "task")
-    : -1;
-
-  if (start < 0) {
+  if (start < 0 && latest?.kind === "steering") {
     start = prompts.length - 1;
 
     while (start > 0 && prompts[start - 1].kind === "steering") {
       start--;
     }
 
+  }
+
+  if (start < 0) {
+    return selected;
   }
 
   const retained = new Set([...selected, ...prompts.slice(start)]);

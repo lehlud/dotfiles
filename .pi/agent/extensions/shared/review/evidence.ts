@@ -14,7 +14,7 @@ export type { Entry } from "./entries.ts";
 
 import { previousDenials, reviewedReceipts } from "./receipts.ts";
 
-import { selectedOperatorPrompts } from "./prompts.ts";
+import { recordedTaskIndex, selectedOperatorPrompts } from "./prompts.ts";
 
 export { operatorPrompts } from "./prompts.ts";
 
@@ -47,28 +47,27 @@ export function buildEvidence(
     throw new Error("Prepared prompt context does not match the actual operator branch");
 
   const userPrompts = prepared ? prepared.records.map((record) => record.text) : originals;
-  const userPromptInfo = originals.map((original, index) => ({
-    promptId: createHash("sha256").update(original).digest("hex"),
-    inputKind: selectedPrompts[index]?.kind ?? "operator-command",
-    compressed: prepared?.records[index].compressed ?? false,
-    originalBytes: Buffer.byteLength(original),
-    compressionVersion: prepared?.records[index].version,
-    cacheHit: prepared?.records[index].cacheHit ?? false,
-  }));
+  const userPromptInfo = originals.map((original, index) => {
+    const inputKind = selectedPrompts[index]?.kind ?? "operator-command";
+
+    return {
+      promptId: createHash("sha256").update(original).digest("hex"),
+      inputKind,
+      isSteering: inputKind === "unknown" ? null : inputKind === "steering",
+      compressed: prepared?.records[index].compressed ?? false,
+      originalBytes: Buffer.byteLength(original),
+      compressionVersion: prepared?.records[index].version,
+      cacheHit: prepared?.records[index].cacheHit ?? false,
+    };
+  });
+
   const promptSources = new Map(
     prepared?.records
       .filter((record) => record.compressed)
       .map((record) => [record.promptId, record.original]),
   );
   const latest = selectedPrompts.at(-1);
-  const taskIndex =
-    latest?.kind === "task"
-      ? selectedPrompts.length - 1
-      : latest?.kind === "steering"
-        ? selectedPrompts.findIndex(
-            (prompt) => prompt.entryId === latest.taskEntryId && prompt.kind === "task",
-          )
-        : -1;
+  const taskIndex = recordedTaskIndex(selectedPrompts);
   const taskContext = {
     latestInputKind: latest?.kind ?? "operator-command",
     source: operatorGoal

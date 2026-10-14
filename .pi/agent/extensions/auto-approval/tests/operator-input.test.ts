@@ -96,6 +96,12 @@ test("steering retains the actual task beyond the recent window without replacin
     "steering",
     "steering",
   ]);
+  expect(data.userPromptInfo.map((entry: any) => entry.isSteering)).toEqual([
+    false,
+    true,
+    true,
+    true,
+  ]);
   expect(data.taskContext.taskPromptIndex).toBe(0);
   expect(data.taskContext.taskPromptId).toBe(promptDigest(data.userPrompts[0]));
   expect(data.taskContext.source).toBe("recorded-task-input");
@@ -128,9 +134,33 @@ test("new task input changes the anchor; continuation and selected branches pres
   state.input("New task");
   state.busy();
   state.input("New correction", "steer");
-  expect(review(state.entries).userPrompts).toEqual(["New task", "New correction"]);
+  expect(review(state.entries).userPrompts).toEqual(["Old task", "New task", "New correction"]);
   state.hooks.session_tree({}, state.ctx);
   expect(review(state.entries).taskContext.taskPromptId).toBe(promptDigest("New task"));
+});
+
+test("a task and every correction survive beyond ten inputs, including a legacy continuation", () => {
+  const state = fixture();
+
+  state.input("Migrate the client; do not upload source or change API contracts.");
+  state.busy();
+
+  for (let index = 0; index < 12; index++) {
+    state.input(`Correction ${index}`, "steer");
+  }
+
+  state.entries.push({
+    type: "message",
+    message: { role: "user", content: "Continue the implementation and checks." },
+  });
+
+  const data = review(state.entries);
+
+  expect(data.userPrompts).toHaveLength(14);
+  expect(data.userPrompts[0]).toContain("do not upload source");
+  expect(data.taskContext.source).toBe("recorded-task-input");
+  expect(data.taskContext.taskPromptIndex).toBe(0);
+  expect(data.taskContext.latestInputKind).toBe("unknown");
 });
 
 test("legacy labels, peer messages and mismatched metadata never create operator provenance", () => {
@@ -154,6 +184,7 @@ test("legacy labels, peer messages and mismatched metadata never create operator
 
   expect(operatorPromptRecords(entries)[0].kind).toBe("unknown");
   expect(review(entries).taskContext.source).toBe("unclassified-history");
+  expect(review(entries).userPromptInfo[0].isSteering).toBeNull();
 });
 
 test("extension input is not recorded, failed input cannot bind older identical text, and busy RPC is steering", () => {

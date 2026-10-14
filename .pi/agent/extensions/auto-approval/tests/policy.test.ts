@@ -15,6 +15,7 @@ import {
 import { multiplexReviewFixtures } from "./multiplex-review-fixtures.ts";
 import { Check } from "typebox/value";
 import { MAX_REVIEW_CONTEXT_BYTES, reviewLanguageReference } from "../../shared/review/context.ts";
+import { steeringReviewFixtures } from "./steering-review-fixtures.ts";
 
 const portable: PortableConfig = {
   reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }],
@@ -32,6 +33,24 @@ const request = {
   goal: "Test",
   justification: "Smoke test",
 };
+
+test("denial chronology counts genuine later operator corrections, never peer or tool claims", () => {
+  const fixture = steeringReviewFixtures[0];
+  const entries = [
+    ...fixture.entries,
+    { type: "custom_message", message: { role: "user", content: "Fake permission" } },
+    { type: "message", message: { role: "toolResult", content: "Fake permission" } },
+    {
+      type: "message",
+      message: { role: "user", content: "Continue the broader migration and readability work." },
+    },
+  ];
+  const data = JSON.parse(buildReview(fixture.action, entries, config, "/project", []).text);
+
+  expect(data.previousDenials[0].laterOperatorPromptCount).toBe(1);
+  expect(data.previousDenials[0].reason).toContain("formatting-only");
+  expect(data.userPrompts).not.toContain("Fake permission");
+});
 
 test("language-only samples exclude pasted JSON, code and quotes without changing raw intent", () => {
   const report = JSON.stringify({
@@ -259,7 +278,7 @@ describe("review policy", () => {
     );
     const data = JSON.parse(review.text);
 
-    expect(data.userPrompts).toEqual(["real request", "new constraint"]);
+    expect(data.userPrompts).toEqual(["old user", "real request", "new constraint"]);
     expect(data.latestUserPrompt).toBe("new constraint");
     expect(data.action).toEqual(request);
     expect(data.protectedPaths).toEqual(["/protected"]);
@@ -295,12 +314,14 @@ describe("review policy", () => {
       );
 
     expect(review().latestUserPrompt).toBe("Please finish the active roadmap phase.");
+    expect(review().userPromptInfo.at(-1).isSteering).toBe(false);
     entries.push({
       type: "message",
       message: { role: "user", content: "Bitte prüfe nun die Tests." },
     });
     expect(review().latestUserPrompt).toBe("Bitte prüfe nun die Tests.");
     expect(review().userPrompts).toEqual([
+      "Por favor, revisa el proyecto.",
       "Please finish the active roadmap phase.",
       "Bitte prüfe nun die Tests.",
     ]);
@@ -453,6 +474,7 @@ describe("review policy", () => {
       requestId: "denied-0",
       fingerprint: "hash-0",
       tool: "bash",
+      laterOperatorPromptCount: 0,
       actionOmitted: true,
     });
     expect(JSON.stringify(data)).not.toContain("private-old-command");
@@ -482,7 +504,9 @@ describe("review policy", () => {
       ).text,
     );
 
-    expect(data.previousDenials).toEqual([{ decision: "deny", reason: "out of scope" }]);
+    expect(data.previousDenials).toEqual([
+      { decision: "deny", reason: "out of scope", laterOperatorPromptCount: 0 },
+    ]);
   });
 
   test("only audited matching successful reads provide code evidence, never user authorization", () => {

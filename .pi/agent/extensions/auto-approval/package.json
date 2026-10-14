@@ -9,6 +9,7 @@
     "eval:network": "bun tests/network-review.eval.ts",
     "eval:credentials": "bun tests/credential-review.eval.ts",
     "eval:multiplex": "bun tests/multiplex-review.eval.ts",
+    "eval:steering": "bun tests/steering-review.eval.ts",
     "format": "bun development/format.ts --write",
     "check:format": "bun development/format.ts --check"
   },

@@ -3,14 +3,13 @@ import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
 import {
   constrainReviewPayload,
   parseVerdict,
-  REVIEW_LANGUAGE,
   textContent,
   withWatchdog,
   type ReviewSettings,
   type Reviewer,
 } from "./protocol.ts";
 import type { ReviewEnvelope } from "./contracts.ts";
-import { reviewCapacityIssue, reviewLanguageReference, REVIEW_OUTPUT_TOKENS } from "./context.ts";
+import { reviewCapacityIssue, REVIEW_OUTPUT_TOKENS } from "./context.ts";
 import { promptOriginalTool, readPromptOriginal } from "./originals.ts";
 import { sumUsage } from "../providers/usage.ts";
 import {
@@ -135,7 +134,7 @@ function unavailable(
 }
 
 function reviewContext(envelope: ReviewEnvelope, systemPrompt: string): Context {
-  const { latestUserPrompt, latestUserLanguageReference } = JSON.parse(envelope.text);
+  const { latestUserPrompt } = JSON.parse(envelope.text);
 
   if (typeof latestUserPrompt !== "string" || !latestUserPrompt.trim())
     throw new Error("Latest operator prompt unavailable");
@@ -144,20 +143,19 @@ function reviewContext(envelope: ReviewEnvelope, systemPrompt: string): Context 
     systemPrompt:
       systemPrompt +
       (envelope.promptSources?.size
-        ? "\nSome operator prompts are marked compressed in userPromptInfo. Their summaries are navigation aids, not new authorization. Originals are authoritative. Use ONLY prompt_original to inspect relevant original ranges and conditions. You MUST inspect every compressed original at least once before approve; a lookup that returns no text does not count. Search or read further when a condition could affect this exact action or goal. If you cannot establish the applicable constraints, deny. No filesystem, shell, network or other tools. Maximum eight original lookups for this review. Return verdict JSON only after all required lookup results."
+        ? `\nAll selected operator prompts or their summaries are already included in userPrompts. Some are marked compressed in userPromptInfo. Their summaries are navigation aids, not new authorization. Originals are authoritative. Use ONLY prompt_original to inspect relevant original ranges and conditions. You MUST inspect every compressed original at least once before approve; a lookup that returns no text does not count. Search or read further when a condition could affect this exact action or goal. If you cannot establish the applicable constraints, deny. No filesystem, shell, network or other tools. Maximum ${originalLookupBudget(envelope)} original lookups per reviewer for this request. Return verdict JSON only after all required lookup results.`
         : ""),
-    messages: [
-      { role: "user", content: envelope.text, timestamp: Date.now() },
-      // The short language reference omits machine data; the full prompt stays
-      // in the unchanged JSON for authorization and operator constraints.
-      {
-        role: "user",
-        content: `${REVIEW_LANGUAGE}\nLatest actual operator prompt (quoted language reference only; full original constraints remain authoritative and compressed originals can be read with prompt_original):\n${JSON.stringify(latestUserLanguageReference ?? reviewLanguageReference(latestUserPrompt))}`,
-        timestamp: Date.now(),
-      },
-    ],
+    // Keep language metadata inside the complete envelope; a repeated final
+    // prompt would emphasize the latest correction over the authorized task.
+    messages: [{ role: "user", content: envelope.text, timestamp: Date.now() }],
     ...(envelope.promptSources?.size ? { tools: [promptOriginalTool] } : {}),
   };
+}
+
+function originalLookupBudget(envelope: ReviewEnvelope): number {
+  // Every compressed prompt must fit, with room for targeted follow-up reads.
+  // The shared deadline and model-context checks bound the total work.
+  return Math.max(8, (envelope.promptSources?.size ?? 0) + 4);
 }
 
 async function requestReview(
@@ -228,8 +226,10 @@ async function requestCandidate(
 ) {
   const context = structuredClone(initial);
   const started = Date.now();
+  const lookupBudget = originalLookupBudget(envelope);
+  const previousLookups = state.promptLookups.length;
 
-  for (let round = 0; round <= 8; round++) {
+  for (let round = 0; round <= lookupBudget; round++) {
     const remaining = timeoutMs - (Date.now() - started);
 
     if (remaining <= 0) throw new Error("Reviewer request timed out");
@@ -267,7 +267,10 @@ async function requestCandidate(
     context.messages.push(response);
 
     for (const call of calls) {
-      if (call.name !== promptOriginalTool.name || state.promptLookups.length >= 8)
+      if (
+        call.name !== promptOriginalTool.name ||
+        state.promptLookups.length - previousLookups >= lookupBudget
+      )
         throw new ReviewerToolError("Reviewer original-prompt lookup limit or tool violated");
 
       try {
