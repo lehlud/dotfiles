@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import autoApproval from "../auto-approval/index.ts";
 import publicWriting from "../public-writing/index.ts";
+import codeQuality from "../code-quality/index.ts";
 import { registerProgress } from "../conversations/progress.ts";
 import { registerSteering } from "../conversations/steering.ts";
 import { installProviderStreams } from "../shared/providers/stream.ts";
@@ -257,6 +258,7 @@ export async function createPeer(
     extensionFactories: [
       autoApproval,
       publicWriting,
+      codeQuality,
       (pi) => {
         pi.on("session_start", (_event, child) => {
           sessionServices(child).operatorGoal = endpoint.operatorGoal;

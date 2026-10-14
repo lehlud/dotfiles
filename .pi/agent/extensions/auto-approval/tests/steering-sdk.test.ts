@@ -15,6 +15,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { registerSteering, STEERING_TYPE } from "../../conversations/steering.ts";
 import { textContent } from "../../shared/review/protocol.ts";
 import { registerContinue } from "../../conversations/continue.ts";
+import codeQuality from "../../code-quality/index.ts";
 
 async function fixture(directory: string, outage = false) {
   const runtime = await ModelRuntime.create({
@@ -115,6 +116,7 @@ async function fixture(directory: string, outage = false) {
       (pi) => {
         registerSteering(pi, () => undefined);
         registerContinue(pi);
+        codeQuality(pi);
       },
 
     ],
@@ -175,6 +177,12 @@ test("normal Pi steering carries its main task through the correction and subseq
     state.release();
     await main;
     expect(state.contexts).toHaveLength(3);
+
+    for (const messages of state.contexts)
+      expect(
+        JSON.stringify(messages).split("Code readability is a standing requirement").length - 1,
+      ).toBe(1);
+
     expect(state.validations()).toBe(1);
 
     for (const messages of state.contexts.slice(1)) {
@@ -235,6 +243,12 @@ test("real Pi /continue recovers a provider-interrupted task without a synthetic
 
     expect(state.validations()).toBe(1);
     expect(state.contexts).toHaveLength(3);
+
+    for (const messages of state.contexts)
+      expect(
+        JSON.stringify(messages).split("Code readability is a standing requirement").length - 1,
+      ).toBe(1);
+
     expect(notices).toContain("Continuing the current task.");
 
     const context = JSON.stringify(state.contexts.at(-1));

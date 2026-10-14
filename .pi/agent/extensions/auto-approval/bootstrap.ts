@@ -55,7 +55,13 @@ function run(directory: string, args: string[]): void {
 
 /** The separate extensions share the SDK dependencies pinned here. */
 export async function prepareCompanionDependencies(directory: string): Promise<void> {
-  for (const name of ["shared", "conversations", "multiplex", "provider-recovery"]) {
+  for (const name of [
+    "shared",
+    "conversations",
+    "multiplex",
+    "provider-recovery",
+    "code-quality",
+  ]) {
     const companion = join(dirname(directory), name);
 
     try {

@@ -13,6 +13,7 @@ import {
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { registerGoals } from "../../conversations/goals.ts";
 import { registerContinue } from "../../conversations/continue.ts";
+import codeQuality from "../../code-quality/index.ts";
 import { textContent } from "../../shared/review/protocol.ts";
 import { registerSteering, STEERING_TYPE } from "../../conversations/steering.ts";
 
@@ -160,6 +161,7 @@ async function fixture(directory: string, steering = false) {
       (pi) => {
         registerSteering(pi, registerGoals(pi));
         registerContinue(pi);
+        codeQuality(pi);
       },
 
     ],
@@ -220,6 +222,7 @@ for (const command of ["/goal resume", "/continue"]) {
       expect(input.match(/Operator goal:/g)).toHaveLength(1);
       expect(input).not.toContain("/goal resume");
       expect(input).not.toContain("/continue");
+      expect(input.split("Code readability is a standing requirement").length - 1).toBe(1);
       expect(input).not.toContain("obsolete");
       expect(input).toContain("KEEP-UNRELATED-CONTEXT");
       expect(session.sessionManager.getBranch().slice(0, original.length)).toEqual(original);

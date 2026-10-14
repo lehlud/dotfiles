@@ -56,6 +56,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
     "provider-recovery": ["provider-recovery", "shared"],
     "public-writing": ["public-writing"],
     "web-research": ["web-research", "shared"],
+    "code-quality": ["code-quality"],
   };
 
   return edges
@@ -69,6 +70,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
         [
           "auto-approval/index.ts",
           "public-writing/index.ts",
+          "code-quality/index.ts",
           "conversations/progress.ts",
           "conversations/steering.ts",
         ].includes(target)

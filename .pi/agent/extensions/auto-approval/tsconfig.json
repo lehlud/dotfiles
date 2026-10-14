@@ -17,6 +17,7 @@
     "../shared/**/*.ts",
     "../conversations/**/*.ts",
     "../multiplex/**/*.ts",
-    "../provider-recovery/*.ts"
+    "../provider-recovery/*.ts",
+    "../code-quality/*.ts"
   ]
 }

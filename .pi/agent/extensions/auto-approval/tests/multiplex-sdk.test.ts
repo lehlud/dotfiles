@@ -24,6 +24,7 @@ import autoApproval from "../index.ts";
 import conversations from "../../conversations/index.ts";
 import multiplex from "../../multiplex/index.ts";
 import recovery from "../../provider-recovery/index.ts";
+import codeQuality from "../../code-quality/index.ts";
 import { sessionServices } from "../../shared/session/services.ts";
 import { textContent } from "../../shared/review/protocol.ts";
 import { FooterComponent, initTheme } from "@earendil-works/pi-coding-agent";
@@ -445,12 +446,12 @@ async function fixture(
     noContextFiles: true,
     noPromptTemplates: true,
     additionalExtensionPaths: diskLoaded
-      ? ["auto-approval", "conversations", "multiplex", "provider-recovery"].map((name) =>
-          resolve(import.meta.dir, "../..", name, "index.ts"),
+      ? ["auto-approval", "conversations", "multiplex", "provider-recovery", "code-quality"].map(
+          (name) => resolve(import.meta.dir, "../..", name, "index.ts"),
         )
       : [],
     extensionFactories: [
-      ...(diskLoaded ? [] : [autoApproval, conversations, multiplex, recovery]),
+      ...(diskLoaded ? [] : [autoApproval, conversations, multiplex, recovery, codeQuality]),
       (pi) => {
         pi.on("session_start", (_event, ctx) => {
           rootContext = ctx;
@@ -745,6 +746,10 @@ nativeTest(
         expect(JSON.stringify(latest.messages)).toContain("BEFORE-MULTIPLEX");
         expect(latest.tools.sort()).toEqual(["approved_action", "mailbox"]);
         expect(JSON.stringify(latest.messages)).not.toContain(ACTIVITY_ENTRY);
+        expect(
+          JSON.stringify(latest.messages).split("Code readability is a standing requirement")
+            .length - 1,
+        ).toBe(1);
       }
 
       const activity = state.session.sessionManager
@@ -828,6 +833,7 @@ nativeTest(
         expect(context).toContain("The operator requests continuation of the existing task.");
         expect(context).toContain("TEAM-TASK");
         expect(context).not.toContain("/continue");
+        expect(context.split("Code readability is a standing requirement").length - 1).toBe(1);
       }
 
       expect(state.reviews).toHaveLength(6);
