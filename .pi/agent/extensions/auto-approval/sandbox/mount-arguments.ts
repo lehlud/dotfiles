@@ -1,6 +1,18 @@
 import { toolRuntimeDirectory } from "../local-tools.ts";
 import type { Workspace } from "./types.ts";
 
+/** Launchers stay at their real read-only paths; PATH proxies never copy their code. */
+export function localToolBootstrapArguments(workspace: Workspace): string[] {
+  return (workspace.localTools ?? []).flatMap((tool) => {
+    if (tool.name !== "flutter") return [tool.name];
+
+    if (!tool.commandDirectory) throw new Error("Missing Flutter launcher directory");
+
+    return [tool.name, tool.commandDirectory];
+  });
+
+}
+
 export function localToolArguments(workspace: Workspace, native: boolean): string[] {
   const tools = workspace.localTools ?? [];
 

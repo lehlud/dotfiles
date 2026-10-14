@@ -31,6 +31,23 @@ while [ "$1" != -- ]; do
         continue
     fi
 
+    if [ "$tool_name" = flutter ]; then
+        launcher_directory="$1"
+        shift
+
+        for directory in /tmp/pi-tools/flutter /tmp/pi-tools/flutter/pub-cache /tmp/pi-tools/flutter/gradle; do
+            ensure_directory "$directory"
+        done
+
+        for command in flutter dart; do
+            printf '#!/bin/bash\nexport FLUTTER_SANDBOX=1\nexec %q "$@"\n' \
+                "$launcher_directory/$command" > "$tool_bin/$command"
+            chmod +x "$tool_bin/$command"
+        done
+
+        continue
+    fi
+
     tool_home="/tmp/pi-tools/$tool_name/home"
     for directory in "/tmp/pi-tools/$tool_name" "$tool_home" "$tool_home/.local" "$tool_home/.local/bin" "$tool_home/.local/cache"; do
         ensure_directory "$directory"

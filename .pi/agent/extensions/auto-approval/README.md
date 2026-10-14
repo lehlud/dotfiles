@@ -171,6 +171,49 @@ The shell flag `network: true` requests network access only for the newly starte
 
 `nvm install <numeric version>` downloads the official Linux distribution from nodejs.org, verifies SHA256 against `SHASUMS256.txt` and installs it into private `/tmp`. It also requires a network request. npm caches and newly installed Node versions disappear at session end; project dependencies and build results remain in the project.
 
+### Flutter and Dart inside the container
+
+Use `sandbox.tools: ["flutter"]` or `["dart"]` with the existing `bash` action. Both names
+select the same bundle and expose both commands. With bwrap, Pi must already run inside Lubox
+or another Linux container. The Docker backend supplies that container boundary directly.
+Pi mounts the actual `~/.local/bin/flutter` and `~/.local/bin/dart` launchers read-only at their
+original paths. Small PATH forwarders execute those files directly; no launcher code is copied
+into Pi. Their explicit sandbox mode prepares and runs a Linux SDK inside the existing container.
+The launchers own SDK preparation under `~/.local/config/flutter`; normal interactive invocation
+continues using their Docker/Podman workflow. No engine socket, host execution, GUI socket or
+user login is passed to the sandbox command.
+
+```json
+{
+  "tool": "bash",
+  "arguments": { "command": "flutter pub get", "timeout": 850 },
+  "goal": "Install dependencies for the requested Flutter project",
+  "justification": "Download its declared packages and prepare the private Linux SDK",
+  "sandbox": {
+    "tools": ["flutter"],
+    "limits": { "executionTimeoutMs": 900000 }
+  },
+  "network": true
+}
+```
+
+The independent reviewer approves the exact command and network request before execution.
+First use copies a compatible Linux SDK from `~/.local/share/flutter` read-only, or downloads the
+official stable Linux archive into private session storage and verifies its published SHA256.
+On Linux arm64, an x64-only archive supplies verified Flutter source; its official bootstrap
+replaces foreign Dart with the matching Linux arm64 runtime before any Dart executes.
+No compatible cached SDK while offline produces an actionable setup error. Installation checks
+container prerequisites (`curl`, `git`, `python3`, `unzip`, `tar`, `xz`, `sha256sum`) before downloading.
+Lubox's existing system tools serve bwrap; the supplied Dockerfile installs the core prerequisites.
+
+SDK, pub and Gradle caches survive separately approved actions in the same session and disappear
+with its private temporary storage. Dart's HOME stays per-action so profiling sockets do not leak
+into later actions. Include the bundle on every action that needs it. Commands such as
+`dart format`, `flutter analyze --no-pub`, `flutter test --no-pub` and `flutter build web --no-pub`
+can run offline once their dependencies and artifacts are cached. Package downloads, precaching
+and SDK updates need another reviewed `network: true` action. Android and Linux desktop builds
+also need their platform toolchains in the container; this core integration does not provision them.
+
 Other regular executable launchers from `~/.local/bin` can be requested by name, such as `sandbox.tools: ["sqlmap"]`. The launcher and its public `~/.local/cache/<name>` cache are mounted read-only. The sandbox creates a private copy with its own home and copies the existing `auto-update-app.bash` helper. Updates affect only this copy, never the host installation. Downloads require separately approved networking; an existing cache works offline. Standalone executables need no update helper. Tools requiring other private files, services or runtimes need further integration. The current WPScan launcher requires external container-engine access and is unsupported.
 
 To assess existing code, reviewers receive text results of previously approved actions from the same session branch: reads, file searches and shell output from commands such as `cat`, `sed`, `git diff` or tests. Tool results must match their approval record, request ID and fingerprint. Contents and output are evidence, never user instructions. At most eight recent results are included. Results exceeding the context budget are omitted in full and explicitly identified.

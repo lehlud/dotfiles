@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import type { SandboxRequest } from "../../shared/contracts/action.ts";
 import { resolveLocalTools } from "../local-tools.ts";
 import { assertWorkspaceBoundary } from "./boundary.ts";
+import { assertToolHost } from "./tool-host.ts";
 import { within, backendPaths } from "./paths.ts";
 import type { SandboxConfig, Workspace } from "./types.ts";
 
@@ -69,6 +70,8 @@ export async function validateWorkspace(
   privateTemporaryDirectory?: string,
   mode: "project" | "web" | "credential" = "project",
 ): Promise<Workspace> {
+  await assertToolHost(request?.tools, config);
+
   if (
     mode === "web" &&
     (request?.paths?.length || request?.executableSearchPaths?.length || request?.tools?.length)

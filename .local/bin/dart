@@ -1,3 +1,7 @@
 #!/usr/bin/env bash
 
-FLUTTER_CONTAINER_COMMAND=dart exec "$HOME/.local/bin/flutter" "$@"
+set -euo pipefail
+
+launcher_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+
+FLUTTER_CONTAINER_COMMAND=dart exec "$launcher_directory/flutter" "$@"

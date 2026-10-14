@@ -1,6 +1,10 @@
 import type { SandboxRequest } from "../../shared/contracts/action.ts";
 import type { SandboxConfig, Workspace } from "./types.ts";
-import { localToolArguments, webRuntimeArguments } from "./mount-arguments.ts";
+import {
+  localToolArguments,
+  localToolBootstrapArguments,
+  webRuntimeArguments,
+} from "./mount-arguments.ts";
 
 export function bwrapArguments(
   workspace: Workspace,
@@ -109,6 +113,12 @@ export function bwrapArguments(
   args.push(...localToolArguments(workspace, true));
   args.push(...webRuntimeArguments(workspace, true));
 
+  if (workspace.localTools?.some((tool) => tool.name === "flutter")) {
+    for (const path of ["/run/.containerenv", "/.dockerenv"])
+      args.push("--ro-bind-try", path, path);
+
+  }
+
   if (workspace.credentialExecutable)
     args.push("--ro-bind", workspace.credentialExecutable, "/opt/pi-credential/tool");
 
@@ -125,7 +135,7 @@ export function bwrapArguments(
       ? [
           "/bin/bash",
           "/opt/pi-tools/runtime/bootstrap.sh",
-          ...workspace.localTools.map((tool) => tool.name),
+          ...localToolBootstrapArguments(workspace),
           "--",
         ]
       : []),

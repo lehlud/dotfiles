@@ -1,7 +1,11 @@
 import { getuid, getgid } from "node:process";
 import type { SandboxRequest } from "../../shared/contracts/action.ts";
 import type { SandboxConfig, Workspace } from "./types.ts";
-import { localToolArguments, webRuntimeArguments } from "./mount-arguments.ts";
+import {
+  localToolArguments,
+  localToolBootstrapArguments,
+  webRuntimeArguments,
+} from "./mount-arguments.ts";
 
 export function dockerArguments(
   workspace: Workspace,
@@ -74,7 +78,7 @@ export function dockerArguments(
     ...(workspace.localTools?.length
       ? [
           "/opt/pi-tools/runtime/bootstrap.sh",
-          ...workspace.localTools.map((tool) => tool.name),
+          ...localToolBootstrapArguments(workspace),
           "--",
           "/usr/local/bin/bun",
         ]

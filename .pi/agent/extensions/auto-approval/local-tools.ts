@@ -8,6 +8,7 @@ export type LocalTool = {
   name: string;
   sources: { source: string; target: string }[];
   helper?: string;
+  commandDirectory?: string;
 };
 
 export const toolRuntimeDirectory = join(dirname(fileURLToPath(import.meta.url)), "tool-runtime");
@@ -34,8 +35,8 @@ async function regularExecutable(path: string, executable = true): Promise<void>
   await access(path, constants.R_OK | (executable ? constants.X_OK : 0));
 }
 
-/** Inspect the ELF header without executing shared-home Node code on the host. */
-export async function nativeLinuxNode(
+/** Inspect the ELF header without executing shared-home tool code on the host. */
+export async function nativeLinuxExecutable(
   binary: string,
   architecture = process.arch,
 ): Promise<boolean> {
@@ -77,6 +78,42 @@ export async function nativeLinuxNode(
 
 }
 
+export const nativeLinuxNode = nativeLinuxExecutable;
+
+async function flutterTool(home: string): Promise<LocalTool> {
+  const commandDirectory = join(home, ".local/bin");
+  const runtime = join(home, ".local/config/flutter");
+  const sources: LocalTool["sources"] = [];
+
+  for (const name of ["flutter", "dart"]) {
+    const launcher = join(commandDirectory, name);
+
+    await regularExecutable(launcher);
+    sources.push({ source: launcher, target: launcher });
+  }
+
+  for (const name of [
+    "sandbox.sh",
+    "sandbox-install.sh",
+    "sandbox-release.py",
+    "native-runtime.sh",
+  ]) {
+    const source = join(runtime, name);
+
+    await regularExecutable(source, false);
+    sources.push({ source, target: source });
+  }
+
+  const source = join(home, ".local/share/flutter");
+
+  if (await nativeLinuxExecutable(join(source, "bin/cache/dart-sdk/bin/dart"))) {
+    await regularExecutable(join(source, "bin/flutter"));
+    sources.push({ source, target: "/opt/pi-tools/source/flutter/sdk" });
+  }
+
+  return { name: "flutter", commandDirectory, sources };
+}
+
 async function nodeSources(home: string): Promise<LocalTool["sources"]> {
   const sources: LocalTool["sources"] = [];
   const platform = `Linux-${process.arch === "x64" ? "x86_64" : process.arch === "arm64" ? "aarch64" : process.arch}`;
@@ -112,7 +149,11 @@ export async function resolveLocalTools(
   const canonical = [
     ...new Set(
       names.map((name) =>
-        ["node", "nvm", "npm", "npx", "corepack"].includes(name) ? "node" : name,
+        ["node", "nvm", "npm", "npx", "corepack"].includes(name)
+          ? "node"
+          : name === "dart"
+            ? "flutter"
+            : name,
       ),
     ),
   ];
@@ -128,6 +169,12 @@ export async function resolveLocalTools(
 
     if (name === "node") {
       tools.push({ name, sources: await nodeSources(home) });
+
+      continue;
+    }
+
+    if (name === "flutter") {
+      tools.push(await flutterTool(home));
 
       continue;
     }

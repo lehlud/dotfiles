@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Pi supplies this mode only inside its approved, container-bound sandbox.
+# Use the real launcher and its own SDK preparation without nesting an engine.
+if [ "${FLUTTER_SANDBOX:-}" = 1 ]; then
+    runtime_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../config/flutter" && pwd -P)"
+    exec /bin/bash "$runtime_directory/sandbox.sh" "$@"
+fi
+
 _flutter_runtime() {
     if [ -n "${FLUTTER_CONTAINER_RUNTIME:-}" ]; then
         printf '%s\n' "$FLUTTER_CONTAINER_RUNTIME"

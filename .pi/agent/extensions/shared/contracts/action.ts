@@ -20,7 +20,7 @@ export const sandboxRequestSchema = Type.Object(
         maxItems: 16,
         uniqueItems: true,
         description:
-          "Local tool bundles, e.g. node for nvm/npm/npx or sqlmap. Host installations stay read-only; caches and updates use session-private /tmp. Network access must be requested separately.",
+          "Local tool bundles: node for nvm/npm/npx, flutter or dart for a private Linux Flutter/Dart SDK in a container, or sqlmap. Host installations stay read-only; caches and updates use session-private /tmp. Network access must be requested separately.",
       }),
     ),
     paths: Type.Optional(
