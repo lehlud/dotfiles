@@ -19,6 +19,7 @@ import {
   ProviderHeldError,
   RecoveryAuditError,
   providerRefusal,
+  transientProviderError,
   type AvailabilityNotice,
 } from "../providers/availability.ts";
 import { installProviderStreams, unavailableResponse } from "../providers/stream.ts";
@@ -55,6 +56,8 @@ function providerFailureDetail(error: unknown): string {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
 
   // Fixed labels only: provider errors can contain credentials or prompt text.
+  if (transientProviderError(error)) return ": provider temporarily unavailable";
+
   if (/429|rate.?limit|quota/i.test(message)) return ": rate limit or quota unavailable";
 
   if (/401|403|unauthoriz|authentication|api.?key/i.test(message))

@@ -1,4 +1,5 @@
 import { isRetryableAssistantError } from "@earendil-works/pi-ai";
+import { providerErrorMessage, providerErrorStatus, retryableProvider401 } from "./error-code.ts";
 
 export const PROVIDER_RETRIES = 5;
 export const PROVIDER_RETRY_DELAY_MS = 3000;
@@ -41,7 +42,7 @@ export class RecoveryAuditError extends Error {
 
 /** Policy refusals are final, including provider-side cybersecurity checks. */
 export function providerRefusal(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const message = providerErrorMessage(error);
 
   return /refusal|(?:reviewer|model|policy|request).*(?:refus|block)|content.filter|safety|content.*flagged.*cybersecurity|cybersecurity.*(?:risk|check.*fail)/i.test(
     message,
@@ -49,15 +50,21 @@ export function providerRefusal(error: unknown): boolean {
 }
 
 export function transientProviderError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const message = providerErrorMessage(error);
 
   if (
     providerRefusal(message) ||
-    /context.*(?:length|window|overflow)|invalid.*schema|schema.*invalid|unsupported.*param|401|403|api.?key|authentication|quota|billing|out of budget/i.test(
+    /context.*(?:length|window|overflow)|invalid.*schema|schema.*invalid|unsupported.*param|quota|billing|out of budget/i.test(
       message,
     )
   )
     return false;
+
+  if (retryableProvider401(error)) return true;
+
+  if ([401, 403].includes(providerErrorStatus(error) ?? 0)) return false;
+
+  if (/\b401\b|\b403\b|api.?key|authentication/i.test(message)) return false;
 
   return (
     /\b5\d\d\b|ECONN|EPIPE|ETIMEDOUT|EAI_AGAIN|ENOTFOUND/i.test(message) ||

@@ -5,6 +5,7 @@ import { buildReview } from "../review.ts";
 import { type Config } from "../../shared/configuration/schemas.ts";
 import { multiplexReviewFixtures } from "./multiplex-review-fixtures.ts";
 import { ProviderAvailability } from "../../shared/providers/availability.ts";
+import { expiredTokenResponse } from "./provider-error-fixtures.ts";
 
 const primary = { provider: "openai", model: "gpt-6-luna", thinking: "medium" as const };
 const fallback = {
@@ -47,6 +48,8 @@ type Mode =
   | "unsupported"
   | "error"
   | "error_deny"
+  | "expired"
+  | "expired_deny"
   | "length"
   | "filtered"
   | "aborted"
@@ -107,7 +110,9 @@ function message(provider: string) {
   const stopReason =
     mode === "length" || mode === "aborted"
       ? mode
-      : ["error", "error_deny", "filtered", "cyber_refusal"].includes(mode)
+      : ["error", "error_deny", "expired", "expired_deny", "filtered", "cyber_refusal"].includes(
+            mode,
+          )
         ? "error"
         : "stop";
 
@@ -116,7 +121,9 @@ function message(provider: string) {
     errorMessage:
       mode === "cyber_refusal"
         ? "HTTP 503: This content was flagged for possible cybersecurity risk. Check access_programs.cyber."
-        : undefined,
+        : mode === "expired" || mode === "expired_deny"
+          ? expiredTokenResponse
+          : undefined,
     rawStopReason: mode === "filtered" ? "incomplete.content_filter" : undefined,
     usage,
     content: [
@@ -127,7 +134,9 @@ function message(provider: string) {
             ? "not JSON"
             : JSON.stringify({
                 requestId: mode === "mismatch" ? "other-action" : envelope.requestId,
-                decision: mode === "deny" || mode === "error_deny" ? "deny" : "approve",
+                decision: ["deny", "error_deny", "expired_deny"].includes(mode)
+                  ? "deny"
+                  : "approve",
                 reason: "Synthetic verdict",
               }),
       },
@@ -486,5 +495,44 @@ test("the same action uses the same review policy regardless of coordination and
     expect(data.previousDenials[0].reason).toContain("assigns a worker");
   }
 
+});
+
+test("coded token expiry is retried before fallback, while a delivered denial remains binding", async () => {
+  modes[primary.provider] = "expired";
+  modes[fallback.provider] = "approve";
+  onResponse = () => {
+    if (calls.length === 2) modes[primary.provider] = "approve";
+
+  };
+
+  const recovered = await run();
+
+  expect(recovered.selectedReviewer).toEqual(primary);
+  expect(calls).toHaveLength(2);
+  expect(clock).toBe(3000);
+  expect(calls[0].context).toEqual(calls[1].context);
+
+  calls = [];
+  onResponse = undefined;
+  modes[primary.provider] = "expired_deny";
+
+  const denied = await run();
+
+  expect(denied.verdict.decision).toBe("deny");
+  expect(denied.selectedReviewer).toEqual(primary);
+  expect(calls).toHaveLength(1);
+});
+
+test("exhausted token-expiry retries allow only configured fallback and never label the response as confirmed bad credentials", async () => {
+  modes[primary.provider] = "expired";
+  modes[fallback.provider] = "approve";
+
+  const result = await run();
+
+  expect(result.selectedReviewer).toEqual(fallback);
+  expect(calls.filter((call) => call.model.provider === primary.provider)).toHaveLength(6);
+  expect(clock).toBe(15000);
+  expect(result.attempts[0].reason).toContain("temporarily unavailable");
+  expect(result.attempts[0].reason).not.toContain("/login");
 });
 

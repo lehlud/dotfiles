@@ -5,6 +5,7 @@ import {
   transientProviderError,
 } from "../../shared/providers/availability.ts";
 import { resilientStream } from "../../shared/providers/stream.ts";
+import { expiredTokenResponse } from "./provider-error-fixtures.ts";
 import {
   createAssistantMessageEventStream,
   isRetryableAssistantError,
@@ -143,6 +144,60 @@ test("507 and connection failures are transient; refusals, authentication, schem
   ])
     expect(transientProviderError(text)).toBe(false);
 
+});
+
+test("reported coded 401 failures are recoverable; unrelated authentication and terminal failures stay final", () => {
+  for (const error of [
+    expiredTokenResponse,
+    new Error(expiredTokenResponse),
+    'HTTP 401: {"error":{"code":"server_is_overloaded","message":"Capacity temporarily unavailable"}}',
+    Object.assign(new Error("Expired access token"), { status: 401, code: "token_expired" }),
+  ])
+    expect(transientProviderError(error)).toBe(true);
+
+  for (const error of [
+    "HTTP 401",
+    'HTTP 401: {"code":"invalid_api_key"}',
+    'HTTP 401: {"code":"invalid_grant"}',
+    'HTTP 403: {"code":"token_expired"}',
+    'HTTP 401: {"message":"token_expired appears in quoted prose"}',
+    'HTTP 401: {"code":"token_expired",',
+    'HTTP 401: {"code":"token_expired","message":"Billing quota exhausted"}',
+    'HTTP 401: {"code":"token_expired","message":"Request blocked by safety policy"}',
+    Object.assign(new Error("HTTP 503 model overloaded"), { status: 403, code: "token_expired" }),
+  ])
+    expect(transientProviderError(error)).toBe(false);
+
+});
+
+test("coded token expiry gets five retries, a five-minute hold, one probe and a reset after recovery", async () => {
+  let calls = 0;
+  let failing = true;
+  const work = async () => {
+    calls++;
+
+    if (failing) throw new Error(expiredTokenResponse);
+
+    return 200;
+  };
+
+  await expect(gate.run(pair, work, down)).rejects.toBeInstanceOf(ProviderHeldError);
+  expect(calls).toBe(6);
+  expect(delays).toEqual(Array(5).fill(3000));
+  await expect(gate.run(pair, work, down)).rejects.toBeInstanceOf(ProviderHeldError);
+  expect(calls).toBe(6);
+  now += 300000;
+  await expect(gate.run(pair, work, down)).rejects.toBeInstanceOf(ProviderHeldError);
+  expect(calls).toBe(7);
+  expect(delays).toHaveLength(5);
+  now += 300000;
+  failing = false;
+  expect(await gate.run(pair, work, down)).toBe(200);
+  expect(calls).toBe(8);
+  failing = true;
+  await expect(gate.run(pair, work, down)).rejects.toBeInstanceOf(ProviderHeldError);
+  expect(calls).toBe(14);
+  expect(delays).toHaveLength(10);
 });
 
 test("abort during backoff leaves no false cooldown and retry-audit failure admits no further call", async () => {
