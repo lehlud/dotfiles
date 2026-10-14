@@ -36,9 +36,11 @@ RUN yes | sdkmanager --licenses >/dev/null || true \
       "build-tools;28.0.3" \
       "cmdline-tools;latest"
 
-RUN groupadd --gid ${USER_GID} ${USERNAME} \
-    && useradd --uid ${USER_UID} --gid ${USER_GID} -m ${USERNAME} \
-    && chown -R ${USERNAME}:${USERNAME} ${ANDROID_HOME} /usr/local
+RUN if ! getent group "${USER_GID}" >/dev/null; then \
+      groupadd --gid "${USER_GID}" "${USERNAME}"; \
+    fi \
+    && useradd --uid "${USER_UID}" --gid "${USER_GID}" -m "${USERNAME}" \
+    && chown -R "${USER_UID}:${USER_GID}" ${ANDROID_HOME} /usr/local
 
 USER ${USERNAME}
 WORKDIR /workspace
