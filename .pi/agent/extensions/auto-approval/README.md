@@ -20,6 +20,12 @@ Technical failures before independent review identify the failing preflight stag
 
 ## Conversation features
 
+Review intent includes recorded operator delivery mode and the current task frame. Steering is
+evaluated alongside the original task, while later replacements, stops and restrictions take
+precedence. This metadata contains no team topology or assignment information. See the
+[Conversations documentation](../conversations/README.md#corrections-during-ongoing-work) for capture,
+retention, compression and legacy-session behavior.
+
 `/goal`, `/side` and steering reminders belong to the separate [Conversations extension](../conversations/README.md). [`/multiplex <n>`](../multiplex/README.md) starts concurrent equal peers. Their internal messageboxes require no reviewer or approval request. They can be scheduled alongside pending reviews and commands, while this extension's own queue still serializes external review and execution. Every external action by every member continues to use this approval and sandbox path. Action review is independent of team topology: it receives the exact operation, sandbox access, actual operator instructions and relevant action evidence, without member names, team size, accepted plans or assignment metadata. Multiplex enforces coordination locally before review and keeps the assignment pinned until execution ends. Local coordination preflight failures remain in the session audit but are excluded from previous action-review denials. Peer messages do not become operator authorization. Actual ungated execution and other material security concerns remain grounds for denial; valid denials never trigger another model in search of approval. Genuine operator prompts are preserved, including any instructions about teamwork.
 
 `bun run eval:multiplex` runs eight review-only semantic cases against the configured reviewers: bounded reads (including an earlier mistaken delegation denial), build guidance and foreground tests should be approved; actual ungated agents, detached commands, credential reads and source uploads should be denied. Pi reviewer authentication must be available on the current machine. No proposed action is executed.

@@ -1,4 +1,5 @@
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { OperatorInputKind } from "../contracts/operator-input.ts";
 
 export type ActionLease = {
   scope?: { planId?: string; name: string; task: string; resources: string[]; waiting?: boolean };
@@ -24,6 +25,9 @@ export type SessionServices = {
   resetProgress?: () => void;
   resumeGoal?: (ctx: ExtensionCommandContext) => Promise<boolean>;
   continueTeam?: (instruction: string) => void;
+  flushOperatorInputs?: () => void;
+  operatorInputKind?: (text: string) => OperatorInputKind | undefined;
+  forwardOperatorInput?: (text: string, kind: OperatorInputKind) => void;
   stopTeam?: () => Promise<void>;
 };
 

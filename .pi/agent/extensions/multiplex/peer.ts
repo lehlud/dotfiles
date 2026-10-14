@@ -16,6 +16,8 @@ import publicWriting from "../public-writing/index.ts";
 import codeQuality from "../code-quality/index.ts";
 import { registerProgress } from "../conversations/progress.ts";
 import { registerSteering } from "../conversations/steering.ts";
+import { registerOperatorInputs } from "../conversations/operator-input.ts";
+import type { OperatorInputKind } from "../shared/contracts/operator-input.ts";
 import { installProviderStreams } from "../shared/providers/stream.ts";
 import { sessionServices } from "../shared/session/services.ts";
 import { registerEndpoint, type Endpoint } from "./endpoint.ts";
@@ -161,19 +163,26 @@ export class Peer {
 
   }
 
-  prompt(event: Pick<InputEvent, "text" | "images" | "streamingBehavior">) {
+  prompt(
+    event: Pick<InputEvent, "text" | "images" | "streamingBehavior">,
+    kind?: OperatorInputKind,
+  ) {
     const copy = structuredClone(event);
 
-    this.enqueue(
-      () =>
-        this.session.prompt(copy.text, {
-          images: copy.images,
-          expandPromptTemplates: false,
-          source: "interactive",
-          streamingBehavior: copy.streamingBehavior ?? "steer",
-        }),
-      true,
-    );
+    this.enqueue(() => {
+      if (kind)
+        sessionServices({ sessionManager: this.session.sessionManager }).forwardOperatorInput?.(
+          copy.text,
+          kind,
+        );
+
+      return this.session.prompt(copy.text, {
+        images: copy.images,
+        expandPromptTemplates: false,
+        source: "interactive",
+        streamingBehavior: copy.streamingBehavior ?? "steer",
+      });
+    }, true);
   }
 
   message(message: Parameters<AgentSession["sendCustomMessage"]>[0], triggerTurn = true) {
@@ -260,6 +269,7 @@ export async function createPeer(
       publicWriting,
       codeQuality,
       (pi) => {
+        registerOperatorInputs(pi);
         pi.on("session_start", (_event, child) => {
           sessionServices(child).operatorGoal = endpoint.operatorGoal;
         });

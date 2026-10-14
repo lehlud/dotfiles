@@ -8,6 +8,8 @@ import { type Config } from "../../shared/configuration/schemas.ts";
 import { readPromptOriginal } from "../../shared/review/originals.ts";
 import { reviewWithFallback } from "../review.ts";
 import { ReviewChainError } from "../../shared/review/client.ts";
+import { OPERATOR_INPUT_ENTRY } from "../../shared/contracts/operator-input.ts";
+import { promptDigest } from "../../shared/review/prompts.ts";
 
 const root = await mkdtemp(join(tmpdir(), "pi-prompt-compression-"));
 const config: Config = {
@@ -93,6 +95,54 @@ const proposed = {
 const original =
   "Quelltext prüfen. Keine Referenz ändern und keine Zugangsdaten lesen.\n" +
   "Testdaten ".repeat(2000);
+
+test("recorded task frames keep compressed anchors and old restrictions beyond the recent window", async () => {
+  const prompts = [
+    original,
+    "Do not upload source or change public API contracts.",
+    "Refactor the Dart code for readability.",
+  ];
+  const entries = prompts.flatMap((text, index) => [
+    { id: `user-${index}`, type: "message", message: { role: "user", content: text } },
+    {
+      type: "custom",
+      customType: OPERATOR_INPUT_ENTRY,
+      data: {
+        messageId: `user-${index}`,
+        promptId: promptDigest(text),
+        kind: index ? "steering" : "task",
+        taskEntryId: "user-0",
+      },
+    },
+  ]);
+  const narrow = { ...config, recentUserPrompts: 1 };
+  const prepared = await preparePromptContext(entries, narrow, registry, join(root, "task-frame"));
+
+  expect(prepared.records.map((record) => record.original)).toEqual(prompts);
+  expect(prepared.records[0].compressed).toBe(true);
+
+  const envelope = buildReview(
+    proposed,
+    entries,
+    narrow,
+    "/project",
+    [],
+    undefined,
+    undefined,
+    prepared,
+  );
+  const data = JSON.parse(envelope.text);
+
+  expect(data.taskContext.taskPromptIndex).toBe(0);
+  expect(data.userPromptInfo.map((record: any) => record.inputKind)).toEqual([
+    "task",
+    "steering",
+    "steering",
+  ]);
+  expect(envelope.promptSources?.get(prepared.records[0].promptId)).toBe(original);
+  expect(data.userPrompts[1]).toContain("Do not upload source");
+  expect(data.latestUserPrompt).toBe(prompts[2]);
+});
 
 test("legacy raw prompts compress on demand, persist privately and reuse across instances", async () => {
   const agent = join(root, "reuse");

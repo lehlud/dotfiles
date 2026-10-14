@@ -42,6 +42,24 @@ The session log records the objective, review attempts, deciding model, request 
 
 ## Corrections during ongoing work
 
+Operator input mode is captured from Pi's actual input event and bound to the accepted user entry
+by its branch ID and content hash. It is not inferred from a `steering:` prefix, model summaries,
+tool output or peer letters. Multiplex forwards the same operator mode to every peer, including
+queued input; a peer's busy state cannot reclassify a new operator task as a correction.
+
+Action reviews receive `userPromptInfo.inputKind` and `taskContext`. A recorded steering frame keeps
+the original task and every later operator correction in chronological order, even beyond the
+ordinary recent-prompt window. Pinning the task must not drop an older restriction and resurrect
+broader permission. Large retained prompts use the existing compression cache and authoritative
+original-lookup tools; capacity failures still fail closed rather than silently omitting constraints.
+An active `/goal` remains a separate explicit objective.
+
+Delivery mode does not determine semantic priority. Steering can add details, replace the task,
+withdraw permission or stop work; later explicit restrictions and cancellations override earlier
+scope. Reviewers consider the original task and applicable corrections together. The latest actual
+prompt remains the language reference. Saved metadata survives continuation, reload and branch
+selection. Older input without reliable metadata stays unclassified; no legacy role is invented.
+
 A user message queued as steering supplements the ongoing task. Subsequent model requests remind the model to apply the correction and continue the remaining main work and validation. For ordinary tasks, the original request is recalled as quoted text of up to 4,000 characters; longer requests are explicitly labeled as excerpts. An active `/goal` remains the authoritative objective.
 
 Actual user messages and their saved history remain unchanged. The reminder appears once in model context, is not stored as an additional user message and grants no tool permission. It applies only to the current task and resets on a new task or session. Explicit cancellation or task replacement remains possible. Follow-up messages are not automatically treated as steering.

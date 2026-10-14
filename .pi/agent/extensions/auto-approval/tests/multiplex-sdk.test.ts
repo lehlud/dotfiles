@@ -783,6 +783,9 @@ nativeTest(
         expect(review.sandboxPlan.teamAssignment).toBeUndefined();
         expect(review.action.arguments.command).toBeString();
         expect(review.action.tool).toBe("bash");
+        expect(review.taskContext.source).toBe("recorded-task-input");
+        expect(review.taskContext.latestInputKind).toBe("steering");
+        expect(review.userPrompts[review.taskContext.taskPromptIndex]).toContain("TEAM-TASK");
       }
 
       expect(
@@ -977,6 +980,7 @@ nativeTest(
       await state.session.prompt(
         "/goal TEAM-GOAL: Produce separate, independently reviewed results.",
       );
+      expect(notices.filter((text) => text.startsWith("Goal:"))).toEqual([]);
       await until(() => state!.releases.length === 2);
       expect(
         state.contexts.every((context) => JSON.stringify(context.messages).includes("TEAM-GOAL")),

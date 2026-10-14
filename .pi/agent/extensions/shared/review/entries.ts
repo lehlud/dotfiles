@@ -12,6 +12,7 @@ export type ActionAudit = {
 };
 
 export type Entry = {
+  id?: string;
   type: string;
   message?: {
     role: string;

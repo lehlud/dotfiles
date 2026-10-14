@@ -15,6 +15,8 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { registerSteering, STEERING_TYPE } from "../../conversations/steering.ts";
 import { textContent } from "../../shared/review/protocol.ts";
 import { registerContinue } from "../../conversations/continue.ts";
+import { registerOperatorInputs } from "../../conversations/operator-input.ts";
+import { buildReview } from "../review.ts";
 import codeQuality from "../../code-quality/index.ts";
 
 async function fixture(directory: string, outage = false) {
@@ -114,6 +116,7 @@ async function fixture(directory: string, outage = false) {
     noPromptTemplates: true,
     extensionFactories: [
       (pi) => {
+        registerOperatorInputs(pi);
         registerSteering(pi, () => undefined);
         registerContinue(pi);
         codeQuality(pi);
@@ -201,6 +204,33 @@ test("normal Pi steering carries its main task through the correction and subseq
     );
 
     expect(users).toHaveLength(2);
+
+    const review = JSON.parse(
+      buildReview(
+        {
+          tool: "read",
+          arguments: { path: "result.log" },
+          goal: "Check the main task",
+          justification: "Existing task validation",
+        },
+        branch,
+        {
+          reviewers: [{ provider: "fixture", model: "review", thinking: "off" }],
+          recentUserPrompts: 1,
+          requestTimeoutMs: 1000,
+          sandbox: { backend: "bwrap", executable: "/bin/true", runnerExecutable: "/bin/true" },
+        },
+        directory,
+        [],
+      ).text,
+    );
+
+    expect(review.userPrompts).toEqual([original, correction]);
+    expect(review.taskContext.source).toBe("recorded-task-input");
+    expect(review.userPromptInfo.map((prompt: any) => prompt.inputKind)).toEqual([
+      "task",
+      "steering",
+    ]);
     expect(
       users.map((entry) =>
         entry.type === "message" && entry.message.role === "user"

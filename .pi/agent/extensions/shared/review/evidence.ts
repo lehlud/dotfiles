@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { textContent, type ReviewSettings } from "./protocol.ts";
+import { type ReviewSettings } from "./protocol.ts";
 import {
   checkReviewSize,
   MAX_REVIEW_CONTEXT_BYTES,
@@ -14,59 +14,9 @@ export type { Entry } from "./entries.ts";
 
 import { previousDenials, reviewedReceipts } from "./receipts.ts";
 
-export function operatorPrompts(entries: readonly Entry[], limit: number): string[] {
-  // Only raw user messages and operator prompts captured by our command handler.
-  // Assistant summaries, arbitrary custom messages and tool output are excluded.
-  const capturedGoals = new Set(
-    entries
-      .filter((e) => e.type === "custom" && e.customType === "auto-approval-operator-prompt")
-      .map((e) => (e.data as { goalId?: string })?.goalId),
-  );
+import { selectedOperatorPrompts } from "./prompts.ts";
 
-  return entries
-    .flatMap((e) => {
-      if (e.type === "message" && e.message?.role === "user")
-        return [textContent(e.message.content) || "[Non-text user prompt; intent unavailable]"];
-
-      if (e.type === "custom" && e.customType === "auto-approval-operator-prompt") {
-        const prompt = (e.data as { text?: unknown })?.text;
-
-        if (typeof prompt === "string" && prompt.trim()) return [prompt];
-
-      }
-
-      // Sessions from before explicit prompt capture stored the original command
-      // only in its initial goal snapshot. Keep its position in user chronology.
-      if (e.type === "custom" && e.customType === "auto-approval-goal") {
-        const goal = e.data as {
-          id?: string;
-          text?: string;
-          checks?: number;
-          reason?: string;
-          status?: string;
-        };
-
-        if (
-          typeof goal?.id === "string" &&
-          typeof goal.text === "string" &&
-          goal.text.trim() &&
-          !capturedGoals.has(goal.id) &&
-          goal.status === "running" &&
-          goal.checks === 0 &&
-          goal.reason === "Goal not yet verified"
-        ) {
-          capturedGoals.add(goal.id);
-
-          return [goal.text];
-        }
-
-      }
-
-      return [];
-    })
-
-    .slice(-limit);
-}
+export { operatorPrompts } from "./prompts.ts";
 
 export function buildEvidence(
   entries: readonly Entry[],
@@ -81,7 +31,8 @@ export function buildEvidence(
   } = {},
 ) {
   const { operatorGoal, prepared, action, protectedPaths, sandboxPlan } = options;
-  const originals = operatorPrompts(entries, config.recentUserPrompts);
+  const selectedPrompts = selectedOperatorPrompts(entries, config.recentUserPrompts);
+  const originals = selectedPrompts.map((prompt) => prompt.text);
 
   if (!originals.length && operatorGoal) originals.push(operatorGoal);
 
@@ -98,6 +49,7 @@ export function buildEvidence(
   const userPrompts = prepared ? prepared.records.map((record) => record.text) : originals;
   const userPromptInfo = originals.map((original, index) => ({
     promptId: createHash("sha256").update(original).digest("hex"),
+    inputKind: selectedPrompts[index]?.kind ?? "operator-command",
     compressed: prepared?.records[index].compressed ?? false,
     originalBytes: Buffer.byteLength(original),
     compressionVersion: prepared?.records[index].version,
@@ -108,6 +60,29 @@ export function buildEvidence(
       .filter((record) => record.compressed)
       .map((record) => [record.promptId, record.original]),
   );
+  const latest = selectedPrompts.at(-1);
+  const taskIndex =
+    latest?.kind === "task"
+      ? selectedPrompts.length - 1
+      : latest?.kind === "steering"
+        ? selectedPrompts.findIndex(
+            (prompt) => prompt.entryId === latest.taskEntryId && prompt.kind === "task",
+          )
+        : -1;
+  const taskContext = {
+    latestInputKind: latest?.kind ?? "operator-command",
+    source: operatorGoal
+      ? "operator-goal"
+      : taskIndex >= 0
+        ? "recorded-task-input"
+        : "unclassified-history",
+    ...(!operatorGoal && taskIndex >= 0
+      ? {
+          taskPromptIndex: taskIndex,
+          taskPromptId: userPromptInfo[taskIndex].promptId,
+        }
+      : {}),
+  };
   const reviewedEvidence = reviewedReceipts(entries);
   const core = {
     userPrompts,
@@ -115,6 +90,7 @@ export function buildEvidence(
     latestUserPrompt: userPrompts.at(-1),
     latestUserLanguageReference: reviewLanguageReference(originals.at(-1)!),
     operatorGoal,
+    taskContext,
     previousDenials: previousDenials(entries),
     cwd,
     protectedPaths,

@@ -14,6 +14,7 @@ import { registerActivityRenderer, TeamActivity, type ActivityEvent } from "./ac
 import { Quiescence } from "./quiescence.ts";
 import { watchInterrupt } from "./interrupt.ts";
 import { ActionFailures } from "./action-failures.ts";
+import type { OperatorInputKind } from "../shared/contracts/operator-input.ts";
 import { FeedView, suppressNativeFeed } from "./presentation.ts";
 
 export const MULTIPLEX_STATUS = "00-multiplex";
@@ -26,7 +27,7 @@ type Team = {
   peers: Peer[];
   stopped: boolean;
   ready: boolean;
-  pending: InputEvent[];
+  pending: { event: InputEvent; kind?: OperatorInputKind }[];
   failures: ActionFailures;
   goal?: string;
   settle(): void;
@@ -344,7 +345,8 @@ export class TeamController {
       this.pi.setActiveTools(["approved_action", "mailbox"]);
       this.display(ctx);
 
-      for (const event of next.pending.splice(0)) for (const peer of next.peers) peer.prompt(event);
+      for (const { event, kind } of next.pending.splice(0))
+        for (const peer of next.peers) peer.prompt(event, kind);
 
       const instruction = sessionServices(ctx).goalInstruction?.();
 
@@ -420,12 +422,16 @@ export class TeamController {
       // SDK steer() can omit streamingBehavior during compaction/idle boundaries.
       // Actual operator input still belongs to every member, regardless of view.
       if (!this.team.ready) {
-        this.team.pending.push(structuredClone(event));
+        this.team.pending.push({
+          event: structuredClone(event),
+          kind: sessionServices(ctx).operatorInputKind?.(event.text),
+        });
 
         return;
       }
 
-      for (const peer of this.team.peers) peer.prompt(event);
+      for (const peer of this.team.peers)
+        peer.prompt(event, sessionServices(ctx).operatorInputKind?.(event.text));
 
       this.display(ctx);
     });

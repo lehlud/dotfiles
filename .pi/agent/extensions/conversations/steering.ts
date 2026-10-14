@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { sessionServices } from "../shared/session/services.ts";
 import { textContent } from "../shared/review/protocol.ts";
 
 export const STEERING_TYPE = "auto-approval-steering-instruction";
@@ -46,6 +47,8 @@ export function registerSteering(
   });
 
   pi.on("context", (event, ctx) => {
+    sessionServices(ctx).flushOperatorInputs?.();
+
     if (!steered) return;
 
     // Active /goal requests already contain the authoritative objective. Other

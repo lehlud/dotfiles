@@ -4,10 +4,12 @@ import { registerGoals } from "./goals.ts";
 import { registerSide } from "./side.ts";
 import { registerSteering } from "./steering.ts";
 import { registerContinue } from "./continue.ts";
+import { registerOperatorInputs } from "./operator-input.ts";
 import { sessionServices } from "../shared/session/services.ts";
 
 /** Conversation control owns no executor and cannot approve actions. */
 export default function conversations(pi: ExtensionAPI) {
+  registerOperatorInputs(pi);
   registerGoals(pi);
   registerProgress(pi);
   registerSide(pi);
