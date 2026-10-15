@@ -10,7 +10,8 @@ import {
 } from "./protocol.ts";
 import type { ReviewEnvelope } from "./contracts.ts";
 import { reviewCapacityIssue, REVIEW_OUTPUT_TOKENS } from "./context.ts";
-import { promptOriginalTool, readPromptOriginal } from "./originals.ts";
+import { promptOriginalTool, type PromptLookup } from "./originals.ts";
+import { originalLookupTurn, ReviewerToolError, type LookupObserver } from "./original-turn.ts";
 import { sumUsage } from "../providers/usage.ts";
 import {
   ProviderAvailability,
@@ -27,24 +28,17 @@ export type ReviewRegistry = Pick<ModelRegistry, "find" | "hasConfiguredAuth" | 
 
 type Usage = AssistantMessage["usage"];
 
-export type PromptLookup = {
-  promptId: string;
-  operation: string;
-  offset?: number;
-  limit?: number;
-  query?: string;
-};
+export type { PromptLookup } from "./originals.ts";
 
 export type ReviewAttempt = Reviewer & {
   status: "failed" | "invalid" | "approve" | "deny";
   reason: string;
 };
 
-export type ReviewObserver = {
+export type ReviewObserver = LookupObserver & {
   start(candidate: Reviewer): void;
   finish(): void;
   failed(attempt: ReviewAttempt): void;
-  lookup?(request: PromptLookup): void;
   retry?(event: AvailabilityNotice): void;
 };
 
@@ -208,8 +202,6 @@ async function requestReview(
   );
 }
 
-class ReviewerToolError extends Error {}
-
 type ReviewState = { usage?: Usage; promptLookups: PromptLookup[]; consulted: Set<string> };
 
 async function requestCandidate(
@@ -227,7 +219,13 @@ async function requestCandidate(
   const context = structuredClone(initial);
   const started = Date.now();
   const lookupBudget = originalLookupBudget(envelope);
-  const previousLookups = state.promptLookups.length;
+  const lookups = {
+    attempts: 0,
+    failures: 0,
+    limit: lookupBudget,
+    promptLookups: state.promptLookups,
+    consulted: state.consulted,
+  };
 
   for (let round = 0; round <= lookupBudget; round++) {
     const remaining = timeoutMs - (Date.now() - started);
@@ -261,40 +259,15 @@ async function requestCandidate(
       /* A tool turn need not contain a verdict yet. */
     }
 
-    if (response.stopReason !== "toolUse" || !envelope.promptSources?.size)
+    const sources = envelope.promptSources;
+
+    if (response.stopReason !== "toolUse" || !sources?.size)
       throw new ReviewerToolError("Invalid reviewer tool response");
 
     context.messages.push(response);
 
     for (const call of calls) {
-      if (
-        call.name !== promptOriginalTool.name ||
-        state.promptLookups.length - previousLookups >= lookupBudget
-      )
-        throw new ReviewerToolError("Reviewer original-prompt lookup limit or tool violated");
-
-      try {
-        const result = readPromptOriginal(envelope.promptSources, call.arguments);
-        const lookup = structuredClone(call.arguments) as PromptLookup;
-
-        state.promptLookups.push(lookup);
-        observer.lookup?.(lookup);
-
-        if (result.excerpts.some((excerpt) => excerpt.text.length))
-          state.consulted.add(lookup.promptId);
-
-        context.messages.push({
-          role: "toolResult",
-          toolCallId: call.id,
-          toolName: call.name,
-          content: [{ type: "text", text: JSON.stringify(result) }],
-          isError: false,
-          timestamp: Date.now(),
-        });
-      } catch {
-        throw new ReviewerToolError("Reviewer original-prompt lookup or audit failed");
-      }
-
+      context.messages.push(originalLookupTurn(call, sources, lookups, observer));
     }
 
   }
@@ -360,7 +333,9 @@ export async function requestVerdict(
       signal?.throwIfAborted();
 
       if (error instanceof RecoveryAuditError || error instanceof ReviewerToolError) {
-        const reason = "Reviewer original-prompt lookup failed; no fallback, nothing executed";
+        const detail =
+          error instanceof RecoveryAuditError ? "Provider recovery audit failed" : error.message;
+        const reason = `${detail}; no fallback, nothing executed`;
 
         attempts.push({ ...candidate, status: "invalid", reason });
 

@@ -97,6 +97,20 @@ export class ReviewDisplay {
         });
       },
 
+      lookupFailed: (failure) => {
+        this.pi.appendEntry("auto-approval-prompt-lookup-error", {
+          requestId: review.requestId,
+          fingerprint: review.fingerprint,
+          failure,
+        });
+        this.update?.({
+          content: [
+            { type: "text", text: `Reviewer original prompt · correcting ${failure.code}` },
+          ],
+          details: { phase: "reviewing", reviewer: this.reviewer, promptLookupError: failure },
+        });
+      },
+
     };
   }
 

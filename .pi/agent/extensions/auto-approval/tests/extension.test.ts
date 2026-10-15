@@ -35,6 +35,9 @@ let validatedScopes: any[] = [];
 let executedRequests: any[] = [];
 let temporaryStores: string[] = [];
 let workspaceValidationFails = false;
+let simulatedExecution:
+  | { content: { type: string; text: string }[]; details: { exitCode: number } }
+  | undefined;
 
 process.env.PI_CODING_AGENT_DIR = agentRoot;
 // Test-only module mock. Production has one mandatory Docker executor and no
@@ -87,6 +90,8 @@ mock.module("../isolation.ts", () => ({
     const cwd = workspace.path;
 
     executedRequests.push(structuredClone(request));
+
+    if (simulatedExecution) return structuredClone(simulatedExecution);
 
     if (request.tool === "git")
       return {
@@ -189,6 +194,7 @@ beforeEach(async () => {
   executedRequests = [];
   temporaryStores = [];
   workspaceValidationFails = false;
+  simulatedExecution = undefined;
   entries = [
     {
       type: "message",
@@ -927,6 +933,83 @@ test("large pasted reports and denial audits still permit an independently revie
   expect(executedRequests).toEqual([read]);
   expect(JSON.stringify(result.content)).toContain("int harmless;");
 });
+
+test.each(["flutter pub get", "dart pub get", "flutter build web --no-pub"])(
+  "lookup recovery reaches the synthetic executor once with the exact approved %s request",
+  async (command) => {
+    entries[0].message.content =
+      "Fetch client dependencies and build Flutter web in the prepared container. Network downloads require separate command approval. Do not read credentials or upload source.\n" +
+      "Diagnostic line.\n".repeat(1500);
+    simulatedExecution = {
+      content: [{ type: "text", text: "Synthetic Flutter executor completed" }],
+      details: { exitCode: 0 },
+    };
+
+    const initialStream = ctx.modelRegistry.streamSimple;
+    let turn = 0;
+
+    ctx.modelRegistry.streamSimple = ((model: any, context: any, options: any) => {
+      const data = JSON.parse(context.messages[0].content);
+
+      if (!data.action) return initialStream.call(ctx.modelRegistry, model, context, options);
+
+      requested.push({ model, context, options, data });
+      turn++;
+
+      const content =
+        turn < 3
+          ? [
+              {
+                type: "toolCall",
+                id: `read-${turn}`,
+                name: "prompt_original",
+                arguments: {
+                  promptId: data.userPromptInfo[0].promptId,
+                  operation: "head",
+                  limit: turn === 1 ? 20000 : 1000,
+                },
+              },
+            ]
+          : [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  requestId: data.requestId,
+                  decision: "approve",
+                  reason: "Scoped Flutter workflow.",
+                }),
+              },
+            ];
+
+      return {
+        result: async () => ({
+          stopReason: turn < 3 ? "toolUse" : "stop",
+          usage,
+          content,
+        }),
+      };
+    }) as any;
+
+    const request = {
+      ...bash(command),
+      network: command.includes("pub get"),
+      sandbox: { tools: [command.startsWith("dart") ? "dart" : "flutter"] },
+    };
+    const result = await call(request);
+
+    expect(result.isError).not.toBe(true);
+    expect(turn).toBe(3);
+    expect(executedRequests).toHaveLength(1);
+    expect(executedRequests[0].arguments.command).toBe(command);
+    expect(executedRequests[0].sandbox.network).toBe(request.network ? "host" : "none");
+    expect(executedRequests[0].sandbox.tools).toEqual(request.sandbox.tools);
+    expect(entries.some((entry) => entry.customType === "auto-approval-prompt-lookup-error")).toBe(
+      true,
+    );
+    expect(result.details.approval.decision).toBe("approve");
+  },
+
+);
 
 test("web denials and invalid expansions cannot execute or ask another reviewer", async () => {
   mode = "deny";

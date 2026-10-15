@@ -2,10 +2,28 @@ import { Type } from "typebox";
 import { Check } from "typebox/value";
 import type { Tool } from "@earendil-works/pi-ai";
 
+export type PromptLookup = {
+  promptId: string;
+  operation: "head" | "tail" | "read" | "grep";
+  offset?: number;
+  limit?: number;
+  query?: string;
+};
+
+export class OriginalLookupError extends Error {
+  constructor(
+    public readonly code: "invalid-arguments" | "unknown-prompt" | "invalid-range",
+    message: string,
+  ) {
+    super(message);
+  }
+
+}
+
 export const promptOriginalTool: Tool = {
   name: "prompt_original",
   description:
-    "Read the original of a selected compressed operator prompt by its promptId. No filesystem, shell or network access. head/tail/read return character ranges; grep searches a literal case-sensitive string and returns bounded excerpts with offsets. Use read to continue an excerpt. Originals override summaries.",
+    "Read the original of a selected compressed operator prompt by its promptId from userPromptInfo where compressed is true. No filesystem, shell or network access. head/tail/read return character ranges, not lines; limit is at most 8000 characters. grep searches a literal case-sensitive string and returns bounded excerpts with offsets. Use read to continue an excerpt. Originals override summaries. A tool error describes how to correct the lookup within this same review.",
   parameters: Type.Object(
     {
       promptId: Type.String({ pattern: "^[a-f0-9]{64}$" }),
@@ -23,28 +41,63 @@ export const promptOriginalTool: Tool = {
   ),
 };
 
-export function readPromptOriginal(sources: ReadonlyMap<string, string>, args: unknown) {
-  if (!Check(promptOriginalTool.parameters, args))
-    throw new Error("Invalid original-prompt lookup; no other tools or paths are allowed");
+/** Accept equivalent wire encodings without inventing fields, ranges or prompt identities. */
+export function parsePromptLookup(args: unknown): PromptLookup {
+  let value = args;
 
-  const request = args as {
-    promptId: string;
-    operation: string;
-    offset?: number;
-    limit?: number;
-    query?: string;
-  };
+  if (typeof value === "string" && Buffer.byteLength(value) <= 8192) {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      value = undefined;
+    }
+
+  }
+
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    value = { ...value };
+
+    for (const key of ["offset", "limit", "query"]) {
+      if ((value as Record<string, unknown>)[key] === null) {
+        delete (value as Record<string, unknown>)[key];
+      }
+
+    }
+
+  }
+
+  if (!Check(promptOriginalTool.parameters, value)) {
+    throw new OriginalLookupError(
+      "invalid-arguments",
+      "Invalid original-prompt lookup. Use only promptId, operation (head/tail/read/grep), optional nonnegative offset, limit 1–8000 characters, and a literal grep query. No other tools or paths are allowed.",
+    );
+  }
+
+  return value as PromptLookup;
+}
+
+export function readPromptOriginal(sources: ReadonlyMap<string, string>, args: unknown) {
+  const request = parsePromptLookup(args);
   const text = sources.get(request.promptId);
 
   if (text === undefined)
-    throw new Error("Original prompt is not in this review's selected branch context");
+    throw new OriginalLookupError(
+      "unknown-prompt",
+      "Original prompt is not in this review's selected branch context. Use an available promptId from userPromptInfo marked compressed.",
+    );
 
   const limit = request.limit ?? 4000;
   const excerpts: { offset: number; text: string }[] = [];
   let more = false;
 
   if (request.operation === "grep") {
-    if (!request.query) throw new Error("Literal grep query is required");
+    if (!request.query) {
+      throw new OriginalLookupError("invalid-arguments", "Literal grep query is required");
+    }
+
+    if ((request.offset ?? 0) > text.length) {
+      throw new OriginalLookupError("invalid-range", "Original prompt offset is outside the text");
+    }
 
     let offset = request.offset ?? 0,
       remaining = limit;
@@ -75,7 +128,8 @@ export function readPromptOriginal(sources: ReadonlyMap<string, string>, args: u
           ? Math.max(0, text.length - limit)
           : (request.offset ?? 0);
 
-    if (start > text.length) throw new Error("Original prompt offset is outside the text");
+    if (start > text.length)
+      throw new OriginalLookupError("invalid-range", "Original prompt offset is outside the text");
 
     excerpts.push({ offset: start, text: text.slice(start, start + limit) });
     more = start + limit < text.length;

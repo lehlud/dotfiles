@@ -160,6 +160,12 @@ export async function verifyGoal(
         }),
       lookup: (request) =>
         pi.appendEntry("auto-approval-prompt-lookup", { goalId: current.id, requestId, request }),
+      lookupFailed: (failure) =>
+        pi.appendEntry("auto-approval-prompt-lookup-error", {
+          goalId: current.id,
+          requestId,
+          failure,
+        }),
     },
     signal,
     GOAL_REVIEW_SYSTEM,
