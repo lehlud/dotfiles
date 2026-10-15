@@ -34,6 +34,7 @@ _flutter_build_key() {
     sha256sum "$containerfile" | cut -d ' ' -f 1
     id -u
     id -g
+    printf '%s\n' linux/amd64
 }
 
 _flutter_build_image() {
@@ -42,6 +43,7 @@ _flutter_build_image() {
     local containerfile="$3"
 
     "$runtime" build \
+        --platform linux/amd64 \
         --build-arg USER_UID="$(id -u)" \
         --build-arg USER_GID="$(id -g)" \
         --tag "$image" \
@@ -107,7 +109,7 @@ _flutter_main() {
 
     _flutter_ensure_sdk "$sdk_dir"
 
-    mkdir -p "$state_dir/home" "$state_dir/pub-cache" "$state_dir/gradle"
+    mkdir -p "$state_dir/home" "$state_dir/pub-cache" "$state_dir/gradle" "$state_dir/sdk-cache-linux-amd64"
     rm -f "$state_dir/flutter_settings"
 
     current_key="$(_flutter_build_key "$containerfile")"
@@ -122,7 +124,8 @@ _flutter_main() {
         rm -f "$state_dir/configured"
     fi
 
-    run_args=(run --rm)
+    # Google's Linux Android SDK binaries require an x86-64 userspace.
+    run_args=(run --rm --platform linux/amd64)
 
     if [ -t 0 ] && [ -t 1 ]; then
         run_args+=(-it)
@@ -142,6 +145,8 @@ _flutter_main() {
         --volume "$PWD:/workspace"
         --volume "$state_dir/home:/home/flutter"
         --volume "$sdk_dir:/home/flutter/flutter"
+        # Keep Dart and engine artifacts separate from the host architecture.
+        --volume "$state_dir/sdk-cache-linux-amd64:/home/flutter/flutter/bin/cache"
         --volume "$state_dir/pub-cache:/home/flutter/.pub-cache"
         --volume "$state_dir/gradle:/home/flutter/.gradle"
         --env PUB_CACHE=/home/flutter/.pub-cache
@@ -165,7 +170,7 @@ _flutter_main() {
     fi
 
     if [ ! -f "$state_dir/configured" ]; then
-        "$runtime" "${run_args[@]}" "$image" bash -lc 'flutter --disable-analytics && flutter config --android-sdk "$ANDROID_HOME" && flutter config --enable-linux-desktop && flutter doctor || true'
+        "$runtime" "${run_args[@]}" "$image" bash -lc 'flutter --disable-analytics && flutter config --android-sdk "$ANDROID_HOME" && flutter config --enable-linux-desktop'
         touch "$state_dir/configured"
     fi
 
