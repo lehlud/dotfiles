@@ -29,7 +29,6 @@ function fixture() {
     appendEntry: (customType: string, data: unknown) => {
       entries.push({ id: `metadata-${entries.length}`, type: "custom", customType, data });
     },
-
   } as any);
   hooks.session_start({}, ctx);
   hooks.context = () => sessionServices(ctx as any).flushOperatorInputs?.();
@@ -52,7 +51,6 @@ function fixture() {
     busy: () => {
       idle = false;
     },
-
   };
 }
 
@@ -210,4 +208,3 @@ test("trusted peer forwarding retains root task mode even when a peer queues it 
   state.input("New operator task", "steer");
   expect(operatorPromptRecords(state.entries)[0].kind).toBe("task");
 });
-

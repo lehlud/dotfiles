@@ -30,14 +30,12 @@ export class ProviderHeldError extends Error {
         : `Model request held by availability guard for ${Math.ceil(remainingMs / 1000)} seconds`,
     );
   }
-
 }
 
 export class RecoveryAuditError extends Error {
   constructor() {
     super("Provider recovery audit failed; no fallback, nothing executed");
   }
-
 }
 
 /** Policy refusals are final, including provider-side cybersecurity checks. */
@@ -90,7 +88,6 @@ function abortableWait(ms: number, signal?: AbortSignal): Promise<void> {
 
     signal?.addEventListener("abort", abort, { once: true });
   });
-
 }
 
 async function interruptible<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -226,7 +223,6 @@ export class ProviderAvailability {
       recovering: false,
     });
   }
-
 }
 
 const sharedKey = Symbol.for("pi.auto-approval.provider-availability.v1");

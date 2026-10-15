@@ -105,7 +105,6 @@ export class ReviewChainError extends Error {
   ) {
     super(message);
   }
-
 }
 
 function unavailable(
@@ -443,4 +442,3 @@ export async function requestVerdict(
     state.usage,
   );
 }
-

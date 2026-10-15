@@ -239,4 +239,3 @@ test("credential profiles are device-owned, reloadable, uniquely named and absen
   );
   await expect(loadConfig(directory, { searchPath: bin })).rejects.toThrow("must be unique");
 });
-

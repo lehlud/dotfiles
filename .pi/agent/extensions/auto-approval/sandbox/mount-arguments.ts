@@ -11,7 +11,6 @@ export function localToolBootstrapArguments(workspace: Workspace): string[] {
 
     return [tool.name, tool.commandDirectory, tool.helper ?? ""];
   });
-
 }
 
 export function localToolArguments(workspace: Workspace, native: boolean): string[] {
@@ -66,4 +65,3 @@ export function webRuntimeArguments(workspace: Workspace, native: boolean): stri
       : ["--mount", `type=bind,src=${source},dst=${target},bind-recursive=disabled,readonly`],
   );
 }
-

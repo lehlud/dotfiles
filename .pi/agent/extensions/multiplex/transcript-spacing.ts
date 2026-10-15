@@ -78,6 +78,4 @@ export class TranscriptSpacing {
 
     this.bindings.clear();
   }
-
 }
-

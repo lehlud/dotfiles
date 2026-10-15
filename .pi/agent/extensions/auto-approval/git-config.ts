@@ -96,7 +96,6 @@ function entries(text: string): [string, string][] {
 
       return [record.slice(0, newline), record.slice(newline + 1)];
     });
-
 }
 
 // After approval, read originals privately and delegate only public values to Git.
@@ -236,4 +235,3 @@ export async function executeWithGitConfig(
   }
 
 }
-

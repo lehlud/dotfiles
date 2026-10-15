@@ -70,7 +70,5 @@ export function registerContinue(pi: ExtensionAPI) {
       }
 
     },
-
   });
 }
-

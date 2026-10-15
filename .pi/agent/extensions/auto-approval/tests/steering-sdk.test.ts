@@ -101,7 +101,6 @@ async function fixture(directory: string, outage = false) {
 
       return stream;
     },
-
   });
 
   const settingsManager = SettingsManager.inMemory();
@@ -121,7 +120,6 @@ async function fixture(directory: string, outage = false) {
         registerContinue(pi);
         codeQuality(pi);
       },
-
     ],
   });
 
@@ -138,7 +136,6 @@ async function fixture(directory: string, outage = false) {
 
       return { content: [{ type: "text" as const, text: "MAIN-TESTS-PASSED" }], details: {} };
     },
-
   };
   const { session } = await createAgentSession({
     cwd: directory,

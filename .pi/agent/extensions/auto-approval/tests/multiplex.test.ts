@@ -92,7 +92,6 @@ test("multiplex alone validates transport and delivers arbitrary content without
       registerTool: (value: any) => {
         tool = value;
       },
-
     } as any,
     () => endpoint,
   );
@@ -191,7 +190,6 @@ test("reused word names cannot acknowledge messages from another team", () => {
       },
 
       registerTool() {},
-
     } as any,
     () => ({ name: "otter", boxes: current, operatorGoal: () => undefined }),
   );
@@ -293,4 +291,3 @@ test("unobserved delivery snapshots do not acknowledge, duplicate or rewrite let
   boxes.close();
   expect(boxes.unobserved()).toEqual([]);
 });
-

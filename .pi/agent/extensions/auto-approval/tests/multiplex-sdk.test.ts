@@ -300,7 +300,6 @@ async function fixture(
                 releases.push(done);
                 options?.signal?.addEventListener("abort", () => done(), { once: true });
               });
-
             }
 
             const call = (tool: string, args: any) => {
@@ -428,7 +427,6 @@ async function fixture(
 
       return stream;
     },
-
   });
 
   const settings = SettingsManager.inMemory(
@@ -480,7 +478,6 @@ async function fixture(
           });
 
       },
-
     ],
   });
 
@@ -1065,7 +1062,6 @@ nativeTest(
           setWidget() {},
 
           notify() {},
-
         } as any,
       });
       await state.session.prompt("/multiplex 2");
@@ -1130,7 +1126,6 @@ nativeTest(
           },
 
           notify() {},
-
         } as any,
       });
       await state.session.prompt("/multiplex 3");
@@ -1443,9 +1438,7 @@ nativeTest(
             return () => {
               terminal = undefined;
             };
-
           },
-
         } as any,
       });
       await state.session.prompt("/multiplex 3");
@@ -1534,9 +1527,7 @@ nativeTest(
             return () => {
               terminal = undefined;
             };
-
           },
-
         } as any,
       });
       await state.session.prompt("/multiplex 3");

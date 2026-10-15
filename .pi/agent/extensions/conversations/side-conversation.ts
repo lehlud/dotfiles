@@ -184,6 +184,4 @@ export class SideConversation {
 
     return await stream.result();
   }
-
 }
-

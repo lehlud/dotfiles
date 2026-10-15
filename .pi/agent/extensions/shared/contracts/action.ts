@@ -91,4 +91,3 @@ export function normalizeNetworkFlag(request: Request): Request {
 
   return { ...action, sandbox: { ...request.sandbox, network: mode } };
 }
-

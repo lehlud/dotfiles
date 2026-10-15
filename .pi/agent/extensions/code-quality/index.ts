@@ -18,4 +18,3 @@ export default function codeQuality(pi: ExtensionAPI) {
     ],
   }));
 }
-

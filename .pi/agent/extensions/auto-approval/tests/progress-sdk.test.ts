@@ -131,7 +131,6 @@ for (const changing of [false, true])
 
         return stream;
       },
-
     });
 
     const settings = SettingsManager.inMemory(),
@@ -173,10 +172,8 @@ for (const changing of [false, true])
                 details: { approval: { decision: "approve", action: args } },
               };
             },
-
           });
         },
-
       ],
     });
 

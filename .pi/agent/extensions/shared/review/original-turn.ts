@@ -102,4 +102,3 @@ function toolResult(call: ToolCall, result: unknown, isError: boolean): ToolResu
     timestamp: Date.now(),
   };
 }
-

@@ -141,7 +141,6 @@ mock.module("../isolation.ts", () => ({
       ctx,
     );
   },
-
 }));
 
 const { default: extension } = await import("../index.ts");
@@ -216,7 +215,6 @@ beforeEach(async () => {
 
             return callback(...args);
           }
-
         : callback;
     },
 
@@ -235,7 +233,6 @@ beforeEach(async () => {
 
       entries.push({ type: "custom", customType, data });
     },
-
   } as unknown as ExtensionAPI;
 
   ctx = {
@@ -250,7 +247,6 @@ beforeEach(async () => {
 
       setWidget: (_key: string, lines?: string[]) => widgets.push(lines),
       notify: () => {},
-
     },
     sessionManager: {
       getBranch: () => entries,
@@ -318,10 +314,8 @@ beforeEach(async () => {
               ],
             };
           },
-
         };
       },
-
     },
   } as unknown as ExtensionToolContext;
   extension(pi);
@@ -378,7 +372,6 @@ test("mailbox bypasses approval entirely while external actions still require re
     get sessionManager() {
       throw new Error("Approval must not inspect mailbox sessions");
     },
-
   };
 
   expect(hooks.tool_call({ toolName: "mailbox" }, inaccessible)).toBeUndefined();
@@ -1008,7 +1001,6 @@ test.each(["flutter pub get", "dart pub get", "flutter build web --no-pub"])(
     );
     expect(result.details.approval.decision).toBe("approve");
   },
-
 );
 
 test("web denials and invalid expansions cannot execute or ask another reviewer", async () => {
@@ -1612,4 +1604,3 @@ test("relocated gate infrastructure stays protected with an alternate agent dire
   }
 
 });
-

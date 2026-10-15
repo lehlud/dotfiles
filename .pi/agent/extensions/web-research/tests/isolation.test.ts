@@ -71,7 +71,6 @@ nativeTest(
     expect(result.content).toEqual([{ type: "text", text: "漢".repeat(80000) }]);
     expect(await Bun.file(join(dependencies, "mutation")).exists()).toBe(false);
   },
-
 );
 nativeTest(
   "web network scope affects only this new sandbox and is absent from the next one",
@@ -86,7 +85,6 @@ nativeTest(
     expect(offline.details.net).not.toBe(host);
     expect(again.details.net).not.toBe(host);
   },
-
 );
 nativeTest("real worker rejects local URLs and executor rejects invalid arguments", async () => {
   const result = await run(request({ url: "http://127.0.0.1/admin" }), true);
@@ -169,7 +167,6 @@ nativeTest(
     }
 
   },
-
 );
 nativeTest(
   "web scope still checks private temporary hardlinks and rejects unused file grants",
@@ -217,5 +214,4 @@ nativeTest(
       validateWorkspace(project, config, [], { limits: { memoryMiB: 64 } }, privateTmp, "web"),
     ).rejects.toThrow("cgroup limits");
   },
-
 );

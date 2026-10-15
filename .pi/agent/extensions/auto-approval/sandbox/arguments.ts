@@ -33,4 +33,3 @@ export function sandboxArguments(
     ? bwrapArguments(workspace, config, request, environment)
     : dockerArguments(workspace, config, name, request, environment);
 }
-

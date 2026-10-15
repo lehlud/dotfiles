@@ -28,4 +28,3 @@ export function actionSnapshot(raw: unknown): unknown {
 
   return snapshot;
 }
-

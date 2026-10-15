@@ -91,7 +91,6 @@ test("edit renders the standard sandbox diff with line numbers and preserves it 
 
       readFile: async () => Buffer.from("const before = 1;\n"),
       writeFile: async () => {},
-
     },
   });
   const args = { path: "sandbox-only.ts", edits: [{ oldText: "before", newText: "after" }] };
@@ -131,7 +130,6 @@ test("pending and denied edits never show a successful diff or perform native pr
 
         return tools.edit.renderCall!(args, theme, context);
       },
-
     } as ToolDefinition<any, any>,
   });
   const component = new ToolExecutionComponent(
@@ -203,7 +201,6 @@ test("long shell commands collapse only their display and expand back to the com
 
         return tools.bash.renderCall!(args, theme, context);
       },
-
     } as ToolDefinition<any, any>,
   });
 
@@ -371,4 +368,3 @@ test("encoded arguments retain the normal command preview", () => {
   component.markExecutionStarted();
   expect(display(component)).toContain("printf encoded-preview");
 });
-

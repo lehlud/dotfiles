@@ -112,11 +112,9 @@ test("Escape interrupts the team even when its terminal actor is idle and remove
         return () => {
           removed = true;
         };
-
       },
 
       notify() {},
-
     },
   };
   const detach = watchInterrupt(
@@ -126,7 +124,6 @@ test("Escape interrupts the team even when its terminal actor is idle and remove
       calls++;
       active = false;
     },
-
   );
 
   expect(listener("ordinary input")).toBeUndefined();
@@ -176,4 +173,3 @@ test("idle goal recovery batches unread mail without repeated wakes, polls or pr
   scheduler.settle("goal-2", 13, [{ name: "jay", sequence: 47 }], wake, check);
   expect(woke).toHaveLength(4);
 });
-

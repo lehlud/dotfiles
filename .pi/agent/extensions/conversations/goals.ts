@@ -36,4 +36,3 @@ export function registerGoals(pi: ExtensionAPI) {
 
   return () => (controller.goal?.status === "running" ? controller.goal.text : undefined);
 }
-

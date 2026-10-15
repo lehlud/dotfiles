@@ -170,4 +170,3 @@ test("split extensions share pinned dependencies at startup and reject a conflic
     "pinned Auto-Approval SDK dependencies",
   );
 });
-

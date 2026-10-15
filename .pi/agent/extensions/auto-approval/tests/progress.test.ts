@@ -118,7 +118,6 @@ function fixture() {
     stopTeam: async () => {
       stops++;
     },
-
   });
 
   const observe = () =>
@@ -185,4 +184,3 @@ test("operator steering resets the guard; mailbox and denied actions do not coun
 
   expect(state.counts().aborts).toBe(0);
 });
-

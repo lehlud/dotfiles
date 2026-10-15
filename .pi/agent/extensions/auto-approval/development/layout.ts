@@ -91,10 +91,6 @@ export function groupCode(source: string): string {
       statements(node.statements);
     }
 
-    if (ts.isBlock(node) || ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
-      afterLine(node.end);
-    }
-
     if (ts.isStatement(node) && statementGroup(node) === "flow") afterLine(node.end);
 
     ts.forEachChild(node, visit);
@@ -128,4 +124,3 @@ export function syntaxLeaves(source: string): string[] {
 
   return leaves;
 }
-

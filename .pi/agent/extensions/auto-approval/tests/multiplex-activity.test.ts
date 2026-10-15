@@ -63,7 +63,6 @@ function fixture() {
         else frames.push(content({}, theme).render(1000));
 
       },
-
     },
   } as any;
   const activity = new TeamActivity(pi, ctx, "team", "otter", ["otter", "maple", "hare"]);
@@ -155,7 +154,6 @@ test("saved activity renders with runtime attribution, terminal sanitization and
       if (type === ACTIVITY_ENTRY) render = value;
 
     },
-
   } as any);
 
   const data = {
@@ -215,7 +213,6 @@ test("a broadcast produces one readable feed entry; recipient events and transpo
       audit() {},
 
       result() {},
-
     });
 
   activity.observe("otter", {
@@ -270,7 +267,6 @@ test("every actor uses a distinct stable color and the compact table aligns with
           if (build) component = build({}, coloredTheme);
 
         },
-
       },
     } as any,
     "team",
@@ -446,7 +442,6 @@ function compactingPeer() {
       session,
       (error) => errors.push(error),
       () => {},
-
     ),
     session,
     prompts,
@@ -556,7 +551,6 @@ test("a real Pi SDK peer retains steering across manual compaction", async () =>
 
         return stream;
       },
-
     });
 
     const manager = SessionManager.inMemory(directory),
@@ -606,9 +600,7 @@ test("a real Pi SDK peer retains steering across manual compaction", async () =>
               },
             };
           });
-
         },
-
       ],
     });
 
@@ -630,7 +622,6 @@ test("a real Pi SDK peer retains steering across manual compaction", async () =>
       session,
       (error) => errors.push(error),
       () => {},
-
     );
     compact = session.compact();
 
@@ -682,7 +673,6 @@ test("the backend session has no duplicate native rows, including after stopping
       registerMessageRenderer: (_type: string, callback: any) => {
         callbacks.received = callback;
       },
-
     } as any,
     view,
     () => active,
@@ -703,7 +693,6 @@ test("the backend session has no duplicate native rows, including after stopping
     renderResult() {
       throw new Error("Duplicated result");
     },
-
   }));
   const context = {
     toolCallId: "edit-one",
@@ -819,7 +808,6 @@ test("hidden native assistant rows reserve no space after the shared feed", () =
       },
 
       registerMessageRenderer() {},
-
     } as any,
     view,
     () => true,
@@ -871,7 +859,6 @@ test("transcript compaction preserves visible spacing and warnings while catchin
       },
 
       registerMessageRenderer() {},
-
     } as any,
     view,
     () => true,
@@ -985,7 +972,6 @@ test("fullscreen history fills the recovered rows directly above the compact act
       },
 
       registerMessageRenderer() {},
-
     } as any,
     view,
     () => true,
@@ -1097,4 +1083,3 @@ test("malformed action loops are bounded per member without treating denials or 
   ).toBe(false);
   expect(failures.observe("brook", invalid)).toBe(false);
 });
-

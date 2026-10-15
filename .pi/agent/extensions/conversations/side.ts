@@ -68,7 +68,5 @@ export function registerSide(pi: ExtensionAPI) {
       }
 
     },
-
   });
 }
-

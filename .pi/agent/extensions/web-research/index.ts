@@ -74,7 +74,6 @@ function rendered(name: "websearch" | "webfetch"): ToolDefinition<any, any> {
         0,
       );
     },
-
   };
 }
 
@@ -90,4 +89,3 @@ export default function webResearch(pi: ExtensionAPI) {
     },
   }));
 }
-

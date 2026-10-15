@@ -47,4 +47,3 @@ export function sessionServices(ctx: Pick<ExtensionContext, "sessionManager">): 
 
   return services;
 }
-

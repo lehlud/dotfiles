@@ -88,7 +88,6 @@ beforeEach(() => {
       signal?.throwIfAborted();
       clock += ms;
     },
-
   });
 });
 
@@ -104,7 +103,6 @@ const observer = {
   failed: (attempt: ReviewAttempt) => {
     attempts.push(attempt);
   },
-
 };
 
 function message(provider: string, requestId = envelope.requestId) {
@@ -182,10 +180,8 @@ const registry: any = {
 
         return message(model.provider, JSON.parse(context.messages[0].content).requestId);
       },
-
     };
   },
-
 };
 const run = (settings = config, signal?: AbortSignal, callbacks = observer) =>
   reviewWithFallback(settings, registry, envelope, callbacks, signal, undefined, availability);
@@ -219,7 +215,6 @@ test.each([0, 4])(
       "The nullable-field refinement is finished. I am continuing the inventory screen migration.",
     );
   },
-
 );
 
 test("the first reviewer request eagerly carries ten legacy inputs and does not repeat only the latest correction", async () => {
@@ -367,7 +362,6 @@ test("large operator context is sent intact to a capable model and a denial stay
         }),
       };
     },
-
   };
   const result = await reviewWithFallback(config, gate, large, observer);
 
@@ -482,7 +476,6 @@ test("failed fallback audit callbacks abort the chain", async () => {
       failed() {
         throw new Error("Audit unavailable");
       },
-
     }),
   ).rejects.toThrow("Audit unavailable");
   expect(starts).toEqual(["openai"]);
@@ -522,7 +515,6 @@ test("the same action uses the same review policy regardless of coordination and
         }),
       };
     },
-
   };
 
   for (const entries of [
@@ -595,4 +587,3 @@ test("exhausted token-expiry retries allow only configured fallback and never la
   expect(result.attempts[0].reason).toContain("temporarily unavailable");
   expect(result.attempts[0].reason).not.toContain("/login");
 });
-

@@ -38,7 +38,6 @@ export const credentialCommandTool: ToolDefinition<any, any> = {
   async execute() {
     throw new Error("Credential commands require the approved private executor channel");
   },
-
 };
 
 export type CredentialExecution = {
@@ -123,4 +122,3 @@ export async function executeCredentialCommand(input: unknown) {
     ...(exitCode !== 0 ? { isError: true } : {}),
   };
 }
-

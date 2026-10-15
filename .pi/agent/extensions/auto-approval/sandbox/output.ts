@@ -20,6 +20,4 @@ export class BoundedOutput {
 
     return this.text;
   }
-
 }
-

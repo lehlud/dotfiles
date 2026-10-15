@@ -188,7 +188,6 @@ export function resilientStream(
 
     return stream;
   };
-
 }
 
 /** Wrap public provider objects while preserving authentication and request hooks. */
@@ -257,7 +256,6 @@ export function registerProviderRecovery(pi: ExtensionAPI, availability = provid
       (model) => {
         ctx.ui.setStatus(statusKey(model), undefined);
       },
-
     );
   };
 
@@ -266,4 +264,3 @@ export function registerProviderRecovery(pi: ExtensionAPI, availability = provid
   pi.on("context", install);
   pi.on("model_select", install);
 }
-

@@ -44,7 +44,6 @@ export function watchRpcAbort(input: Readable, interrupt: () => void) {
     line = "";
     oversized = false;
   };
-
 }
 
 export function watchInterrupt(
@@ -75,10 +74,7 @@ export function watchInterrupt(
         }
 
       }) ?? (() => {})
-
     );
 
   return () => {};
-
 }
-

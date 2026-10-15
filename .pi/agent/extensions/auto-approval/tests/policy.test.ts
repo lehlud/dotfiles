@@ -735,7 +735,6 @@ describe("review policy", () => {
     ).rejects.toThrow();
     expect(started).toBe(false);
   });
-
 });
 
 test("action review ignores coordination entries while retaining operator constraints and previous denials", () => {
@@ -824,4 +823,3 @@ test("local coordination failures stay out of review without hiding actual denia
     data: coordination,
   });
 });
-

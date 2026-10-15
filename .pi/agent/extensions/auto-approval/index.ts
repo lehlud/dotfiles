@@ -94,7 +94,6 @@ export default function autoApproval(pi: ExtensionAPI) {
       }
 
     },
-
   });
 
   pi.registerTool({
@@ -110,4 +109,3 @@ export default function autoApproval(pi: ExtensionAPI) {
     execute: actionHandler(pi, session),
   });
 }
-

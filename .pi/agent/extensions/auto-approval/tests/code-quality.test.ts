@@ -12,7 +12,6 @@ function fixture() {
       expect(name).toBe("context");
       context = hook;
     },
-
   } as any);
 
   return (messages: unknown[]) => context({ messages }).messages as any[];
@@ -62,6 +61,9 @@ test("the standing policy covers semantic groups, wrapping, completed blocks and
   for (const rule of [
     "Group statements by purpose",
     "Always put a blank line",
+    "completed control-flow block",
+    "Do not add blank lines just because a callback",
+    "JSON structure closes",
     "multiline control-flow bodies",
     "100 columns",
     "check those explicitly after formatting",
@@ -81,4 +83,3 @@ test("launcher requires code quality and loads it alongside mandatory action app
   expect(launcher).toContain("--no-approve");
   expect(launcher).toContain("--tools approved_action,mailbox");
 });
-

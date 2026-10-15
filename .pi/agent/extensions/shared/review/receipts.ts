@@ -121,4 +121,3 @@ export function reviewedReceipts(entries: readonly Entry[]): ReviewedEvidence[] 
 
   return reviewedEvidence;
 }
-

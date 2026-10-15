@@ -58,7 +58,6 @@ export async function executeIsolated(
             }
 
           })
-
         : new Promise<void>((done) => {
             const rm = spawn(executable, ["rm", "--force", name], { stdio: "ignore" });
 
@@ -135,4 +134,3 @@ export async function executeIsolated(
   }
 
 }
-

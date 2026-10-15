@@ -130,4 +130,3 @@ test("concurrent continuation commands do not schedule duplicate runs", async ()
   await first;
   expect(state.sent).toHaveLength(1);
 });
-

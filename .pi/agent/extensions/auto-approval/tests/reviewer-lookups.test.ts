@@ -98,7 +98,6 @@ function gate(
         }),
       };
     },
-
   };
   const verdict = (decision = "approve") => [
     {
@@ -160,7 +159,6 @@ test.each([JSON.stringify(valid), { ...valid, offset: null, query: null }])(
 
     expect(result.excerpts[0].text).toBe(original.slice(0, 200));
   },
-
 );
 
 test.each([
@@ -244,10 +242,8 @@ test.each(["lookup", "lookupFailed"])(
         [callback]: () => {
           throw new Error("synthetic-private-audit-error");
         },
-
       }),
     ).rejects.toThrow("lookup audit failed");
     expect(review.calls).toHaveLength(1);
   },
-
 );

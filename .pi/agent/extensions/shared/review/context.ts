@@ -129,4 +129,3 @@ export function reviewCapacityIssue(
     return `Reviewer context capacity unavailable: estimated ${estimatedTokens} tokens including output/framing reserve, model window ${model.contextWindow}; operator context and action were not truncated`;
 
 }
-

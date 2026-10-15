@@ -132,7 +132,6 @@ nativeTest(
       "Invalid writing check arguments",
     );
   },
-
 );
 
 nativeTest("empty legacy workspaceRoots do not disable automatic detection", async () => {
@@ -171,7 +170,6 @@ nativeTest(
       ),
     ).toContain("expired");
   },
-
 );
 nativeTest(
   "reviewed network and literal environment overrides expire after execution",
@@ -203,7 +201,6 @@ nativeTest(
     expect(later).not.toContain(hostNet);
     expect(later).toContain("default-env");
   },
-
 );
 
 nativeTest(
@@ -298,7 +295,6 @@ nativeTest(
 
     expect(JSON.stringify(output.content)).toContain("runtime-tool");
   },
-
 );
 nativeTest("execution, output and temporary storage limits are actually applied", async () => {
   const limitRequest = {
@@ -372,7 +368,6 @@ nativeTest(
 
     expect(JSON.stringify(output.content)).toContain("session-separated");
   },
-
 );
 
 nativeTest(
@@ -399,7 +394,6 @@ nativeTest(
     ).toContain("created-sibling");
     expect(await readFile(external, "utf8")).toBe("external-source");
   },
-
 );
 
 nativeTest(
@@ -442,7 +436,6 @@ nativeTest(
       ),
     ).rejects.toThrow("private sandbox temporary storage");
   },
-
 );
 
 test("temporary path mapping preserves nested workspace mounts and mounts private storage for Docker", () => {
@@ -513,7 +506,6 @@ nativeTest(
     }
 
   },
-
 );
 test("Docker sandbox arguments apply reviewed resource, environment, mount and network changes", () => {
   const c: SandboxConfig = {
@@ -694,7 +686,6 @@ nativeTest(
     }
 
   },
-
 );
 nativeTest("protected descendants are masked instead of exposing credentials", async () => {
   const hidden = join(project, "private");
@@ -747,7 +738,6 @@ nativeTest(
     );
     expect(await readFile(publicFile, "utf8")).toBe("edited");
   },
-
 );
 nativeTest("sandbox failure has no unsandboxed fallback", async () => {
   const broken = { ...native, backend: "bwrap", executable: "/bin/false" } as SandboxConfig;
@@ -780,4 +770,3 @@ nativeTest("detached descendants cannot write after their action has finished", 
   await Bun.sleep(500);
   await expect(access(join(project, "escaped-background"))).rejects.toThrow();
 });
-

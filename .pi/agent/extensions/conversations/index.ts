@@ -16,4 +16,3 @@ export default function conversations(pi: ExtensionAPI) {
   registerContinue(pi);
   registerSteering(pi, (ctx) => sessionServices(ctx).operatorGoal?.());
 }
-

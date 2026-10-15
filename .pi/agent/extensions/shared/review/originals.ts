@@ -17,7 +17,6 @@ export class OriginalLookupError extends Error {
   ) {
     super(message);
   }
-
 }
 
 export const promptOriginalTool: Tool = {
@@ -146,4 +145,3 @@ export function readPromptOriginal(sources: ReadonlyMap<string, string>, args: u
       : (request.offset ?? 0),
   };
 }
-

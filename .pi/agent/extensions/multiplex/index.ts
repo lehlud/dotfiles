@@ -6,4 +6,3 @@ export { MAX_AGENTS, MULTIPLEX_STATUS } from "./controller.ts";
 export default function multiplex(pi: ExtensionAPI) {
   new TeamController(pi).register();
 }
-

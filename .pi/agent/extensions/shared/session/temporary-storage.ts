@@ -22,4 +22,3 @@ export async function removeSessionTemporaryDirectory(directory: string): Promis
   await makeRemovable(directory);
   await rm(directory, { recursive: true, force: true });
 }
-

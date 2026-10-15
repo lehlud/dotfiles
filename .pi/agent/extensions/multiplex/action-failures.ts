@@ -22,6 +22,4 @@ export class ActionFailures {
 
     return count >= 3;
   }
-
 }
-

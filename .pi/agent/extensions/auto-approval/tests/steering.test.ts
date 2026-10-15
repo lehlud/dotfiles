@@ -32,7 +32,6 @@ beforeEach(() => {
       on: (name: string, callback: Function) => {
         hooks[name] = callback;
       },
-
     } as any,
     () => target,
   );
@@ -115,4 +114,3 @@ test("new tasks and session changes clear the prior steering scope", () => {
   expect(context().messages.at(-1).content).toContain("Neue Aufgabe");
   expect(context().messages.at(-1).content).not.toContain("Snail-Tests");
 });
-

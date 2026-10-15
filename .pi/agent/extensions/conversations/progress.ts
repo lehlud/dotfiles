@@ -89,7 +89,6 @@ export class InspectionProgress {
 
     return this.repeats >= 8 ? "halt" : this.repeats === 4 ? "warn" : fresh ? "fresh" : "repeat";
   }
-
 }
 
 export function registerProgress(
@@ -210,6 +209,4 @@ export function registerProgress(
       ctx.ui.notify("Team cleanup failed after progress halt; inspect the runtime.", "error"),
     );
   });
-
 }
-

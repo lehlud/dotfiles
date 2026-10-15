@@ -252,7 +252,6 @@ nativeTest(
       JSON.stringify((await run("! command -v sampleapp && printf expired", false)).content),
     ).toContain("expired");
   },
-
 );
 
 nativeTest(
@@ -269,7 +268,6 @@ nativeTest(
     expect(result.isError).not.toBe(true);
     expect(JSON.stringify(result.content)).toContain("argument with spaces");
   },
-
 );
 
 nativeTest(
@@ -283,7 +281,6 @@ nativeTest(
     expect(JSON.stringify(result.content)).toContain("reload or restart Pi");
     await expect(access(join(project, "legacy-started"))).rejects.toThrow();
   },
-
 );
 
 nativeTest(
@@ -314,7 +311,6 @@ nativeTest(
 
     await access(victim);
   },
-
 );
 
 nativeTest("Node installations cannot be combined with overlapping writable grants", async () => {
@@ -370,7 +366,6 @@ nativeTest(
     expect(JSON.stringify(later.content)).toContain("v22.1.0");
     expect(JSON.stringify(later.content)).toContain("fixture-node");
   },
-
 );
 
 nativeTest(
@@ -441,5 +436,4 @@ nativeTest(
     expect(missing.isError).toBe(true);
     expect(JSON.stringify(missing.content)).toContain("network: true and independent approval");
   },
-
 );

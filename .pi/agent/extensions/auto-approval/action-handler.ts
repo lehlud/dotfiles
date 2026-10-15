@@ -64,7 +64,6 @@ class ActionRun {
         (phase) => {
           this.phase = phase;
         },
-
       );
       const verdict = await this.review(prepared);
 
@@ -282,7 +281,6 @@ class ActionRun {
 
     return this.denied();
   }
-
 }
 
 export function actionHandler(
@@ -296,4 +294,3 @@ export function actionHandler(
       new ActionRun(pi, session, protection, id, raw, signal, update, ctx).run(),
     );
 }
-

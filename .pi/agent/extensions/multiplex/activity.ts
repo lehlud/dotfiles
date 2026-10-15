@@ -154,10 +154,8 @@ export function registerActivityRenderer(pi: ExtensionAPI, view = new FeedView()
         for (const component of components.values()) component.invalidate();
 
       },
-
     };
   });
-
 }
 
 /** Operator-only observation: entries never enter model context or actor mailboxes. */
@@ -247,15 +245,12 @@ export class TeamActivity {
 
               return truncateToWidth(colored, width);
             }),
-
           ];
         },
 
         invalidate() {},
-
       };
     });
-
   }
 
   refresh(immediate = false) {
@@ -441,6 +436,4 @@ export class TeamActivity {
     this.states.clear();
     this.ctx.ui.setWidget(ACTIVITY_WIDGET, undefined);
   }
-
 }
-

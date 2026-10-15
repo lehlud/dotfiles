@@ -86,4 +86,3 @@ export function sideSnapshot(entries: readonly ContextEntry[], maxBytes = 24000)
     bytes: Buffer.byteLength(text),
   };
 }
-

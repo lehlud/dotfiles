@@ -37,6 +37,4 @@ export class ActionSession {
     if (directory) await removeSessionTemporaryDirectory(await directory);
 
   }
-
 }
-

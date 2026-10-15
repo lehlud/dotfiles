@@ -52,7 +52,6 @@ export function matchesCredentialArgv(profile: CredentialProfile, argv: string[]
 
         return match?.[0] === argv[index];
       }),
-
   );
 }
 
@@ -384,4 +383,3 @@ export async function executeWithCredentials(
   }
 
 }
-

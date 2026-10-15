@@ -11,7 +11,6 @@ test("public instructions load without a fetch or another active tool", async ()
     on: (name: string, callback: Function) => {
       hooks[name] = callback;
     },
-
   } as any);
 
   const { message } = await hooks.before_agent_start();
@@ -77,4 +76,3 @@ test("malformed, oversized and undeclared inputs are rejected by the tool schema
   }
 
 });
-

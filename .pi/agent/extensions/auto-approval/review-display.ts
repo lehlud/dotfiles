@@ -110,9 +110,6 @@ export class ReviewDisplay {
           details: { phase: "reviewing", reviewer: this.reviewer, promptLookupError: failure },
         });
       },
-
     };
   }
-
 }
-

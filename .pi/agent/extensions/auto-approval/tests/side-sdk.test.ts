@@ -85,7 +85,6 @@ async function fixture(directory: string) {
           await new Promise<void>((done) => {
             releaseMain = done;
           });
-
         }
 
         message.content[0].text = side
@@ -107,7 +106,6 @@ async function fixture(directory: string) {
 
       return stream;
     },
-
   });
 
   const model = new ModelRegistry(runtime).find("side-sdk-fixture", "fixture")!;
@@ -176,7 +174,6 @@ test("real Pi SDK runs /side immediately during a parent turn without changing i
               done,
             );
           }),
-
       } as any,
     });
     main = state.session.prompt("MAIN-INTENT repair the parser and verify it.");

@@ -235,7 +235,6 @@ nativeTest(
     expect(stale.isError).toBe(true);
     expect(JSON.stringify(stale.content)).toContain("native Linux Dart runtime");
   },
-
 );
 
 async function mockDownloads(bundle = sdk) {
@@ -314,7 +313,6 @@ nativeTest(
     expect(rejected.isError).toBe(true);
     expect(JSON.stringify(rejected.content)).not.toContain("host-seed");
   },
-
 );
 
 nativeTest("arm64 setup replaces foreign Dart before executing any Dart binary", async () => {
@@ -365,4 +363,3 @@ printf '%s\\n' "$@"
   expect(result.isError).not.toBe(true);
   expect(JSON.stringify(result.content)).toContain("native-arm64-bootstrap");
 });
-

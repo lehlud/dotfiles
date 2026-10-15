@@ -19,7 +19,6 @@ export class Coordination {
   constructor(
     private names: readonly string[],
     private changed: (ready: boolean) => void = () => {},
-
   ) {}
 
   get ready() {
@@ -159,7 +158,6 @@ export class Coordination {
         }
 
       },
-
     };
   }
 
@@ -190,6 +188,4 @@ export class Coordination {
       throw new Error("Multiplex coordination is inactive or member is unknown.");
 
   }
-
 }
-

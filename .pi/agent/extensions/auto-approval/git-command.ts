@@ -33,7 +33,6 @@ export const gitTool: ToolDefinition<any, any> = {
   async execute() {
     throw new Error("Git commands require the reviewed isolated executor");
   },
-
 };
 
 const commands = new Set([
@@ -156,4 +155,3 @@ export async function executeGit(argv: string[], share: boolean, reader?: GitCon
     ...(exitCode !== 0 ? { isError: true } : {}),
   };
 }
-

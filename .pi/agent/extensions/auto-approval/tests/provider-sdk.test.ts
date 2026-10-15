@@ -29,7 +29,6 @@ for (const [label, failure] of [
       wait: async (ms) => {
         now += ms;
       },
-
     });
     const runtime = await ModelRuntime.create({
       authPath: join(directory, "auth.json"),
@@ -87,7 +86,6 @@ for (const [label, failure] of [
 
         return stream;
       },
-
     });
 
     const settingsManager = SettingsManager.inMemory({

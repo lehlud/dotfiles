@@ -125,4 +125,3 @@ export function parseLocalConfig(text: string): LocalConfig {
 
   return value;
 }
-

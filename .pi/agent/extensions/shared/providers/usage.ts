@@ -15,4 +15,3 @@ export function sumUsage(current: Usage | undefined, next: Usage): Usage {
 
   return merged;
 }
-

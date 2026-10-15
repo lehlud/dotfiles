@@ -59,7 +59,6 @@ export class Peer {
     private report: (error: string) => void,
     private settled: () => void,
     observe: (event: ActivityEvent) => void = () => {},
-
   ) {
     this.unsubscribe = session.subscribe((event) => {
       switch (event.type) {
@@ -74,7 +73,6 @@ export class Peer {
       }
 
     });
-
   }
 
   get busy() {
@@ -160,7 +158,6 @@ export class Peer {
         if (!this.stopped && !this.busy) this.settled();
 
       });
-
   }
 
   prompt(
@@ -229,7 +226,6 @@ export class Peer {
     }
 
   }
-
 }
 
 export async function createPeer(
@@ -305,9 +301,7 @@ export async function createPeer(
           }
 
         });
-
       },
-
     ],
   });
 
@@ -338,7 +332,6 @@ export async function createPeer(
           if (kind === "error") report("Peer sandbox or configuration unavailable.");
 
         },
-
       } as any,
     });
 
@@ -351,4 +344,3 @@ export async function createPeer(
   }
 
 }
-

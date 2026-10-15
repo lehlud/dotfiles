@@ -130,7 +130,6 @@ async function compressText(
           failed(attempt) {
             observer.failed?.(attempt);
           },
-
         },
         signal,
         COMPRESSION_SYSTEM,
@@ -298,4 +297,3 @@ export async function preparePromptContext(
 
   return { records, usage };
 }
-

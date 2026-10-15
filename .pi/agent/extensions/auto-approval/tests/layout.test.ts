@@ -2,14 +2,14 @@ import { expect, test } from "bun:test";
 import * as prettier from "prettier";
 import { groupCode, syntaxLeaves } from "../development/layout.ts";
 
-test("completed control-flow, function and nested blocks always have a blank line", () => {
+test("completed control flow gets a blank line and declarations keep semantic separation", () => {
   const source = "function run() {\n  if (ok) {\n    work();\n  }\n  finish();\n}\nrun();\n";
   const grouped = groupCode(source);
 
   expect(grouped).toContain("  }\n\n  finish()");
   expect(grouped).toContain("}\n\nrun()");
   expect(groupCode("function outer() {\n  while (ok) {\n    work();\n  }\n}\n")).toContain(
-    "  }\n\n}\n\n",
+    "  }\n\n}\n",
   );
   expect(syntaxLeaves(grouped)).toEqual(syntaxLeaves(source));
 });
@@ -35,14 +35,56 @@ test("setup, effects and exits form groups and leading comments stay with their 
   );
 });
 
-test("callbacks, methods and class endings separate completed bodies", () => {
+test("callback properties, methods and class endings do not force brace-only spacing", () => {
   const source =
     "class Team {\n  first() {\n    work();\n  }\n  second() {\n    work();\n  }\n}\nconst hooks = {\n  start: () => {\n    work();\n  },\n  stop: () => cleanup(),\n};\n";
   const grouped = groupCode(source);
 
-  expect(grouped).toContain("  }\n\n  second()");
-  expect(grouped).toContain("  },\n\n  stop:");
+  expect(grouped).toContain("  }\n  second()");
+  expect(grouped).toContain("  }\n}\n\nconst hooks");
+  expect(grouped).toContain("  },\n  stop:");
   expect(syntaxLeaves(grouped)).toEqual(syntaxLeaves(source));
+});
+
+test("route callbacks and nested constructor arguments keep ordinary formatter layout", async () => {
+  const source = `function legacyRoute(legacyPath, canonicalPath) {
+  return GoRoute({
+    path: legacyPath,
+    redirect: (context, state) => {
+      return canonicalClientUri(state.uri).toString();
+    },
+    routes: [
+      GoRoute({
+        path: ":id",
+        redirect: (context, state) => {
+          return canonicalClientUri(state.uri).toString();
+        },
+      }),
+    ],
+  });
+}
+`;
+  const formatted = await prettier.format(source, { parser: "typescript" });
+  const grouped = groupCode(formatted);
+
+  expect(grouped).toBe(formatted);
+  expect(syntaxLeaves(grouped)).toEqual(syntaxLeaves(source));
+});
+
+test("data literals receive no extra brace spacing while control flow inside callbacks still does", () => {
+  const data =
+    'const config = {\n  route: {\n    path: "/",\n  },\n  items: [\n    {\n      id: 1,\n    },\n  ],\n};\n';
+
+  expect(groupCode(data)).toBe(data);
+
+  const callback =
+    "use({\n  redirect: () => {\n    if (ready) {\n      update();\n    }\n    return target;\n  },\n});\n";
+  const grouped = groupCode(callback);
+
+  expect(grouped).toContain("    }\n\n    return target;");
+  expect(grouped).toContain("  },\n});\n");
+  expect(grouped).not.toContain("  },\n\n");
+  expect(syntaxLeaves(grouped)).toEqual(syntaxLeaves(callback));
 });
 
 test("prompt text, template expressions, regexes and comments retain their exact content", () => {
@@ -70,4 +112,3 @@ test("trailing comments stay attached to their completed block", () => {
   expect(grouped).toContain("} // End the check.\n\nfinish()");
   expect(syntaxLeaves(grouped)).toEqual(syntaxLeaves(source));
 });
-

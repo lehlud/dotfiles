@@ -24,7 +24,6 @@ beforeEach(() => {
       delays.push(ms);
       now += ms;
     },
-
   });
 });
 
@@ -234,7 +233,6 @@ test("abort during backoff leaves no false cooldown and retry-audit failure admi
       () => {
         throw new Error("synthetic audit failure");
       },
-
     ),
   ).rejects.toThrow("audit failed");
   expect(calls).toBe(2);
@@ -342,7 +340,6 @@ test("request-bound denial, invalid JSON, refusals and partial denial followed b
 
         throw new Error("HTTP 507");
       },
-
     }),
   ]) {
     let calls = 0;
@@ -375,7 +372,6 @@ test("cybersecurity refusals are final even when a transport status appears in t
     () => {
       throw new Error(refusal);
     },
-
   ]) {
     let calls = 0;
     const response = await resilientStream(
@@ -419,7 +415,6 @@ test("raw refusal markers prevent retries even if a transport throw follows the 
 
         throw new Error("HTTP 503");
       },
-
     }),
   ]) {
     let calls = 0;
@@ -439,4 +434,3 @@ test("raw refusal markers prevent retries even if a transport throw follows the 
   }
 
 });
-

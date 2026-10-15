@@ -171,4 +171,3 @@ export async function verifyGoal(
     GOAL_REVIEW_SYSTEM,
   );
 }
-

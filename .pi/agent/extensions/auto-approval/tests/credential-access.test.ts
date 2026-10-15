@@ -198,7 +198,6 @@ nativeTest(
     }
 
   },
-
 );
 
 nativeTest("profile validation reads no credentials and fails closed before review", async () => {
@@ -258,7 +257,6 @@ nativeTest(
       }),
     ).rejects.toThrow("protected");
   },
-
 );
 nativeTest(
   "only the selected CLI gets the token; output is redacted and /tmp disappears between calls",
@@ -326,7 +324,6 @@ nativeTest(
     expect(ordinary.isError).not.toBe(true);
     expect(await readFile(secretPath, "utf8")).toBe(token);
   },
-
 );
 nativeTest(
   "changed binaries, unavailable secrets and insecure secret files never run",
@@ -358,7 +355,6 @@ nativeTest(
       ),
     ).rejects.toThrow();
   },
-
 );
 nativeTest("nonzero status and cancellation are preserved without credential output", async () => {
   const failed = request(["fail"]);
@@ -449,7 +445,6 @@ nativeTest(
     }
 
   },
-
 );
 
 nativeTest(
@@ -467,7 +462,6 @@ nativeTest(
 
         return new Response("closed synthetic item 42");
       },
-
     });
 
     try {
@@ -495,7 +489,6 @@ nativeTest(
     }
 
   },
-
 );
 nativeTest(
   "real gh performs an authenticated paginated API request through a general binding",
@@ -531,7 +524,6 @@ nativeTest(
           headers,
         });
       },
-
     });
 
     try {
@@ -575,7 +567,6 @@ nativeTest(
     }
 
   },
-
 );
 
 nativeTest(
@@ -619,7 +610,6 @@ nativeTest(
     }
 
   },
-
 );
 nativeTest(
   "any bound CLI can receive reviewed read/write project or selected-file access, with grants expiring afterwards",
@@ -739,5 +729,4 @@ nativeTest(
       ).rejects.toThrow("protected");
 
   },
-
 );

@@ -82,7 +82,6 @@ const registry: any = {
       }),
     };
   },
-
 };
 const branch = (text: string) => [{ type: "message", message: { role: "user", content: text } }];
 const observer = { saved: (record: any) => saved.push(record) };
@@ -392,7 +391,6 @@ test("reviewer can discover an omitted prohibition in the original and deny with
         }),
       };
     },
-
   };
 
   calls = [];
@@ -403,7 +401,6 @@ test("reviewer can discover an omitted prohibition in the original and deny with
     finish() {},
 
     failed() {},
-
   });
 
   expect(result.verdict.decision).toBe("deny");
@@ -456,7 +453,6 @@ test("approval without original inspection and arbitrary reviewer tools fail wit
         }),
       };
     },
-
   };
 
   await expect(
@@ -514,7 +510,6 @@ test("ten compressed prompts are eager and all ten originals can be checked befo
         }),
       };
     },
-
   };
 
   const result = await reviewWithFallback(config, gate, envelope, {
@@ -523,7 +518,6 @@ test("ten compressed prompts are eager and all ten originals can be checked befo
     finish() {},
 
     failed() {},
-
   });
   const eager = JSON.parse(contexts[0].messages[0].content);
 
@@ -567,4 +561,3 @@ test("a malformed private cache is regenerated without changing the original pro
   expect(calls).toHaveLength(1);
   expect(replacement.records[0].original).toBe(original);
 });
-

@@ -174,9 +174,7 @@ export function registerEndpoint(pi: ExtensionAPI, current: () => Endpoint | und
 
       return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     },
-
   });
 
   return attach;
 }
-

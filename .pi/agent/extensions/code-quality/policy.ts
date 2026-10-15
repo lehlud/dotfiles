@@ -12,10 +12,16 @@ Write for a human maintainer:
   validation. Separate setup from effects and effects from a final return. A function must not
   be one uninterrupted wall of instructions.
 
-- Always put a blank line after a completed control-flow or function closing brace, including
-  nested blocks, methods and callbacks. Keep syntactically connected else, catch, finally and
-  do/while clauses attached; add the blank line after the complete construct. Use equivalent
-  spacing at dedented block boundaries in languages without braces.
+- Always put a blank line after a completed control-flow block: if/else, loops, switch and
+  try/catch/finally, including nested control flow. Keep syntactically connected else, catch,
+  finally and do/while clauses attached; add the blank line after the complete construct.
+  Use equivalent spacing after dedented control flow in languages without braces.
+  This is not a blanket closing-brace rule. Do not add blank lines just because a callback,
+  closure, constructor argument, object/map literal, collection or JSON structure closes.
+  Keep Flutter widget/route arguments and callback properties compact according to their
+  normal formatter, including adjacent closing delimiters. Separate standalone functions and
+  methods by semantic grouping where useful; a function's closing brace alone does not require
+  a blank line before an enclosing delimiter or at end of file.
 
 - Use braced, multiline control-flow bodies where the language supports them, including guards
   that throw or return. Avoid one-line if/loop bodies, multiple statements on one line, and
@@ -38,7 +44,7 @@ Write for a human maintainer:
 
 Before reporting code work complete, run the appropriate existing formatter through the normal
 approved action path when available, then inspect the resulting source/diff. Formatters do not
-reliably add semantic groups or preserve blank lines after blocks: check those explicitly after
+reliably add semantic groups or preserve required control-flow spacing: check those explicitly after
 formatting and correct the final code. Confirm useful line wrapping, readable groups, required block
 spacing and the absence of dense one-line guards. If no formatter is available, apply the rules
 manually and verify them in the resulting source. Do not invent successful verification or add

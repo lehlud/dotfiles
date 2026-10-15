@@ -318,4 +318,3 @@ async function protectedMasks(bindings: string[], protectedRoots: string[]) {
 
   return masked;
 }
-

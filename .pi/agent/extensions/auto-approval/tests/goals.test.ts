@@ -240,10 +240,8 @@ beforeEach(async () => {
               ],
             };
           },
-
         };
       },
-
     },
   };
   operatorGoal = registerGoals({
@@ -657,4 +655,3 @@ test("multi-turn deliverables retain the initial answer and latest answer of thi
   expect(data.omittedAssistantAnswers).toBe(4);
   expect(JSON.stringify(data)).not.toContain("Unrelated earlier goal");
 });
-

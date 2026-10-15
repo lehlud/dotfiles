@@ -71,4 +71,3 @@ test("definitions cannot execute a host web operation", async () => {
     ),
   ).rejects.toThrow("isolated");
 });
-

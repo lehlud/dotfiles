@@ -215,6 +215,4 @@ export class SideView {
     this.conversation.close();
     this.ctx.ui.setStatus("01-side", undefined);
   }
-
 }
-

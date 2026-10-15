@@ -41,7 +41,6 @@ export const writingCheckTool: ToolDefinition<any, any> = {
       },
     };
   },
-
 };
 
 export default function publicWriting(pi: ExtensionAPI) {
@@ -53,4 +52,3 @@ export default function publicWriting(pi: ExtensionAPI) {
     },
   }));
 }
-

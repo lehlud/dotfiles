@@ -38,4 +38,3 @@ export function reviewedWebRequest(request: Request): Request {
 
   return { ...request, sandbox: { ...request.sandbox, network: "host" } };
 }
-

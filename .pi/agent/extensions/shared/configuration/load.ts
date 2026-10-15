@@ -126,7 +126,6 @@ async function readDeviceConfig(localPath: string): Promise<LocalConfig | undefi
 
         throw failure;
       },
-
     );
 
     if (present) throw error;
@@ -149,4 +148,3 @@ export async function loadConfig(
 
   return await resolveConfig(portable, local, runtime);
 }
-

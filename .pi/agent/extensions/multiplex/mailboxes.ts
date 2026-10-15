@@ -45,7 +45,6 @@ export class Mailboxes {
       this.revision++;
       onPlan?.(ready);
     });
-
   }
 
   bind(name: string, sink: MailboxSink) {
@@ -148,7 +147,6 @@ export class Mailboxes {
     this.histories.clear();
     this.pending.clear();
   }
-
 }
 
 export function letterMessage(letter: Letter) {
@@ -159,4 +157,3 @@ export function letterMessage(letter: Letter) {
     details: letter,
   };
 }
-

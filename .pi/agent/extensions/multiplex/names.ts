@@ -98,4 +98,3 @@ export function randomNames(count: number): string[] {
 
   return available.slice(0, count);
 }
-

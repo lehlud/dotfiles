@@ -46,8 +46,5 @@ export class ProtectedPaths {
   // Catch now to avoid an unhandled rejection; awaiting below still fails closed.
   constructor() {
     void this.roots.catch(() => {});
-
   }
-
 }
-

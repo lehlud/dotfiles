@@ -21,4 +21,3 @@ test("the output limit counts bytes and excludes an overflowing chunk before acc
   expect(() => output.append(Buffer.from("b"))).toThrow("Executor output limit exceeded");
   expect(output.finish()).toBe("a漢");
 });
-

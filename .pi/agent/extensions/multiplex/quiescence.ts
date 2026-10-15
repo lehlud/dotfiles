@@ -39,6 +39,4 @@ export class Quiescence {
     this.checkpoint = key;
     check();
   }
-
 }
-

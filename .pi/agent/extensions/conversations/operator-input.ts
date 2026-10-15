@@ -29,7 +29,6 @@ export function registerOperatorInputs(pi: ExtensionAPI) {
     services.forwardOperatorInput = (text, kind) => {
       forwarded = { promptId: promptDigest(text), kind };
     };
-
   };
 
   pi.on("session_start", bind);
@@ -113,6 +112,4 @@ export function registerOperatorInputs(pi: ExtensionAPI) {
     }
 
   };
-
 }
-

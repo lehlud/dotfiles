@@ -120,7 +120,6 @@ async function fixture(directory: string, steering = false) {
 
       return stream;
     },
-
   });
 
   const sessionManager = SessionManager.inMemory(directory);
@@ -163,7 +162,6 @@ async function fixture(directory: string, steering = false) {
         registerContinue(pi);
         codeQuality(pi);
       },
-
     ],
   });
 

@@ -267,7 +267,6 @@ export class GoalController {
         (prepared) => {
           envelope = prepared;
         },
-
       );
 
       signal.throwIfAborted();
@@ -351,6 +350,4 @@ export class GoalController {
     }
 
   }
-
 }
-

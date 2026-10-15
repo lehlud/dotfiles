@@ -103,7 +103,6 @@ beforeEach(() => {
           result: async () => response,
         };
       },
-
     },
   };
 });
@@ -314,7 +313,6 @@ test("/side is UI-only, cannot nest, and is closed on parent session navigation"
     registerCommand: (_name: string, definition: any) => {
       command = definition.handler;
     },
-
   } as any);
   ctx.mode = "json";
   await command("Question", ctx);
@@ -339,4 +337,3 @@ test("/side is UI-only, cannot nest, and is closed on parent session navigation"
   expect(branch).toHaveLength(2);
   expect(typeof finish).toBe("function");
 });
-

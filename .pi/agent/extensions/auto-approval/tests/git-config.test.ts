@@ -160,7 +160,6 @@ nativeTest(
 
     expect(() => validateGitRequest(action(["commit", "-m", "safe"]), config)).not.toThrow();
   },
-
 );
 nativeTest(
   "real Git commits with included global identity, without mutating global or local config",
@@ -206,7 +205,6 @@ nativeTest(
 
     expect(await readFile(join(project, ".git", "config"), "utf8")).toBe(localConfig);
   },
-
 );
 nativeTest("the public snapshot is read-only, and disappears from later commands", async () => {
   const source = join(fixture, "public-copy");
@@ -302,7 +300,6 @@ nativeTest(
       ).isError,
     ).not.toBe(true);
   },
-
 );
 nativeTest(
   "explicitly reviewed config edits still work through ordinary read/write path grants",
@@ -325,7 +322,6 @@ nativeTest(
     expect((await executeIsolated(request, allowed, config.sandbox)).isError).not.toBe(true);
     expect(await readFile(path, "utf8")).toBe("requested change");
   },
-
 );
 nativeTest(
   "missing global config does not block local inspection and never invents an identity",
@@ -345,7 +341,6 @@ nativeTest(
 
     expect(result.isError).not.toBe(true);
   },
-
 );
 nativeTest(
   "parse failures and cancellation remove private snapshots without returning their contents",
@@ -372,5 +367,4 @@ nativeTest(
       new Set((await readdir(tmpdir())).filter((name) => name.startsWith("pi-git-config-"))),
     ).toEqual(before);
   },
-
 );

@@ -35,7 +35,5 @@ export function startReviewDisplay(ctx: ExtensionContext, reviewer: string) {
 
       return Math.max(0, performance.now() - started);
     },
-
   };
 }
-

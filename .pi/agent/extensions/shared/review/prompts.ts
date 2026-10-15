@@ -146,4 +146,3 @@ export function selectedOperatorPrompts(
 export function operatorPrompts(entries: readonly Entry[], limit: number): string[] {
   return selectedOperatorPrompts(entries, limit).map((prompt) => prompt.text);
 }
-

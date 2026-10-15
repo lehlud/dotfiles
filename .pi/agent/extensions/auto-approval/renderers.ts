@@ -167,7 +167,5 @@ export function createApprovalRenderers(
 
       return state.wrapper;
     },
-
   };
 }
-

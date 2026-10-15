@@ -166,7 +166,6 @@ export class FeedView {
     this.ui?.invalidate?.();
     this.ui?.requestRender?.();
   }
-
 }
 
 export function messageBody(text: string, expanded: boolean) {
@@ -221,7 +220,6 @@ ${details?.assignments?.map((item: any) => `${item.name}: ${item.task}${item.wai
 
       return new Text(messageBody(text, options.expanded), 0, 0);
     },
-
   };
 }
 
@@ -262,4 +260,3 @@ export function suppressNativeFeed(pi: ExtensionAPI, view: FeedView, active: () 
   );
   pi.registerMessageRenderer("multiplex-letter", () => empty());
 }
-

@@ -188,7 +188,6 @@ export class TeamController {
           for (const peer of this.team.peers) peer.message(instruction);
 
         },
-
       );
     const endpoint: Endpoint = {
       name: names[0],
@@ -206,7 +205,6 @@ export class TeamController {
       pending: [],
       failures: new ActionFailures(),
       settle() {},
-
     };
     const quiescence = new Quiescence();
 
@@ -251,7 +249,6 @@ export class TeamController {
             { triggerTurn: true },
           );
         },
-
       );
     };
 
@@ -484,7 +481,6 @@ export class TeamController {
         this.view.select(!name || name === "all" ? undefined : name);
         this.team.activity.refresh(true);
       },
-
     });
     this.pi.registerCommand("multiplex", {
       description: "Equal peers: /multiplex <1–16>, status, interrupt or off; n counts all members",
@@ -567,9 +563,6 @@ export class TeamController {
         }
 
       },
-
     });
   }
-
 }
-
