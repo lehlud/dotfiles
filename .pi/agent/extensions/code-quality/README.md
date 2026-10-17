@@ -33,3 +33,5 @@ remain the verification step.
 Dependencies are linked to the pinned shared SDK by operator startup. Tests live in the shared
 `../auto-approval` package. For architecture and development commands, see the
 [architecture guide](../README.md).
+
+The standing instruction has a 1,500-character test budget. Keep operational rules concise; detailed explanations belong in documentation.

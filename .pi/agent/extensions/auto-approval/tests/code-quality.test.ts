@@ -60,17 +60,15 @@ test("obsolete instructions are replaced while quoted user text and other polici
 test("the standing policy covers semantic groups, wrapping, completed blocks and verification", () => {
   for (const rule of [
     "Group statements by purpose",
-    "Always put a blank line",
-    "completed control-flow block",
-    "Consecutive closing braces",
-    "even when the inner brace closes control flow",
-    "Do not add blank lines just because a callback",
-    "JSON structure closes",
+    "blank line after completed control flow before the next statement",
+    "Consecutive closing braces/delimiters stay together",
+    "including after nested control flow",
+    "JSON endings alone require no gap",
     "multiline control-flow bodies",
     "100 columns",
-    "check those explicitly after formatting",
+    "inspect grouping, wrapping and block spacing manually",
     "wire formats",
-    "normal review and sandbox",
+    "no refactor scope or approval bypass",
   ])
     expect(CODE_POLICY.replace(/\s+/g, " ")).toContain(rule);
 });
@@ -83,4 +81,8 @@ test("launcher requires code quality and loads it alongside mandatory action app
   expect(launcher).toContain('--extension "$_code_quality"');
   expect(launcher).toContain("--no-approve");
   expect(launcher).toContain("--tools approved_action,mailbox");
+});
+
+test("the standing code policy stays within its compact prompt budget", () => {
+  expect(CODE_POLICY.length).toBeLessThanOrEqual(1500);
 });
