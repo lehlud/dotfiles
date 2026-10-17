@@ -9,7 +9,8 @@ import {
   ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { createApprovalRenderers } from "../renderers.ts";
 import { webTools } from "../../web-research/index.ts";
 import { gitTool } from "../git-command.ts";
@@ -241,6 +242,10 @@ test("denied, pending and failed writes never show written additions", () => {
     component.updateResult(result as any);
     expect(display(component)).not.toContain("never written");
     expect(display(component)).not.toContain("+1");
+
+    const success = theme.bg("toolSuccessBg", "sample").split("sample")[0]!;
+
+    expect(component.render(80).join("\n")).not.toContain(success);
   }
 });
 
@@ -420,4 +425,38 @@ test("encoded arguments retain the normal command preview", () => {
   component.setArgsComplete();
   component.markExecutionStarted();
   expect(display(component)).toContain("printf encoded-preview");
+});
+
+test("writes and native edits share the padded success block with approval outside", () => {
+  const edit = row("edit", {
+    path: "example.ts",
+    edits: [{ oldText: "before", newText: "after" }],
+  });
+  const write = row("write", { path: "example.ts", content: "const after = 1;" });
+  const background = theme.bg("toolSuccessBg", "sample").split("sample")[0]!;
+
+  edit.updateResult(
+    approved({
+      content: [{ type: "text", text: "Edited file" }],
+      details: { diff: "+1 const after = 1;" },
+    }),
+  );
+  write.updateResult(written("const after = 1;"));
+
+  for (const component of [edit, write]) {
+    const rows = component.render(80);
+    const plain = rows.map(stripTerminalSequences);
+    const title = plain.findIndex((line) => /(?:edit|write) example.ts/.test(line));
+    const addition = plain.findIndex((line) => line.includes("+1 const after = 1;"));
+    const approval = plain.findIndex((line) => line.includes("Auto-Approval"));
+
+    expect(rows[title]).toContain(background);
+    expect(rows[addition]).toContain(background);
+    expect(plain[addition]).toStartWith(" +1");
+    expect(visibleWidth(rows[addition]!)).toBe(80);
+    expect(addition).toBeGreaterThan(title + 1);
+    expect(approval).toBeGreaterThan(addition);
+    expect(rows[approval]).not.toContain(background);
+    expect(plain.filter((line) => line.includes("+1 const after = 1;"))).toHaveLength(1);
+  }
 });

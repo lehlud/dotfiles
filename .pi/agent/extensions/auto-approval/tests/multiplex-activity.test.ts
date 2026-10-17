@@ -1,3 +1,4 @@
+import { theme as nativeTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { ActionFailures } from "../../multiplex/action-failures.ts";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -46,6 +47,7 @@ import { Peer } from "../../multiplex/peer.ts";
 const theme: any = {
   style: (text: string) => text,
   fg: (_color: string, text: string) => text,
+  bg: (color: any, text: string) => nativeTheme.bg(color, text),
   bold: (text: string) => text,
 };
 
@@ -383,6 +385,13 @@ test.each(["edit", "write"])(
     if (operation === "edit") expect(output.match(/-1 const old = 1;/g)).toHaveLength(2);
     else expect(output).not.toContain("-1 const old = 1;");
 
+    const background = nativeTheme.bg("toolSuccessBg", "sample").split("sample")[0]!;
+    const additions = feed
+      .render(120)
+      .filter((line: string) => stripTerminalSequences(line).includes("+1 const next = 2;"));
+
+    expect(additions.every((line: string) => line.includes(background))).toBe(true);
+    expect(additions.every((line: string) => visibleWidth(line) === 120)).toBe(true);
     expect(output.match(/\+1 const next = 2;/g)).toHaveLength(2);
     expect(output).not.toContain("UNEXECUTED");
     view.select("maple");

@@ -1,8 +1,8 @@
 import { actionSnapshot } from "../shared/contracts/action-snapshot.ts";
 import { writtenDiff } from "../shared/contracts/written-diff.ts";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { renderFileDiff } from "../shared/presentation/file-diff.ts";
+import { Container, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import {
-  renderDiff,
   type AgentSessionEvent,
   type ExtensionAPI,
   type ExtensionContext,
@@ -97,13 +97,23 @@ export function registerActivityRenderer(pi: ExtensionAPI, view = new FeedView()
   ) => {
     const header = clean(`Agent · ${record.from} · ${record.text}`).replace(/\s+/g, " ");
     const body = messageBody(record.body, expanded);
-    const diff = record.diff ? renderDiff(clean(record.diff), { filePath: record.path }) : "";
+    const title = colorize(theme, record.color ?? 0, theme.bold(header));
 
-    return new Text(
-      `${colorize(theme, record.color ?? 0, theme.bold(header))}${body ? `\n${body}` : ""}${diff ? `\n${diff}` : ""}`,
-      0,
-      0,
-    );
+    if (record.diff !== undefined) {
+      const group = new Container();
+
+      group.addChild(
+        renderFileDiff(new Text(title, 0, 0), clean(record.diff), { expanded }, theme),
+      );
+
+      if (body) {
+        group.addChild(new Text(body, 0, 0));
+      }
+
+      return group;
+    }
+
+    return new Text(`${title}${body ? `\n${body}` : ""}`, 0, 0);
   };
 
   pi.registerEntryRenderer<ActivityRecord>(ACTIVITY_ENTRY, (entry, options, theme) => {
@@ -124,7 +134,7 @@ export function registerActivityRenderer(pi: ExtensionAPI, view = new FeedView()
 
     if (!segment) return;
 
-    const components = new Map<ActivityRecord, Text>();
+    const components = new Map<ActivityRecord, Component>();
 
     return {
       render(width) {

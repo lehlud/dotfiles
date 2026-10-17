@@ -1087,8 +1087,12 @@ nativeTest(
       previous = process.env.PI_CODING_AGENT_DIR;
     let state: Awaited<ReturnType<typeof fixture>> | undefined, main: Promise<void> | undefined;
     const frames = new Map<string, string[]>();
+
+    initTheme("dark", false);
+
     const theme: any = {
       fg: (_key: string, text: string) => text,
+      bg: (_key: string, text: string) => text,
       bold: (text: string) => text,
       style: (text: string) => text,
     };

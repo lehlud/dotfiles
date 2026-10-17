@@ -1,7 +1,7 @@
 import { actionSnapshot } from "../shared/contracts/action-snapshot.ts";
-import { Container, Text, type Component } from "@earendil-works/pi-tui";
+import { Box, Container, Text, type Component } from "@earendil-works/pi-tui";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { renderWrittenDiff } from "./write-renderer.ts";
+import { renderFileDiff } from "../shared/presentation/file-diff.ts";
 import { writtenDiff } from "../shared/contracts/written-diff.ts";
 
 type NativeTool = ToolDefinition<any, any>;
@@ -15,6 +15,8 @@ type RenderState = {
   result?: Component;
   wrapper: Container;
   callWrapper?: Container;
+  writeCall?: Box;
+  writeDiff?: string;
 };
 
 /** Display the built-in tool, without giving its renderer unreviewed host IO. */
@@ -86,6 +88,19 @@ export function createApprovalRenderers(
           args: displayed,
         }) ?? new Text(theme.fg("toolTitle", theme.bold(name || "approved_action")), 0, 0);
 
+      let call = state.call;
+
+      if (name === "write") {
+        state.writeCall = renderFileDiff(
+          state.call,
+          state.writeDiff,
+          context,
+          theme,
+          state.writeCall,
+        );
+        call = state.writeCall;
+      }
+
       if (args?.sandbox || args?.network !== undefined) {
         const changes = {
           ...args.sandbox,
@@ -109,12 +124,12 @@ export function createApprovalRenderers(
         state.callWrapper.addChild(
           new Text(theme.fg("warning", `Sandbox request · ${labels.join(" · ")}`), 0, 0),
         );
-        state.callWrapper.addChild(state.call);
+        state.callWrapper.addChild(call);
 
         return state.callWrapper;
       }
 
-      return state.call;
+      return call;
     },
 
     renderResult(result, options, theme, context) {
@@ -129,6 +144,18 @@ export function createApprovalRenderers(
       // result. Keep it out of syntax highlighting and tool-specific output.
       const completed = !options.isPartial && details?.approval && Object.hasOwn(details, "result");
 
+      if (name === "write" && state.call) {
+        state.writeDiff =
+          completed && !context.isError ? writtenDiff(details.approval, details.result) : undefined;
+        state.writeCall = renderFileDiff(
+          state.call,
+          state.writeDiff,
+          context,
+          theme,
+          state.writeCall,
+        );
+      }
+
       if (completed) {
         const decision = details.approvalSummary
           ? { type: "text", text: details.approvalSummary }
@@ -137,34 +164,32 @@ export function createApprovalRenderers(
         if (decision?.type === "text")
           state.wrapper.addChild(new Text(theme.fg("muted", decision.text), 0, 0));
 
+        if (state.writeDiff !== undefined) {
+          return state.wrapper;
+        }
+
         const output = {
           ...result,
           content: details.approvalSummary ? result.content : result.content.slice(1),
           details: details.result,
         };
         const tool = definition(name);
-        const writeDiff =
-          name === "write" && !context.isError && !output.isError
-            ? writtenDiff(details.approval, output.details)
-            : undefined;
 
         state.result =
-          writeDiff !== undefined
-            ? renderWrittenDiff(writeDiff, options.expanded, theme)
-            : (tool?.renderResult?.(
-                output,
-                options,
-                theme,
-                nativeContext(context, state, state.result),
-              ) ??
-              new Text(
-                output.content
-                  .filter((item) => item.type === "text")
-                  .map((item) => item.text)
-                  .join("\n"),
-                0,
-                0,
-              ));
+          tool?.renderResult?.(
+            output,
+            options,
+            theme,
+            nativeContext(context, state, state.result),
+          ) ??
+          new Text(
+            output.content
+              .filter((item) => item.type === "text")
+              .map((item) => item.text)
+              .join("\n"),
+            0,
+            0,
+          );
         state.wrapper.addChild(state.result);
       } else {
         // Reviews, denials and technical failures have no underlying result.
