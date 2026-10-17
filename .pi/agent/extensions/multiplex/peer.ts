@@ -19,6 +19,7 @@ import { registerSteering } from "../conversations/steering.ts";
 import { registerOperatorInputs } from "../conversations/operator-input.ts";
 import type { OperatorInputKind } from "../shared/contracts/operator-input.ts";
 import { installProviderStreams } from "../shared/providers/stream.ts";
+import { registerFastRequests } from "../shared/providers/fast.ts";
 import { sessionServices } from "../shared/session/services.ts";
 import { registerEndpoint, type Endpoint } from "./endpoint.ts";
 import { letterMessage, PEER_RESULT, type Letter } from "./mailboxes.ts";
@@ -266,8 +267,10 @@ export async function createPeer(
       codeQuality,
       (pi) => {
         registerOperatorInputs(pi);
+        registerFastRequests(pi);
         pi.on("session_start", (_event, child) => {
           sessionServices(child).operatorGoal = endpoint.operatorGoal;
+          sessionServices(child).fastMode = () => sessionServices(ctx).fastMode?.() ?? false;
         });
 
         registerSteering(pi, endpoint.operatorGoal);

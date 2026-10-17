@@ -1,4 +1,5 @@
 import { actionSnapshot } from "../shared/contracts/action-snapshot.ts";
+import { writtenDiff } from "../shared/contracts/written-diff.ts";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import {
   renderDiff,
@@ -401,21 +402,25 @@ export class TeamActivity {
 
       } else {
         const details = event.result?.details;
+        const confirmedDiff =
+          label === "write"
+            ? writtenDiff(details?.approval, details?.result)
+            : details?.result?.diff;
         const diff =
           !event.isError &&
           event.toolName === "approved_action" &&
-          label === "edit" &&
+          ["edit", "write"].includes(label) &&
           details?.approval?.decision === "approve" &&
-          details?.approval?.action?.tool === "edit" &&
-          typeof details?.result?.diff === "string"
-            ? bounded(details.result.diff)
+          details?.approval?.action?.tool === label &&
+          typeof confirmedDiff === "string"
+            ? bounded(confirmedDiff)
             : undefined;
 
         this.record(
           from,
           "tool-end",
           diff
-            ? `edit ${clean(tool?.path ?? "")}`
+            ? `${label} ${clean(tool?.path ?? "")}`
             : `${label} · ${event.isError ? "Failed" : "Finished"}`,
           plain(event.result?.content),
           { diff, path: tool?.path, toolCallId: event.toolCallId },

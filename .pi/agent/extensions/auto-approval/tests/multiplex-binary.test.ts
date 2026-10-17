@@ -79,6 +79,7 @@ binaryTest(
       "multiplex",
       "provider-recovery",
       "code-quality",
+      "fast-mode",
     ].flatMap((name) => ["--extension", resolve(import.meta.dir, "../..", name, "index.ts")]);
     const child = Bun.spawn(
       [
@@ -144,6 +145,18 @@ binaryTest(
     };
 
     try {
+      child.stdin.write(JSON.stringify({ id: "fast", type: "prompt", message: "/fast on" }) + "\n");
+      await until(() => events.some((event) => event.id === "fast" && event.type === "response"));
+      expect(events.find((event) => event.id === "fast").success).toBe(true);
+      expect(
+        events.some(
+          (event) =>
+            event.type === "extension_ui_request" &&
+            event.method === "setStatus" &&
+            event.statusKey === "fast-mode" &&
+            event.statusText === "fast (unavailable)",
+        ),
+      ).toBe(true);
       child.stdin.write(
         JSON.stringify({ id: "team", type: "prompt", message: "/multiplex 2" }) + "\n",
       );
@@ -314,6 +327,7 @@ binaryTest(
       "multiplex",
       "provider-recovery",
       "code-quality",
+      "fast-mode",
     ].flatMap((name) => ["--extension", resolve(import.meta.dir, "../..", name, "index.ts")]);
     const child = Bun.spawn(
       [

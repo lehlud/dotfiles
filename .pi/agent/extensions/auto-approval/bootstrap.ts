@@ -61,6 +61,7 @@ export async function prepareCompanionDependencies(directory: string): Promise<v
     "multiplex",
     "provider-recovery",
     "code-quality",
+    "fast-mode",
   ]) {
     const companion = join(dirname(directory), name);
 

@@ -57,6 +57,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
     "public-writing": ["public-writing"],
     "web-research": ["web-research", "shared"],
     "code-quality": ["code-quality"],
+    "fast-mode": ["fast-mode", "shared"],
   };
 
   return edges

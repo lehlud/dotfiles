@@ -159,10 +159,13 @@ nativeTest(
       scoped({ ...action("write", { path: shared, content: "forbidden" }), sandbox: read.sandbox }),
     ).rejects.toThrow();
     expect(await readFile(shared, "utf8")).toBe("shared-source");
-    await scoped({
+
+    const written = await scoped({
       ...action("write", { path: shared, content: "approved-change" }),
       sandbox: { paths: [{ path: shared, access: "write" }] },
     });
+
+    expect(written.details).toEqual({ written: true });
     expect(await readFile(shared, "utf8")).toBe("approved-change");
     expect(
       JSON.stringify(
@@ -769,4 +772,16 @@ nativeTest("detached descendants cannot write after their action has finished", 
   });
   await Bun.sleep(500);
   await expect(access(join(project, "escaped-background"))).rejects.toThrow();
+});
+
+nativeTest("large writes retain a compact confirmation under a small output limit", async () => {
+  const content = "approved contents\n".repeat(4000);
+  const result = await scoped({
+    ...action("write", { path: "large-write.txt", content }),
+    sandbox: { limits: { maxOutputBytes: 1024 } },
+  });
+
+  expect(result.details).toEqual({ written: true });
+  expect(await readFile(join(project, "large-write.txt"), "utf8")).toBe(content);
+  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(1024);
 });

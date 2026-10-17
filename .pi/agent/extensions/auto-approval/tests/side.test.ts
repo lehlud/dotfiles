@@ -8,6 +8,7 @@ import { sideSnapshot } from "../../conversations/side-context.ts";
 import { SideConversation, SIDE_SYSTEM } from "../../conversations/side-conversation.ts";
 import { SideView } from "../../conversations/side-view.ts";
 import { registerSide } from "../../conversations/side.ts";
+import { sessionServices } from "../../shared/session/services.ts";
 
 const usage = {
   input: 3,
@@ -336,4 +337,26 @@ test("/side is UI-only, cannot nest, and is closed on parent session navigation"
   expect(statuses.has("01-side")).toBe(false);
   expect(branch).toHaveLength(2);
   expect(typeof finish).toBe("function");
+});
+
+test("side requests follow the live parent fast toggle without changing the selected model", async () => {
+  let enabled = true;
+
+  ctx.model = { ...model, provider: "openrouter", api: "openai-completions" };
+  sessionServices(ctx).fastMode = () => enabled;
+
+  const side = new SideConversation(ctx, () => {});
+  const payload = { model: model.id, provider: { only: ["trusted"] } };
+
+  await side.ask("First question");
+  expect(await calls[0].options.onPayload(payload, calls[0].selected)).toEqual({
+    ...payload,
+    provider: { only: ["trusted"], sort: "throughput" },
+  });
+
+  enabled = false;
+  await side.ask("Second question");
+  expect(await calls[1].options.onPayload(payload, calls[1].selected)).toBeUndefined();
+  expect(calls.every((call) => call.selected.id === model.id)).toBe(true);
+  expect(payload.provider).toEqual({ only: ["trusted"] });
 });

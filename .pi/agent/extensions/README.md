@@ -4,16 +4,17 @@ Each feature has one SDK entry point (`index.ts`). The launcher loads these entr
 `shared/` is a library, not an extension. Feature controllers own session state. Pure contracts and
 review infrastructure never import a feature entry point.
 
-| Module            | Responsibility                                                                              | Main entry                   |
-| ----------------- | ------------------------------------------------------------------------------------------- | ---------------------------- |
-| Auto-Approval     | Authorize and execute one exact operation in mandatory isolation                            | `auto-approval/index.ts`     |
-| Conversations     | Goals, completion checks, steering, side conversations, progress detection                  | `conversations/index.ts`     |
-| Multiplex         | Equal peer sessions, coordination, authenticated mailboxes, shared activity                 | `multiplex/index.ts`         |
-| Provider recovery | Attach bounded transport recovery to the working model                                      | `provider-recovery/index.ts` |
-| Code quality      | Standing multilingual code readability rules on every working-model request                 | `code-quality/index.ts`      |
-| Public writing    | Frozen editorial policy and an independently reviewed prose receipt                         | `public-writing/index.ts`    |
-| Web research      | DDGS queries and public URL text extraction through the isolated worker                     | `web-research/index.ts`      |
-| Shared library    | Settings, immutable action contracts, provider transport, review evidence, session services | `shared/`                    |
+| Module            | Responsibility                                                                                   | Main entry                   |
+| ----------------- | ------------------------------------------------------------------------------------------------ | ---------------------------- |
+| Auto-Approval     | Authorize and execute one exact operation in mandatory isolation                                 | `auto-approval/index.ts`     |
+| Conversations     | Goals, completion checks, steering, side conversations, progress detection                       | `conversations/index.ts`     |
+| Multiplex         | Equal peer sessions, coordination, authenticated mailboxes, shared activity                      | `multiplex/index.ts`         |
+| Fast mode         | Session speed preference for OpenAI/Codex and OpenRouter; shared by peers and side conversations | `fast-mode/index.ts`         |
+| Provider recovery | Attach bounded transport recovery to the working model                                           | `provider-recovery/index.ts` |
+| Code quality      | Standing multilingual code readability rules on every working-model request                      | `code-quality/index.ts`      |
+| Public writing    | Frozen editorial policy and an independently reviewed prose receipt                              | `public-writing/index.ts`    |
+| Web research      | DDGS queries and public URL text extraction through the isolated worker                          | `web-research/index.ts`      |
+| Shared library    | Settings, immutable action contracts, provider transport, review evidence, session services      | `shared/`                    |
 
 ## Boundaries
 
@@ -25,6 +26,7 @@ review infrastructure never import a feature entry point.
 - Multiplex's `peer.ts` is the explicit composition root for child sessions. It attaches Auto-Approval,
   public writing, code quality, progress detection and steering to each child. Other Multiplex modules use shared
   contracts, not approval internals.
+- Fast mode owns its operator toggle and status; shared request hooks apply it to the working model, peers and side conversations. It does not change reviewer policy, model selection or sandbox access.
 - Code quality has no feature dependencies, tools or reviewer. Its transient context instruction
   reaches every working-model request without changing the saved transcript or authorization.
 - Auto-Approval consumes public writing and web tool definitions. It owns action policy, preflight,

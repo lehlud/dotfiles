@@ -1,6 +1,8 @@
 import { actionSnapshot } from "../shared/contracts/action-snapshot.ts";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { renderWrittenDiff } from "./write-renderer.ts";
+import { writtenDiff } from "../shared/contracts/written-diff.ts";
 
 type NativeTool = ToolDefinition<any, any>;
 
@@ -58,6 +60,10 @@ export function createApprovalRenderers(
       }
 
       const command = displayed.command;
+
+      if (name === "write") {
+        displayed = { ...displayed, content: "" };
+      }
 
       if (
         ["bash", "powershell"].includes(name) &&
@@ -137,22 +143,28 @@ export function createApprovalRenderers(
           details: details.result,
         };
         const tool = definition(name);
+        const writeDiff =
+          name === "write" && !context.isError && !output.isError
+            ? writtenDiff(details.approval, output.details)
+            : undefined;
 
         state.result =
-          tool?.renderResult?.(
-            output,
-            options,
-            theme,
-            nativeContext(context, state, state.result),
-          ) ??
-          new Text(
-            output.content
-              .filter((item) => item.type === "text")
-              .map((item) => item.text)
-              .join("\n"),
-            0,
-            0,
-          );
+          writeDiff !== undefined
+            ? renderWrittenDiff(writeDiff, options.expanded, theme)
+            : (tool?.renderResult?.(
+                output,
+                options,
+                theme,
+                nativeContext(context, state, state.result),
+              ) ??
+              new Text(
+                output.content
+                  .filter((item) => item.type === "text")
+                  .map((item) => item.text)
+                  .join("\n"),
+                0,
+                0,
+              ));
         state.wrapper.addChild(state.result);
       } else {
         // Reviews, denials and technical failures have no underlying result.

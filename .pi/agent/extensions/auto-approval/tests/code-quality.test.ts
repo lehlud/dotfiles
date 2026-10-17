@@ -78,7 +78,7 @@ test("launcher requires code quality and loads it alongside mandatory action app
   const launcher = await readFile(resolve(import.meta.dir, "../../../../../.local/bin/pi"), "utf8");
 
   expect(launcher).toContain('_code_quality="$HOME/.pi/agent/extensions/code-quality/index.ts"');
-  expect(launcher).toContain('"$_recovery" "$_code_quality"; do');
+  expect(launcher).toContain('"$_recovery" "$_code_quality" "$_fast"; do');
   expect(launcher).toContain('--extension "$_code_quality"');
   expect(launcher).toContain("--no-approve");
   expect(launcher).toContain("--tools approved_action,mailbox");

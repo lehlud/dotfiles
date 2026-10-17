@@ -9,6 +9,7 @@ export type ActionLease = {
 
 /** Only extensions set these session-bound services; no model tool can access them. */
 export type SessionServices = {
+  fastMode?: () => boolean;
   operatorGoal?: () => string | undefined;
   operatorGoalId?: () => string | undefined;
   goalInstruction?: () => string | undefined;

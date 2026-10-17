@@ -297,94 +297,110 @@ test("every actor uses a distinct stable color and the compact table aligns with
   activity.close();
 });
 
-test("confirmed edits from every actor render real line-numbered diffs; rejected edits never do", () => {
-  initTheme("dark", false);
+test.each(["edit", "write"])(
+  "confirmed %s actions from every actor render line-numbered diffs; rejected actions never do",
+  (operation) => {
+    initTheme("dark", false);
 
-  const records: any[] = [],
-    view = new FeedView(),
-    renderers = new Map<string, any>();
-  const pi = {
-    appendEntry: (type: string, data: any) => records.push({ type, data }),
-    registerEntryRenderer: (type: string, render: any) => renderers.set(type, render),
-  } as any;
-  const activity = new TeamActivity(
-    pi,
-    { ui: { setWidget() {} } } as any,
-    "team",
-    "otter",
-    ["otter", "maple"],
-    view,
-  );
+    const records: any[] = [],
+      view = new FeedView(),
+      renderers = new Map<string, any>();
+    const pi = {
+      appendEntry: (type: string, data: any) => records.push({ type, data }),
+      registerEntryRenderer: (type: string, render: any) => renderers.set(type, render),
+    } as any;
+    const activity = new TeamActivity(
+      pi,
+      { ui: { setWidget() {} } } as any,
+      "team",
+      "otter",
+      ["otter", "maple"],
+      view,
+    );
 
-  activity.observe("otter", {
-    type: "message_end",
-    message: { role: "user", content: "Edit" },
-  } as any);
+    activity.observe("otter", {
+      type: "message_end",
+      message: { role: "user", content: "Edit" },
+    } as any);
 
-  for (const from of ["otter", "maple"]) {
-    activity.observe(from, {
+    for (const from of ["otter", "maple"]) {
+      activity.observe(from, {
+        type: "tool_execution_start",
+        toolCallId: from,
+        toolName: "approved_action",
+        args: { tool: operation, arguments: { path: `${from}.ts` } },
+      });
+      activity.observe(from, {
+        type: "tool_execution_end",
+        toolCallId: from,
+        toolName: "approved_action",
+        isError: false,
+        result: {
+          content: [{ type: "text", text: "Approved edit" }],
+          details: {
+            approval: {
+              decision: "approve",
+              action: { tool: operation, arguments: { content: "const next = 2;" } },
+            },
+            result:
+              operation === "write"
+                ? { written: true }
+                : { diff: "-1 const old = 1;\n+1 const next = 2;" },
+          },
+        },
+      });
+    }
+
+    activity.observe("maple", {
       type: "tool_execution_start",
-      toolCallId: from,
+      toolCallId: "denied",
       toolName: "approved_action",
-      args: { tool: "edit", arguments: { path: `${from}.ts` } },
+      args: { tool: "edit", arguments: { path: "denied.ts" } },
     });
-    activity.observe(from, {
+    activity.observe("maple", {
       type: "tool_execution_end",
-      toolCallId: from,
+      toolCallId: "denied",
       toolName: "approved_action",
-      isError: false,
+      isError: true,
       result: {
-        content: [{ type: "text", text: "Approved edit" }],
+        content: [{ type: "text", text: "Denied" }],
         details: {
-          approval: { decision: "approve", action: { tool: "edit" } },
-          result: { diff: "-1 const old = 1;\n+1 const next = 2;" },
+          approval: { decision: "deny", action: { tool: "edit" } },
+          result: { diff: "UNEXECUTED" },
         },
       },
     });
-  }
+    registerActivityRenderer(pi, view);
 
-  activity.observe("maple", {
-    type: "tool_execution_start",
-    toolCallId: "denied",
-    toolName: "approved_action",
-    args: { tool: "edit", arguments: { path: "denied.ts" } },
-  });
-  activity.observe("maple", {
-    type: "tool_execution_end",
-    toolCallId: "denied",
-    toolName: "approved_action",
-    isError: true,
-    result: {
-      content: [{ type: "text", text: "Denied" }],
-      details: {
-        approval: { decision: "deny", action: { tool: "edit" } },
-        result: { diff: "UNEXECUTED" },
-      },
-    },
-  });
-  registerActivityRenderer(pi, view);
+    const anchor = records.find((entry) => entry.type === FEED_ENTRY);
+    const feed = renderers.get(FEED_ENTRY)(
+      { data: anchor.data },
+      { expanded: false },
+      coloredTheme,
+    );
+    const output = stripTerminalSequences(feed.render(120).join("\n"));
 
-  const anchor = records.find((entry) => entry.type === FEED_ENTRY);
-  const feed = renderers.get(FEED_ENTRY)({ data: anchor.data }, { expanded: false }, coloredTheme);
-  const output = stripTerminalSequences(feed.render(120).join("\n"));
+    expect(output).toContain(`Agent · otter · ${operation} otter.ts`);
+    expect(output).toContain(`Agent · maple · ${operation} maple.ts`);
 
-  expect(output).toContain("Agent · otter · edit otter.ts");
-  expect(output).toContain("Agent · maple · edit maple.ts");
-  expect(output.match(/-1 const old = 1;/g)).toHaveLength(2);
-  expect(output.match(/\+1 const next = 2;/g)).toHaveLength(2);
-  expect(output).not.toContain("UNEXECUTED");
-  view.select("maple");
-  expect(stripTerminalSequences(feed.render(120).join("\n"))).not.toContain("Agent · otter");
+    if (operation === "edit") expect(output.match(/-1 const old = 1;/g)).toHaveLength(2);
+    else expect(output).not.toContain("-1 const old = 1;");
 
-  const replay = new FeedView();
+    expect(output.match(/\+1 const next = 2;/g)).toHaveLength(2);
+    expect(output).not.toContain("UNEXECUTED");
+    view.select("maple");
+    expect(stripTerminalSequences(feed.render(120).join("\n"))).not.toContain("Agent · otter");
 
-  replay.restore(
-    records.filter((entry) => entry.type === ACTIVITY_ENTRY).map((entry) => entry.data),
-  );
-  expect(replay.hidesTool("otter")).toBe(true);
-  expect(replay.hidesTool("maple")).toBe(false);
-  activity.close();
-});
+    const replay = new FeedView();
+
+    replay.restore(
+      records.filter((entry) => entry.type === ACTIVITY_ENTRY).map((entry) => entry.data),
+    );
+    expect(replay.hidesTool("otter")).toBe(true);
+    expect(replay.hidesTool("maple")).toBe(false);
+    activity.close();
+  },
+);
 
 test("ordinary mailbox rendering never displays raw envelope data or repeats sent text", () => {
   initTheme("dark", false);

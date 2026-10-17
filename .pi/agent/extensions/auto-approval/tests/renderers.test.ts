@@ -58,6 +58,14 @@ const approved = (result: any) => ({
   details: { approval: { decision: "approve" }, result: result.details },
 });
 
+const written = (content: string) => ({
+  ...approved({ content: [{ type: "text", text: "Wrote file" }], details: { written: true } }),
+  details: {
+    approval: { decision: "approve", action: { tool: "write", arguments: { content } } },
+    result: { written: true },
+  },
+});
+
 test("read uses its normal title, collapsed output, expansion and truncation details", () => {
   const component = row("read", { path: "example.ts", offset: 10, limit: 5 });
 
@@ -173,9 +181,9 @@ test("pending and denied edits never show a successful diff or perform native pr
 test("write, bash and ls also keep their native presentation", () => {
   const write = row("write", { path: "written.ts", content: "const written = 42;" });
 
-  write.updateResult(approved({ content: [{ type: "text", text: "Successfully wrote file" }] }));
+  write.updateResult(written("const written = 42;"));
   expect(display(write)).toContain("write written.ts");
-  expect(display(write)).toContain("const written = 42;");
+  expect(display(write)).toContain("+1 const written = 42;");
 
   const ls = row("ls", { path: ".", limit: 100 });
 
@@ -188,6 +196,53 @@ test("write, bash and ls also keep their native presentation", () => {
   bash.updateResult(approved({ content: [{ type: "text", text: "done" }] }));
   expect(display(bash)).toContain("printf done");
   expect(display(bash)).toContain("done");
+});
+
+test("writes show only successful sandbox additions, with collapse, expansion and restored results", () => {
+  const args = { path: "written.ts", content: "unreviewed-call-content" };
+  const component = row("write", args);
+
+  expect(display(component)).not.toContain("unreviewed-call-content");
+
+  const content = Array.from({ length: 24 }, (_, index) => `actual line ${index + 1}`).join("\n");
+  const result = written(content);
+
+  component.updateResult(result);
+  expect(display(component)).toMatch(/\+\s*1 actual line 1/);
+  expect(display(component)).not.toContain("+24 actual line 24");
+  expect(display(component)).toContain("to expand");
+  component.setExpanded(true);
+  component.invalidate();
+  expect(display(component)).toContain("+24 actual line 24");
+  expect(display(component)).not.toContain("unreviewed-call-content");
+
+  const restored = row("write", args);
+
+  restored.updateResult(JSON.parse(JSON.stringify(result)));
+  expect(display(restored)).toMatch(/\+\s*1 actual line 1/);
+});
+
+test("denied, pending and failed writes never show written additions", () => {
+  for (const result of [
+    { content: [{ type: "text", text: "Review pending" }], details: { phase: "reviewing" } },
+    {
+      content: [{ type: "text", text: "Denied" }],
+      details: { approval: { decision: "deny" } },
+      isError: true,
+    },
+    {
+      content: [{ type: "text", text: "Write failed" }],
+      details: { approval: { decision: "approve" }, executionError: "failure" },
+      isError: true,
+    },
+  ]) {
+    const component = row("write", { path: "failure.ts", content: "never written" });
+
+    component.updateResult(result as any);
+    expect(display(component)).not.toContain("never written");
+    expect(display(component)).not.toContain("+1");
+  }
+
 });
 
 test("long shell commands collapse only their display and expand back to the complete command", () => {

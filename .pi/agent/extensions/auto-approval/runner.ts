@@ -95,6 +95,11 @@ try {
       undefined,
       undefined as any,
     );
+
+    if (name === "write" && !result.isError) {
+      result.details = { written: true };
+    }
+
   }
 
   process.stdout.write(JSON.stringify(result));

@@ -18,6 +18,7 @@
     "../conversations/**/*.ts",
     "../multiplex/**/*.ts",
     "../provider-recovery/*.ts",
-    "../code-quality/*.ts"
+    "../code-quality/*.ts",
+    "../fast-mode/*.ts"
   ]
 }
