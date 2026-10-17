@@ -72,7 +72,6 @@ export function operatorPromptRecords(entries: readonly Entry[]): OperatorPrompt
       if (typeof text === "string" && text.trim()) {
         prompts.push({ text, kind: "operator-command" });
       }
-
     } else if (entry.type === "custom" && entry.customType === "auto-approval-goal") {
       const goal = entry.data as {
         id?: string;
@@ -94,9 +93,7 @@ export function operatorPromptRecords(entries: readonly Entry[]): OperatorPrompt
         capturedGoals.add(goal.id);
         prompts.push({ text: goal.text, kind: "operator-command" });
       }
-
     }
-
   }
 
   return prompts;
@@ -131,7 +128,6 @@ export function selectedOperatorPrompts(
     while (start > 0 && prompts[start - 1].kind === "steering") {
       start--;
     }
-
   }
 
   if (start < 0) {

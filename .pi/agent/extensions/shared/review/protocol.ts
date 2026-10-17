@@ -160,5 +160,4 @@ export async function withWatchdog<T>(
     parent?.removeEventListener("abort", abort);
     controller.abort();
   }
-
 }

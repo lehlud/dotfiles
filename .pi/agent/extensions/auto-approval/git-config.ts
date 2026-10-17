@@ -82,7 +82,6 @@ export function validateGitRequest(request: Request, config: Config): void {
     throw new Error(
       "The local Git route uses a fixed offline runtime without additional tools or environment",
     );
-
 }
 
 function entries(text: string): [string, string][] {
@@ -204,7 +203,6 @@ export async function executeWithGitConfig(
             : resolve(dirname(target), value),
       );
     }
-
   };
 
   try {
@@ -233,5 +231,4 @@ export async function executeWithGitConfig(
   } finally {
     await removeSessionTemporaryDirectory(directory);
   }
-
 }

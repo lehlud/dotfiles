@@ -76,7 +76,6 @@ function incompleteReview(response: AssistantMessage, requestId: string) {
     const verdict = parseVerdict(textContent(response.content), requestId);
 
     if (verdict.decision === "deny") return { denial: verdict };
-
   } catch {
     /* An incomplete response need not contain a complete verdict. */
   }
@@ -123,7 +122,6 @@ function unavailable(
       (model.thinkingLevelMap && model.thinkingLevelMap[candidate.thinking] === undefined))
   )
     return "Reviewer does not support the configured thinking level";
-
 }
 
 function reviewContext(envelope: ReviewEnvelope, systemPrompt: string): Context {
@@ -253,7 +251,6 @@ async function requestCandidate(
     try {
       if (parseVerdict(textContent(response.content), envelope.requestId).decision === "deny")
         return response;
-
     } catch {
       /* A tool turn need not contain a verdict yet. */
     }
@@ -268,7 +265,6 @@ async function requestCandidate(
     for (const call of calls) {
       context.messages.push(originalLookupTurn(call, sources, lookups, observer));
     }
-
   }
 
   throw new ReviewerToolError("Reviewer original-prompt lookup rounds exceeded");
@@ -327,7 +323,6 @@ export async function requestVerdict(
           availability,
         );
       }
-
     } catch (error) {
       signal?.throwIfAborted();
 
@@ -387,7 +382,6 @@ export async function requestVerdict(
 
         reason = stopped.failure;
       }
-
     }
 
     if (reason) {

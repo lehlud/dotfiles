@@ -81,7 +81,6 @@ function toolBody(name: string, args: any) {
     } catch {
       input = undefined;
     }
-
   }
 
   // Never copy credential profiles, environment values or arbitrary metadata.
@@ -153,7 +152,6 @@ export function registerActivityRenderer(pi: ExtensionAPI, view = new FeedView()
 
       invalidate() {
         for (const component of components.values()) component.invalidate();
-
       },
     };
   });
@@ -207,7 +205,6 @@ export class TeamActivity {
   sent(from: string, to: readonly string[], text: string) {
     if (!this.closed && this.states.has(from))
       this.record(from, "send", `Message → ${to.join(", ")}`, text);
-
   }
 
   private paint() {
@@ -260,7 +257,6 @@ export class TeamActivity {
 
       this.paint();
     } else this.timer ??= setTimeout(() => this.paint(), 80);
-
   }
 
   observe(from: string, event: ActivityEvent) {
@@ -298,7 +294,6 @@ export class TeamActivity {
       state.preview = plain(event.message.content).slice(-240);
 
       if (from === this.backend) this.view.rootText(event.message.content);
-
     } else if (event.type === "message_end" && event.message.role === "assistant") {
       const text = plain(event.message.content),
         nativeTexts =
@@ -319,7 +314,6 @@ export class TeamActivity {
 
       if (event.message.errorMessage)
         this.record(from, "error", "Model error", event.message.errorMessage);
-
     } else if (event.type === "tool_execution_start") {
       const label = toolLabel(event.toolName, event.args);
       let path = event.args?.arguments?.path;
@@ -327,7 +321,6 @@ export class TeamActivity {
       try {
         if (event.toolName === "approved_action")
           path = (actionSnapshot(event.args) as any)?.arguments?.path;
-
       } catch {
         /* No valid arguments to preview. */
       }
@@ -352,7 +345,6 @@ export class TeamActivity {
           toolBody(event.toolName, event.args),
           { toolCallId: event.toolCallId },
         );
-
     } else if (event.type === "tool_execution_update") {
       const tool = state.tools.get(event.toolCallId),
         output = plain(event.partialResult?.content);
@@ -370,7 +362,6 @@ export class TeamActivity {
         tool.output = output;
         tool.loggedAt = Date.now();
       }
-
     } else if (event.type === "tool_execution_end") {
       const tool = state.tools.get(event.toolCallId),
         label = tool?.label ?? event.toolName;
@@ -399,7 +390,6 @@ export class TeamActivity {
               ? `Members: ${event.result?.details?.members?.join(", ") ?? ""}`
               : `${event.result?.details?.length ?? 0} messages in inbox`,
           );
-
       } else {
         const details = event.result?.details;
         const confirmedDiff =
@@ -426,7 +416,6 @@ export class TeamActivity {
           { diff, path: tool?.path, toolCallId: event.toolCallId },
         );
       }
-
     }
 
     this.refresh(event.type !== "message_update" && event.type !== "tool_execution_update");

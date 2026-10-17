@@ -111,7 +111,6 @@ test("Flutter and Dart execute the original launchers with a matching native SDK
   } finally {
     await writeFile(dart, original);
   }
-
 });
 
 test("release metadata selects matching stable architecture and rejects substituted paths or hashes", async () => {
@@ -164,7 +163,6 @@ async function run(command: string, storage: string, seeded = true, enabled = tr
 
   if (!seeded) {
     for (const tool of tools) tool.sources = tool.sources.filter(({ source }) => source !== sdk);
-
   }
 
   const paths = tools.flatMap((tool) =>

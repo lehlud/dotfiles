@@ -9,7 +9,7 @@ test("completed control flow gets a blank line and declarations keep semantic se
   expect(grouped).toContain("  }\n\n  finish()");
   expect(grouped).toContain("}\n\nrun()");
   expect(groupCode("function outer() {\n  while (ok) {\n    work();\n  }\n}\n")).toContain(
-    "  }\n\n}\n",
+    "  }\n}\n",
   );
   expect(syntaxLeaves(grouped)).toEqual(syntaxLeaves(source));
 });
@@ -111,4 +111,37 @@ test("trailing comments stay attached to their completed block", () => {
 
   expect(grouped).toContain("} // End the check.\n\nfinish()");
   expect(syntaxLeaves(grouped)).toEqual(syntaxLeaves(source));
+});
+
+test("nested control-flow closers stay together before the next statement group", () => {
+  const source = `function collect(view) {
+  for (const deployment of view.deployments) {
+    if (periodsOverlap(deployment)) {
+      users.add(deployment.record.userId);
+    }
+  }
+  return users;
+}
+`;
+  const grouped = groupCode(source);
+
+  expect(grouped).toContain("    }\n  }\n\n  return users;");
+  expect(grouped).not.toContain("    }\n\n  }");
+  expect(syntaxLeaves(grouped)).toEqual(syntaxLeaves(source));
+});
+
+test("control flow at callback boundaries does not separate enclosing delimiters", () => {
+  const source = `use({
+  run: () => {
+    while (ready) {
+      if (done) {
+        break;
+      }
+    }
+  },
+});
+`;
+
+  expect(groupCode(source)).toBe(source);
+  expect(groupCode("if (ready) {\n  work();\n}\nfinish();\n")).toContain("}\n\nfinish();");
 });

@@ -215,7 +215,6 @@ describe("review policy", () => {
     ]) {
       expect(() => parseConfig(JSON.stringify(bad))).toThrow();
     }
-
   });
 
   test("portable config rejects device paths, workspace grants and gate overrides", () => {
@@ -233,7 +232,6 @@ describe("review policy", () => {
         parseConfig(JSON.stringify({ ...portable, sandbox: { ...portable.sandbox, ...extra } })),
       ).toThrow();
     }
-
   });
 
   test("reviewer priority requires a nonempty bounded list of explicit complete entries", () => {
@@ -597,7 +595,6 @@ describe("review policy", () => {
     ]) {
       expect(() => parseVerdict(bad, "id")).toThrow();
     }
-
   });
 
   test("audited shell inspection output supplies context without becoming authorization", () => {
@@ -781,7 +778,6 @@ test("action review ignores coordination entries while retaining operator constr
   ]) {
     expect(JSON.stringify(multiplex)).not.toContain(excluded);
   }
-
 });
 
 test("local coordination failures stay out of review without hiding actual denials or other preflight failures", () => {

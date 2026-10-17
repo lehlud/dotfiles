@@ -22,15 +22,12 @@ export async function assertSandboxReady(config: Config): Promise<void> {
       await access(path, constants.R_OK | constants.X_OK);
 
       if (!(await stat(path)).isFile()) throw new Error("not a regular file");
-
     } catch (error) {
       throw new Error(
         `Sandbox executable unavailable: ${path}. Restart Pi through ~/.local/bin/pi to prepare the default executor, or repair the custom path in auto-approval.device.json outside Pi. ${String(error)}`,
       );
     }
-
   }
-
 }
 
 async function findProgram(name: string, searchPath: string): Promise<string> {
@@ -44,13 +41,10 @@ async function findProgram(name: string, searchPath: string): Promise<string> {
       await access(candidate, constants.X_OK);
 
       if ((await stat(candidate)).isFile()) return await realpath(candidate);
-
     } catch (error) {
       if (!["ENOENT", "ENOTDIR", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? ""))
         throw error;
-
     }
-
   }
 
   throw new Error(
@@ -132,7 +126,6 @@ async function readDeviceConfig(localPath: string): Promise<LocalConfig | undefi
 
     return undefined;
   }
-
 }
 
 export async function loadConfig(

@@ -187,7 +187,6 @@ test.each([
   for (const call of review.calls) {
     expect(JSON.parse(call.context.messages[0].content).action).toEqual(action);
   }
-
 });
 
 test("three bad original lookups stop with a specific safe diagnostic and no fallback", async () => {

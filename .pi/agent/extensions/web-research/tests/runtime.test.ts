@@ -37,7 +37,6 @@ test("schemas bound costs and reject arbitrary execution or fetch parameters", (
     { url: "https://example.com/", maxChars: 999999 },
   ])
     expect(Check(webTools.webfetch.parameters, args)).toBe(false);
-
 });
 
 test("query and URL shell characters remain stdin data and never enter command arguments", () => {

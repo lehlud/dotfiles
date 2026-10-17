@@ -140,7 +140,6 @@ test("shared macOS versions, guarded launchers and wrong CPU binaries never ente
     await writeFile(headerPath, binary, { mode: 0o755 });
     expect(await nativeLinuxNode(headerPath)).toBe(false);
   }
-
 });
 
 test("Docker combines original launcher grants and shared helpers without duplicate mount destinations", async () => {
@@ -196,7 +195,6 @@ test("generic tools include only their launcher/cache and a readable sourced upd
   } finally {
     await chmod(launcher, 0o755);
   }
-
 });
 
 const run = async (command: string, enabled = true, toolHome = home, name = "sampleapp") => {
@@ -329,7 +327,6 @@ nativeTest("Node installations cannot be combined with overlapping writable gran
       ),
     ).rejects.toThrow("must remain read-only");
   }
-
 });
 
 nativeTest(

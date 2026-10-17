@@ -16,7 +16,6 @@ export async function removeSessionTemporaryDirectory(directory: string): Promis
     await chmod(path, 0o700);
 
     for (const name of await readdir(path)) await makeRemovable(join(path, name));
-
   };
 
   await makeRemovable(directory);

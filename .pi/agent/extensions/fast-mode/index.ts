@@ -23,9 +23,7 @@ export default function fastMode(pi: ExtensionAPI) {
         if (typeof saved?.enabled === "boolean") {
           enabled = saved.enabled;
         }
-
       }
-
     }
 
     sessionServices(ctx).fastMode = current;
@@ -59,7 +57,6 @@ export default function fastMode(pi: ExtensionAPI) {
           pi.appendEntry(FAST_MODE_ENTRY, { enabled: next });
           enabled = next;
         }
-
       }
 
       sessionServices(ctx).fastMode = current;

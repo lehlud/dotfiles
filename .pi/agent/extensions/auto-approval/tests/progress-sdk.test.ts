@@ -124,7 +124,6 @@ for (const changing of [false, true])
               },
             ];
           }
-
         }
 
         queueMicrotask(() => stream.push({ type: "done", reason: message.stopReason, message }));
@@ -233,6 +232,5 @@ for (const changing of [false, true])
 
       await rm(directory, { recursive: true, force: true });
     }
-
   }, 10000);
 

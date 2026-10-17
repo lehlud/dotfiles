@@ -57,7 +57,6 @@ export function registerOperatorInputs(pi: ExtensionAPI) {
     if (pending.length > 128) {
       pending.shift();
     }
-
   });
 
   const flush = (ctx: ExtensionContext) => {
@@ -110,6 +109,5 @@ export function registerOperatorInputs(pi: ExtensionAPI) {
         taskEntryId: sessionServices(ctx).operatorGoal?.() ? undefined : taskEntryId,
       });
     }
-
   };
 }

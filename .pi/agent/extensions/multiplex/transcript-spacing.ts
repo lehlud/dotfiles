@@ -67,7 +67,6 @@ export class TranscriptSpacing {
     }
 
     if (Array.isArray(node.children)) for (const child of node.children) this.scan(child as Node);
-
   }
 
   dispose() {

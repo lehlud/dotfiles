@@ -60,7 +60,6 @@ export function reviewedReceipts(entries: readonly Entry[]): ReviewedEvidence[] 
         audit.toolCallId
       )
         approvals.set(JSON.stringify([audit.multiplexAgent ?? "", audit.toolCallId]), audit);
-
     }
 
     // Peer evidence comes only from the extension broker; ordinary mailbox

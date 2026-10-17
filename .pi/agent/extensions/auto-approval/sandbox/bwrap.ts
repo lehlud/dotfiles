@@ -92,7 +92,6 @@ export function bwrapArguments(
       "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
     ])
       args.push("--ro-bind-try", path, path);
-
   }
 
   for (const [key, value] of Object.entries(environment)) args.push("--setenv", key, value);
@@ -107,7 +106,6 @@ export function bwrapArguments(
     if (entry.directory)
       args.push("--perms", "000", "--tmpfs", entry.path, "--remount-ro", entry.path);
     else args.push("--ro-bind", "/dev/null", entry.path);
-
   }
 
   args.push(...localToolArguments(workspace, true));
@@ -116,7 +114,6 @@ export function bwrapArguments(
   if (workspace.localTools?.some((tool) => tool.name === "flutter")) {
     for (const path of ["/run/.containerenv", "/.dockerenv"])
       args.push("--ro-bind-try", path, path);
-
   }
 
   if (workspace.credentialExecutable)

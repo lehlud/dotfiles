@@ -115,7 +115,6 @@ for (const fixture of cases) {
   );
 
   if (!passed) failures++;
-
 }
 
 if (failures) throw new Error(`${failures} network review evaluations failed`);

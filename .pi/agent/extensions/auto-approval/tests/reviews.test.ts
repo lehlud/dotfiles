@@ -267,7 +267,6 @@ test("explicit fallback is used for missing auth, missing models and unsupported
     expect(calls.at(-1).model.provider).toBe("openrouter");
     expect(calls.at(-1).model.id).toBe("openai/gpt-6-luna");
   }
-
 });
 
 test("provider failures fall back without exposing raw provider error content", async () => {
@@ -401,7 +400,6 @@ test("truncated, refused or aborted model responses never consult a fallback", a
     await expect(run()).rejects.toThrow("no fallback");
     expect(calls).toHaveLength(1);
   }
-
 });
 
 test("malformed or mismatched verdicts fail closed without consulting the fallback", async () => {
@@ -420,7 +418,6 @@ test("malformed or mismatched verdicts fail closed without consulting the fallba
 
     expect(calls).toHaveLength(1);
   }
-
 });
 
 test("an unconfigured fallback is never used and all failures retain diagnostics", async () => {
@@ -437,7 +434,6 @@ test("an unconfigured fallback is never used and all failures retain diagnostics
   } catch (error) {
     expect((error as ReviewChainError).attempts).toHaveLength(2);
   }
-
 });
 
 test("timeout uses only the configured fallback and ignores late results", async () => {
@@ -546,7 +542,6 @@ test("the same action uses the same review policy regardless of coordination and
     expect(data.runtimeContext).toBeUndefined();
     expect(data.previousDenials[0].reason).toContain("assigns a worker");
   }
-
 });
 
 test("coded token expiry is retried before fallback, while a delivered denial remains binding", async () => {
@@ -554,7 +549,6 @@ test("coded token expiry is retried before fallback, while a delivered denial re
   modes[fallback.provider] = "approve";
   onResponse = () => {
     if (calls.length === 2) modes[primary.provider] = "approve";
-
   };
 
   const recovered = await run();

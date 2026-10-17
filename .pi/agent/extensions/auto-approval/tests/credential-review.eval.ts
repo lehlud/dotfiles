@@ -158,7 +158,6 @@ for (const fixture of fixtures) {
   );
 
   if (!passed) failures++;
-
 }
 
 if (failures) throw new Error(`${failures} credential review evaluations failed`);

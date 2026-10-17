@@ -124,7 +124,6 @@ test("Git arguments exclude shell, aliases, executable overrides and remote/dest
     ["show", "--textconv"],
   ])
     expect(() => validateGitArgv(argv)).toThrow();
-
 });
 
 test("only explicit supported public values survive, with native Git quoting preserved", () => {

@@ -50,7 +50,6 @@ for (const fixture of fixtures) {
   );
 
   if (!passed) failures++;
-
 }
 
 if (failures) throw new Error(`${failures} steering review evaluations failed`);

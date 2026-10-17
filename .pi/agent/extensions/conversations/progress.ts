@@ -35,7 +35,6 @@ export function inspection(tool: string, args: Record<string, unknown>): boolean
 
       part = "";
     } else part += char;
-
   }
 
   if (quote) return false;
@@ -82,7 +81,6 @@ export class InspectionProgress {
       this.seen.add(hash);
 
       if (this.seen.size > 4096) this.seen.delete(this.seen.values().next().value!);
-
     }
 
     this.repeats = fresh ? 0 : this.repeats + 1;
@@ -120,7 +118,6 @@ export function registerProgress(
   pi.on("session_shutdown", reset);
   pi.on("input", (event) => {
     if (event.source !== "extension") reset();
-
   });
 
   pi.on("before_agent_start", (_event, ctx) => {
@@ -173,7 +170,6 @@ export function registerProgress(
       } catch {
         /* The bounded halt still applies. */
       }
-
     }
 
     if (result !== "halt") return;

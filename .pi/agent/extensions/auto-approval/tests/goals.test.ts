@@ -194,7 +194,6 @@ beforeEach(async () => {
       setStatus: (key: string, text?: string) => {
         if (text === undefined) statuses.delete(key);
         else statuses.set(key, text);
-
       },
 
       notify: (text: string) => notices.push(text),
@@ -362,7 +361,6 @@ test("operator interrupt and model errors pause instead of restarting the model"
     expect(state().status).toBe("paused");
     expect(requests).toHaveLength(0);
   }
-
 });
 
 test("abort during verification rejects a late success", async () => {

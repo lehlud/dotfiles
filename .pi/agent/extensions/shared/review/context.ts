@@ -10,7 +10,6 @@ export function checkActionSize(action: unknown): void {
     throw new Error(
       `Action exceeds executor request limit: ${bytes}/${MAX_EXECUTOR_REQUEST_BYTES} UTF-8 bytes. Split the current action. Nothing was truncated.`,
     );
-
 }
 
 export function checkReviewSize(data: Record<string, unknown>): string {
@@ -67,9 +66,7 @@ export function reviewLanguageReference(prompt: string): string {
         if (stack.pop() !== char) break;
 
         if (!stack.length) break;
-
       }
-
     }
 
     if (end >= prose.length || stack.length) continue;
@@ -127,5 +124,4 @@ export function reviewCapacityIssue(
 
   if (estimatedTokens > model.contextWindow)
     return `Reviewer context capacity unavailable: estimated ${estimatedTokens} tokens including output/framing reserve, model window ${model.contextWindow}; operator context and action were not truncated`;
-
 }

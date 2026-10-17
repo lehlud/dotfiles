@@ -56,12 +56,10 @@ export class TeamController {
 
     if (current?.failures.observe(name, event))
       this.failed(name, ctx, "Repeated invalid approved_action arguments");
-
   };
 
   private observe = (event: ActivityEvent, ctx: ExtensionContext) => {
     if (this.team) this.observeMember(this.team.endpoint.name, event, ctx);
-
   };
 
   private attach!: ReturnType<typeof registerEndpoint>;
@@ -97,7 +95,6 @@ export class TeamController {
         throw new Error(
           "Peer cleanup failed; inspect the operator runtime before re-enabling multiplex",
         );
-
     });
 
     await this.closing;
@@ -186,7 +183,6 @@ export class TeamController {
           this.pi.sendMessage(instruction, { triggerTurn: true, deliverAs: "steer" });
 
           for (const peer of this.team.peers) peer.message(instruction);
-
         },
       );
     const endpoint: Endpoint = {
@@ -235,7 +231,6 @@ export class TeamController {
           if (name === endpoint.name)
             this.pi.sendMessage(instruction, { triggerTurn: true, deliverAs: "steer" });
           else next.peers[boxes.names.indexOf(name) - 1]?.message(instruction);
-
         },
 
         () => {
@@ -278,7 +273,6 @@ export class TeamController {
         sessionServices({ sessionManager: peer.session.sessionManager }).resetProgress?.();
         peer.message({ customType: "conversation-continuation", display: false, content });
       }
-
     };
 
     boxes.bind(endpoint.name, {
@@ -303,7 +297,6 @@ export class TeamController {
           runtime!,
           (text) => {
             if (!next.stopped) this.failed(name, ctx, text);
-
           },
 
           (text) => {
@@ -317,7 +310,6 @@ export class TeamController {
                 },
                 { triggerTurn: false },
               );
-
           },
 
           () => next.settle(),
@@ -356,7 +348,6 @@ export class TeamController {
             display: false,
             content: instruction,
           });
-
       }
 
       this.pi.appendEntry("multiplex-team", { names, count, state: "active" });
@@ -369,7 +360,6 @@ export class TeamController {
 
       throw error;
     }
-
   }
 
   register() {
@@ -410,7 +400,6 @@ export class TeamController {
     this.pi.on("turn_end", async (event, ctx) => {
       if (this.team && event.outcome === "error") this.failed(this.team.endpoint.name, ctx);
       else if (this.team && event.outcome === "aborted") await this.stop(ctx);
-
     });
 
     this.pi.on("input", (event, ctx) => {
@@ -455,7 +444,6 @@ export class TeamController {
           display: false,
           content: instruction,
         });
-
     });
 
     this.pi.registerCommand("multiplex-view", {
@@ -561,7 +549,6 @@ export class TeamController {
         } finally {
           this.changing = false;
         }
-
       },
     });
   }

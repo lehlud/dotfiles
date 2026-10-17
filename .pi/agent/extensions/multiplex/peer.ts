@@ -42,7 +42,6 @@ export async function peerRuntime(ctx: ExtensionContext) {
     const provider = ctx.modelRegistry.getProvider(id);
 
     if (provider) runtime.registerNativeProvider(provider);
-
   }
 
   return runtime;
@@ -72,7 +71,6 @@ export class Peer {
         case "tool_execution_end":
           observe(event);
       }
-
     });
   }
 
@@ -95,15 +93,12 @@ export class Peer {
 
         const unsubscribe = this.session.subscribe((event) => {
           if (event.type === "compaction_end") done();
-
         });
 
         this.waiting.add(done);
 
         if (this.stopped || !this.session.isCompacting) done();
-
       });
-
   }
 
   private enqueue(start: () => Promise<void>, operator = false) {
@@ -127,13 +122,11 @@ export class Peer {
 
         const unsubscribe = this.session.subscribe((event) => {
           if (event.type === "agent_start") ready();
-
         });
 
         const run = start().catch(() => {
           if (!this.stopped)
             this.report("Peer request failed; the task will not be automatically repeated.");
-
         });
 
         this.runs.add(run);
@@ -141,7 +134,6 @@ export class Peer {
           this.runs.delete(run);
 
           if (!this.stopped && !this.busy) this.settled();
-
         });
 
         try {
@@ -149,7 +141,6 @@ export class Peer {
         } finally {
           unsubscribe();
         }
-
       })
 
       .catch(() => this.report("Peer delivery failed."))
@@ -157,7 +148,6 @@ export class Peer {
         this.pending--;
 
         if (!this.stopped && !this.busy) this.settled();
-
       });
   }
 
@@ -195,12 +185,10 @@ export class Peer {
 
   audit(data: Record<string, unknown>) {
     if (!this.stopped) this.session.sessionManager.appendCustomEntry("auto-approval-review", data);
-
   }
 
   result(data: Record<string, unknown>) {
     if (!this.stopped) this.session.sessionManager.appendCustomEntry(PEER_RESULT, data);
-
   }
 
   async close() {
@@ -225,7 +213,6 @@ export class Peer {
     } finally {
       this.session.dispose();
     }
-
   }
 }
 
@@ -278,7 +265,6 @@ export async function createPeer(
         registerEndpoint(pi, () => endpoint);
         pi.on("turn_end", (event) => {
           if (event.outcome === "error") report("Peer model run failed; its result is incomplete.");
-
         });
 
         pi.on("agent_settled", (_event, child) => {
@@ -300,9 +286,7 @@ export async function createPeer(
               : "";
 
             if (text) answer(text);
-
           }
-
         });
       },
     ],
@@ -333,7 +317,6 @@ export async function createPeer(
 
         notify: (_text: string, kind?: string) => {
           if (kind === "error") report("Peer sandbox or configuration unavailable.");
-
         },
       } as any,
     });
@@ -345,5 +328,4 @@ export async function createPeer(
 
     throw error;
   }
-
 }

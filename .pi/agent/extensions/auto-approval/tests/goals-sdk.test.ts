@@ -237,7 +237,6 @@ for (const command of ["/goal resume", "/continue"]) {
 
       await rm(directory, { recursive: true, force: true });
     }
-
   }, 10000);
 }
 
@@ -307,5 +306,4 @@ test("real steering keeps a goal running after a correction until the original w
 
     await rm(directory, { recursive: true, force: true });
   }
-
 }, 10000);

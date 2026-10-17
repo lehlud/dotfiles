@@ -35,6 +35,5 @@ export class ActionSession {
     this.temporaryDirectory = undefined;
 
     if (directory) await removeSessionTemporaryDirectory(await directory);
-
   }
 }

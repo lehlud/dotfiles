@@ -64,9 +64,7 @@ export function registerSide(pi: ExtensionAPI) {
         opening.view?.dispose();
 
         if (active === opening) active = undefined;
-
       }
-
     },
   });
 }

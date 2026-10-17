@@ -114,7 +114,6 @@ async function interruptible<T>(work: () => Promise<T>, signal?: AbortSignal): P
   } finally {
     signal.removeEventListener("abort", abort!);
   }
-
 }
 
 /** State is scoped to each provider/model pair; a successful response ends the outage. */
@@ -158,7 +157,6 @@ export class ProviderAvailability {
 
             return result;
           }
-
         } catch (error) {
           signal?.throwIfAborted();
 
@@ -209,9 +207,7 @@ export class ProviderAvailability {
     } finally {
       if (state && this.states.get(key) === state && (state.recovering || state.probing))
         this.states.delete(key);
-
     }
-
   }
 
   private markDown(key: string, owner?: State) {

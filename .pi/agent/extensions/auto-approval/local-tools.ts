@@ -23,7 +23,6 @@ async function existing(path: string): Promise<boolean> {
 
     throw error;
   }
-
 }
 
 async function regularExecutable(path: string, executable = true): Promise<void> {
@@ -75,7 +74,6 @@ export async function nativeLinuxExecutable(
   } finally {
     await file?.close();
   }
-
 }
 
 export const nativeLinuxNode = nativeLinuxExecutable;
@@ -134,7 +132,6 @@ async function nodeSources(home: string): Promise<LocalTool["sources"]> {
 
       sources.push({ source, target: `/opt/pi-tools/source/node/${sources.length}/${entry.name}` });
     }
-
   }
 
   // With no installed runtime, nvm install can bootstrap into private /tmp.

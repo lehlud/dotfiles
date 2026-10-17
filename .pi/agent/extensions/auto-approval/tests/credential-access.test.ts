@@ -77,7 +77,6 @@ beforeAll(async () => {
     );
 
     if (built.exitCode !== 0) throw new Error(built.stderr.toString());
-
   }
 
   profile = {
@@ -114,7 +113,6 @@ test("command schema excludes shell text, executable paths and secret-bearing ad
     { profile: "github", argv: [], token },
   ])
     expect(Check(credentialCommandTool.parameters, args)).toBe(false);
-
 });
 
 test("operator profiles match entire argv sequences and reject undocumented sources", () => {
@@ -174,7 +172,6 @@ test("review-mode program/login bindings do not invent operation permission or s
     { name: reviewed.name, executable: reviewed.executable, secrets: reviewed.secrets },
   ])
     expect(() => parseLocalConfig(JSON.stringify({ credentialProfiles: [profile] }))).toThrow();
-
 });
 
 nativeTest(
@@ -196,7 +193,6 @@ nativeTest(
       expect(metadata.argumentAuthorization).toContain("not user authorization");
       expect(JSON.stringify(metadata)).not.toContain(token);
     }
-
   },
 );
 
@@ -439,11 +435,8 @@ nativeTest(
       for (const [i, name] of ["GH_TOKEN", "GITHUB_TOKEN"].entries()) {
         if (previous[i] === undefined) delete process.env[name];
         else process.env[name] = previous[i];
-
       }
-
     }
-
   },
 );
 
@@ -487,7 +480,6 @@ nativeTest(
     } finally {
       server.stop(true);
     }
-
   },
 );
 nativeTest(
@@ -565,7 +557,6 @@ nativeTest(
     } finally {
       server.stop(true);
     }
-
   },
 );
 
@@ -606,9 +597,7 @@ nativeTest(
     } finally {
       if (previous === undefined) delete process.env[name];
       else process.env[name] = previous;
-
     }
-
   },
 );
 nativeTest(
@@ -727,6 +716,5 @@ nativeTest(
           "credential",
         ),
       ).rejects.toThrow("protected");
-
   },
 );

@@ -44,8 +44,25 @@ export function groupCode(source: string): string {
 
     if (!/^[\s),;\]]*$/.test(suffix)) return;
 
-    if (source[end + 1] !== "\n") insertions.add(end + 1);
+    const scanner = ts.createScanner(
+      ts.ScriptTarget.Latest,
+      true,
+      ts.LanguageVariant.Standard,
+      source,
+      undefined,
+      end + 1,
+    );
+    const next = scanner.scan();
 
+    if (
+      next === ts.SyntaxKind.CloseBraceToken ||
+      next === ts.SyntaxKind.CloseParenToken ||
+      next === ts.SyntaxKind.CloseBracketToken
+    ) {
+      return;
+    }
+
+    if (source[end + 1] !== "\n") insertions.add(end + 1);
   }
 
   function beforeStatement(statement: ts.Statement) {
@@ -55,7 +72,6 @@ export function groupCode(source: string): string {
     const line = source.lastIndexOf("\n", first - 1) + 1;
 
     if (line > 0 && source[line - 2] !== "\n") insertions.add(line);
-
   }
 
   function statements(items: ts.NodeArray<ts.Statement>) {
@@ -76,9 +92,7 @@ export function groupCode(source: string): string {
       ) {
         beforeStatement(current);
       }
-
     }
-
   }
 
   function visit(node: ts.Node) {
@@ -117,7 +131,6 @@ export function syntaxLeaves(source: string): string[] {
 
     if (children.length) children.forEach(visit);
     else leaves.push(`${node.kind}:${node.getText(file)}`);
-
   }
 
   visit(file);

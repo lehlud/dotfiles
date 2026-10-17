@@ -30,7 +30,6 @@ function auditLookup(record: () => void): void {
   } catch {
     throw new ReviewerToolError("Reviewer original-prompt lookup audit failed");
   }
-
 }
 
 /** This turn can only read selected in-memory originals; errors authorize no action. */

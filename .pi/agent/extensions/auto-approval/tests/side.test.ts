@@ -57,7 +57,6 @@ beforeEach(() => {
       setStatus: (key: string, value?: string) => {
         if (value === undefined) statuses.delete(key);
         else statuses.set(key, value);
-
       },
 
       notify: (value: string) => notices.push(value),
@@ -214,7 +213,6 @@ test("tool calls and provider failures cannot execute actions or leak provider e
     expect(side.turns[0].error).toContain("failed");
     expect(JSON.stringify(side.turns)).not.toContain("private provider token");
   }
-
 });
 
 test("new side history retains billing and uses new request identities", async () => {

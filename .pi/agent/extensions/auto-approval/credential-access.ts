@@ -73,7 +73,6 @@ async function executableBytes(path: string): Promise<Buffer> {
   } finally {
     await file.close();
   }
-
 }
 
 async function githubExecutable(): Promise<string> {
@@ -83,12 +82,9 @@ async function githubExecutable(): Promise<string> {
         info = await lstat(path);
 
       if (info.uid === 0 && !(info.mode & 0o022) && (await nativeLinuxNode(path))) return path;
-
     } catch (error) {
       if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
-
     }
-
   }
 
   throw new Error(
@@ -209,7 +205,6 @@ async function readSecretFile(path: string): Promise<string> {
   } finally {
     await file.close();
   }
-
 }
 
 async function copyGithubConfiguration(source: string, target: string): Promise<void> {
@@ -232,13 +227,10 @@ async function copyGithubConfiguration(source: string, target: string): Promise<
       await writeFile(join(target, name), await file.readFile(), { mode: 0o600, flag: "wx" });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-
     } finally {
       await file?.close();
     }
-
   }
-
 }
 
 const safeSecret = (secret: string | undefined): string => {
@@ -381,5 +373,4 @@ export async function executeWithCredentials(
   } finally {
     await removeSessionTemporaryDirectory(directory);
   }
-
 }

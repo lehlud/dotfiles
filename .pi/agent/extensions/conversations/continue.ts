@@ -68,7 +68,6 @@ export function registerContinue(pi: ExtensionAPI) {
       } finally {
         starting = false;
       }
-
     },
   });
 }

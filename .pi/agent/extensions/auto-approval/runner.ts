@@ -36,7 +36,6 @@ try {
     input += chunk.toString();
 
     if (Buffer.byteLength(input) > 100000) throw new Error("Executor input limit exceeded");
-
   }
 
   const request = JSON.parse(input);
@@ -99,7 +98,6 @@ try {
     if (name === "write" && !result.isError) {
       result.details = { written: true };
     }
-
   }
 
   process.stdout.write(JSON.stringify(result));

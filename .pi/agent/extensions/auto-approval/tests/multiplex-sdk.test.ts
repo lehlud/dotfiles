@@ -51,7 +51,6 @@ const exists = async (path: string) => {
   } catch {
     return false;
   }
-
 };
 
 const usage = {
@@ -352,9 +351,7 @@ async function fixture(
                 ];
 
                 if (name !== sender && stage === 2) stages.set(name, stage);
-
               }
-
             } else if (stage === 0)
               call("mailbox", {
                 operation: "send",
@@ -409,20 +406,17 @@ async function fixture(
                     "Hold the synthetic external review while testing internal transport",
                 },
               });
-
           }
 
           if (options?.signal?.aborted) {
             message.stopReason = "aborted";
             stream.push({ type: "error", reason: "aborted", error: message });
           } else stream.push({ type: "done", reason: message.stopReason, message });
-
         } catch {
           message.stopReason = "error";
           message.errorMessage = "Synthetic fixture assertion failed";
           stream.push({ type: "error", reason: "error", error: message });
         }
-
       });
 
       return stream;
@@ -458,7 +452,6 @@ async function fixture(
         pi.on("tool_result", (event) => {
           if (event.toolName === "mailbox" && !event.isError && Array.isArray(event.details))
             mailboxResults.push(event);
-
         });
 
         if (compactionFixture)
@@ -476,7 +469,6 @@ async function fixture(
               },
             };
           });
-
       },
     ],
   });
@@ -571,7 +563,6 @@ nativeTest(
 
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   60000,
@@ -603,7 +594,6 @@ nativeTest(
 
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   60000,
@@ -630,7 +620,6 @@ nativeTest(
           setStatus: (key: string, value?: string) => {
             if (value === undefined) statuses.delete(key);
             else statuses.set(key, value);
-
           },
 
           setWidget(key: string, content: any) {
@@ -643,7 +632,6 @@ nativeTest(
                   { fg: (_color: string, text: string) => text, style: (text: string) => text },
                 ).render(1000),
               );
-
           },
 
           notify: (text: string) => notices.push(text),
@@ -863,7 +851,6 @@ nativeTest(
 
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   60000,
@@ -886,7 +873,6 @@ nativeTest(
           setStatus: (key: string, value?: string) => {
             if (value === undefined) statuses.delete(key);
             else statuses.set(key, value);
-
           },
 
           setWidget() {},
@@ -942,7 +928,6 @@ nativeTest(
 
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   60000,
@@ -965,7 +950,6 @@ nativeTest(
           setStatus: (key: string, value?: string) => {
             if (value === undefined) statuses.delete(key);
             else statuses.set(key, value);
-
           },
 
           setWidget() {},
@@ -1034,7 +1018,6 @@ nativeTest(
 
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   60000,
@@ -1056,7 +1039,6 @@ nativeTest(
           setStatus: (key: string, value?: string) => {
             if (value === undefined) statuses.delete(key);
             else statuses.set(key, value);
-
           },
 
           setWidget() {},
@@ -1093,7 +1075,6 @@ nativeTest(
 
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   60000,
@@ -1122,7 +1103,6 @@ nativeTest(
           setWidget(key: string, content: any) {
             if (!content) frames.delete(key);
             else frames.set(key, content({}, theme).render(1000));
-
           },
 
           notify() {},
@@ -1222,7 +1202,6 @@ nativeTest(
 
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   60000,
@@ -1276,7 +1255,6 @@ nativeTest(
 
         expect(users.match(/BOUNDARY-STEERING:/g)).toHaveLength(1);
       }
-
     } finally {
       state?.compactionReleases.forEach((release) => release());
       state?.releases.forEach((release) => release());
@@ -1295,7 +1273,6 @@ nativeTest(
 
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   60000,
@@ -1402,7 +1379,6 @@ nativeTest(
 
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   60000,
@@ -1425,7 +1401,6 @@ nativeTest(
           setStatus: (key: string, value?: string) => {
             if (value) statuses.set(key, value);
             else statuses.delete(key);
-
           },
 
           setWidget() {},
@@ -1495,7 +1470,6 @@ nativeTest(
 
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   60000,
@@ -1565,7 +1539,6 @@ nativeTest(
 
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   60000,
@@ -1657,7 +1630,6 @@ for (const last of ["terminal-last", "peer-last"] as const)
 
         await rm(directory, { recursive: true, force: true });
       }
-
     },
 
     60000,
@@ -1735,7 +1707,6 @@ for (const failure of ["terminal", "peer"] as const)
 
         await rm(directory, { recursive: true, force: true });
       }
-
     },
 
     60000,
@@ -1797,7 +1768,6 @@ for (const failure of ["invalid-terminal", "invalid-peer"] as const)
 
         await rm(directory, { recursive: true, force: true });
       }
-
     },
 
     60000,
@@ -1852,7 +1822,6 @@ nativeTest(
 
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   60000,
@@ -1935,7 +1904,6 @@ for (const spinning of ["terminal", "peer"] as const)
 
         await rm(directory, { recursive: true, force: true });
       }
-
     },
 
     60000,

@@ -125,7 +125,6 @@ export function buildEvidence(
         reason:
           "Tool evidence exceeds the context budget; inspect smaller relevant ranges only if needed for a concrete security concern",
       });
-
   }
 
   const requestId = randomUUID();

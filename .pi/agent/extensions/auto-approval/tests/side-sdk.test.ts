@@ -23,7 +23,6 @@ async function until(check: () => boolean) {
   for (let i = 0; i < 1000 && !check(); i++) await tick();
 
   if (!check()) throw new Error("SDK fixture did not reach its expected state");
-
 }
 
 async function fixture(directory: string) {
@@ -101,7 +100,6 @@ async function fixture(directory: string) {
           message.stopReason = "aborted";
           stream.push({ type: "error", reason: "aborted", error: message });
         } else stream.push({ type: "done", reason: "stop", message });
-
       });
 
       return stream;
@@ -158,7 +156,6 @@ test("real Pi SDK runs /side immediately during a parent turn without changing i
         setStatus: (key: string, value?: string) => {
           if (value === undefined) statuses.delete(key);
           else statuses.set(key, value);
-
         },
 
         notify: (text: string) => {
@@ -211,5 +208,4 @@ test("real Pi SDK runs /side immediately during a parent turn without changing i
     state.session.dispose();
     await rm(directory, { recursive: true, force: true });
   }
-
 }, 15000);

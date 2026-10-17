@@ -43,7 +43,6 @@ export function registerSteering(
           ? textContent(last.message.content)
           : undefined;
     }
-
   });
 
   pi.on("context", (event, ctx) => {

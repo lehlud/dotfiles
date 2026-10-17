@@ -7,7 +7,9 @@ review. Goals, continuation, steering and additional tool turns keep the same in
 The defaults require semantic groups separated by blank lines, multiline braced guards, blank lines
 after completed control flow (`if`/`else`, loops, `switch`, `try`/`catch`), descriptive names, focused
 functions and wrapped calls and collections. Connected `else`, `catch`, `finally` and `do`/`while`
-clauses remain attached. The brace rule does not apply to callback or closure endings, constructor
+clauses remain attached. Consecutive closing braces and enclosing closing delimiters stay together,
+even when the inner brace closes control flow. Add the separating blank line before the next
+statement instead. The brace rule does not apply to callback or closure endings, constructor
 arguments, object/map literals, collections or JSON structures. Flutter widget/route arguments and
 callback properties keep normal formatter layout without added gaps between properties or closing
 delimiters. Standalone functions and methods use semantic separation where useful; their closing

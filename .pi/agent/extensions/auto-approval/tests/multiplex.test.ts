@@ -42,7 +42,6 @@ test("names are randomly selected English words, unique within each team", () =>
 
   for (const count of [0, -1, 1.5, NaN, Infinity, AGENT_WORDS.length + 1])
     expect(() => randomNames(count)).toThrow("Invalid agent name count");
-
 });
 
 test("all members can address each other without a leader", () => {
@@ -53,7 +52,6 @@ test("all members can address each other without a leader", () => {
       boxes.send(from, to, `${from} proposal`);
 
   for (const name of names) expect(delivered.get(name)).toHaveLength(2);
-
 });
 
 test("actor delivery preserves FIFO, sender binding, arbitrary language and broadcast scope", () => {
@@ -186,7 +184,6 @@ test("reused word names cannot acknowledge messages from another team", () => {
     {
       on: (event: string, handler: any) => {
         if (event === "context") context = handler;
-
       },
 
       registerTool() {},

@@ -41,7 +41,6 @@ async function dependencies(): Promise<Dependency[]> {
 
       edges.push({ source: name, target, runtime: !(typeOnly || allTypeOnly) });
     }
-
   }
 
   return edges;
@@ -109,7 +108,6 @@ function cycles(edges: Dependency[]): string[] {
     visited.add(source);
 
     for (const target of outgoing.get(source) ?? []) visit(target, [...stack, source]);
-
   }
 
   for (const source of outgoing.keys()) visit(source, []);
@@ -160,7 +158,6 @@ test("the isolated executor cannot reach host approval, configuration loading or
 
     for (const edge of graph.filter((edge) => edge.source === source && edge.runtime))
       visit(edge.target);
-
   }
 
   visit("auto-approval/runner.ts");
@@ -194,7 +191,6 @@ test("the frozen executor fingerprint and Docker build context cover every local
 
     for (const edge of graph.filter((edge) => edge.source === source && edge.runtime))
       visit(edge.target);
-
   }
 
   visit("auto-approval/runner.ts");
@@ -209,5 +205,4 @@ test("the frozen executor fingerprint and Docker build context cover every local
     ).toBe(true);
     expect(ignore).toContain(`!${name}`);
   }
-
 });

@@ -36,7 +36,6 @@ export function providerErrorCode(error: unknown): string | undefined {
   } catch {
     return undefined;
   }
-
 }
 
 /** Prefer a typed HTTP status over numbers inside provider prose. */

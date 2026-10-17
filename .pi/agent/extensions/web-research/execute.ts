@@ -47,5 +47,4 @@ export async function executeWeb(request: { tool: string; arguments: Record<stri
     clearTimeout(timer);
     child.kill();
   }
-
 }

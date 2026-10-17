@@ -114,7 +114,6 @@ export class GoalController {
             ? audit.verdict.reason
             : undefined;
       else if (typeof this.goal.feedback !== "string") this.goal.feedback = undefined;
-
     }
 
     if (this.goal?.status === "running")
@@ -221,7 +220,6 @@ export class GoalController {
 
       ctx.ui.notify(`Goal: ${String(error)}`, "error");
     }
-
   }
 
   async check(event: TurnEndEvent, ctx: ExtensionContext): Promise<BoundaryResult | void> {
@@ -321,7 +319,6 @@ export class GoalController {
           continue: true,
           entries: [{ type: "custom_message", ...message(instruction(this.goal!)) }],
         };
-
     } catch (error) {
       if (this.goal?.id === current.id)
         this.pause(
@@ -348,6 +345,5 @@ export class GoalController {
 
       this.display(ctx);
     }
-
   }
 }

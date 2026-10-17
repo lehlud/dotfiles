@@ -134,5 +134,4 @@ test.each([
     session.dispose();
     await rm(directory, { recursive: true, force: true });
   }
-
 });

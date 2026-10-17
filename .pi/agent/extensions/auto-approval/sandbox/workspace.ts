@@ -42,7 +42,6 @@ export async function detectWorkspace(
 
   git.stdout.on("data", (chunk) => {
     if (output.length < 65536) output += chunk.toString();
-
   });
 
   const code = await new Promise<number | null>((done) => {
@@ -55,7 +54,6 @@ export async function detectWorkspace(
 
     if (root && within(root, current) && !within(root, homePath))
       return { path: root, cwd: current };
-
   }
 
   return { path: current, cwd: current };
@@ -173,7 +171,6 @@ async function projectBindings(
 
         if (within(canonical, workspace)) bindings.push(workspace);
         else if (within(workspace, canonical)) bindings.push(canonical);
-
       }
 
       bindings = [...new Set(bindings)]
@@ -184,13 +181,11 @@ async function projectBindings(
         throw new Error(
           `Directory ${workspace} is outside the operator-configured workspace view; edit sandbox.workspaceViews in ~/.pi/agent/auto-approval.device.json outside Pi.`,
         );
-
     } else if (workspace === (await realpath(homedir()))) {
       throw new Error(
         "The home directory needs a restricted workspaceViews entry containing public files; edit ~/.pi/agent/auto-approval.device.json outside Pi. Project workspaces are detected automatically.",
       );
     }
-
   } else if (
     mode === "project" &&
     config.backend !== "bwrap" &&
@@ -233,7 +228,6 @@ async function additionalGrants(
       throw new Error(
         "Local tool installations must remain read-only; writable grants cannot overlap them",
       );
-
   }
 
   const extra = [
@@ -281,7 +275,6 @@ async function additionalGrants(
 
       // A search path never silently downgrades an explicitly writable mount.
       if (modes.has(path)) continue;
-
     }
 
     modes.set(path, entry.access);
@@ -311,9 +304,7 @@ async function protectedMasks(bindings: string[], protectedRoots: string[]) {
       });
 
       if (stat) masked.push({ path, directory: stat.isDirectory() });
-
     }
-
   }
 
   return masked;

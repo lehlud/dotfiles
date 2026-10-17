@@ -20,7 +20,6 @@ export async function canonicalPath(path: string): Promise<string> {
 
     return join(await canonicalPath(parent), basename(path));
   }
-
 }
 
 export class ProtectedPaths {

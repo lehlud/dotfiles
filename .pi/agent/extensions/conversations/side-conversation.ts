@@ -73,7 +73,6 @@ export class SideConversation {
       this.history.length = 0;
       this.changed();
     }
-
   }
 
   async ask(raw: string) {
@@ -143,16 +142,13 @@ export class SideConversation {
         turn.error = controller.signal.aborted
           ? "Side request cancelled."
           : "Side request failed or timed out. Check authentication and the provider; the main conversation continues.";
-
     } finally {
       if (this.controller === controller) this.controller = undefined;
 
       this.busy = false;
 
       if (!this.closed) this.changed();
-
     }
-
   }
 
   private async stream(
@@ -181,7 +177,6 @@ export class SideConversation {
         turn.answer = textContent(event.partial.content);
         this.changed();
       }
-
     }
 
     signal.throwIfAborted();

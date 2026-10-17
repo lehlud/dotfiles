@@ -61,7 +61,6 @@ function fixture() {
 
         if (!content) removed = true;
         else frames.push(content({}, theme).render(1000));
-
       },
     },
   } as any;
@@ -152,7 +151,6 @@ test("saved activity renders with runtime attribution, terminal sanitization and
   registerActivityRenderer({
     registerEntryRenderer(type: string, value: any) {
       if (type === ACTIVITY_ENTRY) render = value;
-
     },
   } as any);
 
@@ -265,7 +263,6 @@ test("every actor uses a distinct stable color and the compact table aligns with
       ui: {
         setWidget(_key: string, build: any) {
           if (build) component = build({}, coloredTheme);
-
         },
       },
     } as any,
@@ -466,7 +463,6 @@ function compactingPeer() {
       session.isCompacting = false;
 
       for (const listener of [...listeners]) listener({ type: "compaction_end" });
-
     },
 
     listenerCount: () => listeners.size,
@@ -667,7 +663,6 @@ test("a real Pi SDK peer retains steering across manual compaction", async () =>
     await peer?.close();
     await rm(directory, { recursive: true, force: true });
   }
-
 }, 10000);
 
 test("the backend session has no duplicate native rows, including after stopping and restoring the feed", () => {

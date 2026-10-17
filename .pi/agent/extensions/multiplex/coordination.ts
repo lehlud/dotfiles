@@ -76,7 +76,6 @@ export class Coordination {
 
         scopes.push({ owner: item.name, path });
       }
-
     }
 
     this.plan = {
@@ -99,7 +98,6 @@ export class Coordination {
       this.plan.accepted.add(from);
 
       if (this.ready) this.changed(true);
-
     }
 
     return this.snapshot();
@@ -137,7 +135,6 @@ export class Coordination {
         throw new Error(
           "Multiplex coordination: your assignment is waiting. Let its owner work; agree an updated split before starting external actions.",
         );
-
     };
 
     assertCurrent();
@@ -156,7 +153,6 @@ export class Coordination {
           released = true;
           this.active--;
         }
-
       },
     };
   }
@@ -186,6 +182,5 @@ export class Coordination {
   private member(name: string) {
     if (this.closed || !this.names.includes(name))
       throw new Error("Multiplex coordination is inactive or member is unknown.");
-
   }
 }

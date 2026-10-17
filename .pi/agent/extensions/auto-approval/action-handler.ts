@@ -88,7 +88,6 @@ class ActionRun {
       this.display.finish();
       this.ctx.ui.setStatus("auto-approval", undefined);
     }
-
   }
 
   private async review({
@@ -124,7 +123,6 @@ class ActionRun {
             )
           )
             this.pi.appendEntry("auto-approval-prompt-compression", record);
-
         },
 
         failed: (attempt) =>

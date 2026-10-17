@@ -41,7 +41,6 @@ export default function autoApproval(pi: ExtensionAPI) {
       ctx.ui.setStatus("auto-approval", "approval: LOCKED");
       ctx.ui.notify(`Auto-Approval LOCKED: ${String(error)}`, "error");
     }
-
   });
 
   pi.on("before_agent_start", async (_event, ctx) => {
@@ -62,7 +61,6 @@ export default function autoApproval(pi: ExtensionAPI) {
 
     if (event.toolName !== TOOL_NAME || event.parentToolCallId)
       return { block: true, reason: LOCK_MESSAGE };
-
   });
 
   pi.on("user_bash", async () => ({
@@ -92,7 +90,6 @@ export default function autoApproval(pi: ExtensionAPI) {
           "error",
         );
       }
-
     },
   });
 

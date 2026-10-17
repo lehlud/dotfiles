@@ -15,6 +15,9 @@ Write for a human maintainer:
 - Always put a blank line after a completed control-flow block: if/else, loops, switch and
   try/catch/finally, including nested control flow. Keep syntactically connected else, catch,
   finally and do/while clauses attached; add the blank line after the complete construct.
+  Consecutive closing braces and other enclosing closing delimiters stay together: do not
+  insert a blank line between them, even when the inner brace closes control flow. Add the
+  separating blank line when another statement follows the completed construct.
   Use equivalent spacing after dedented control flow in languages without braces.
   This is not a blanket closing-brace rule. Do not add blank lines just because a callback,
   closure, constructor argument, object/map literal, collection or JSON structure closes.

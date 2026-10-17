@@ -53,7 +53,6 @@ export class SideView {
       queueMicrotask(() => {
         void this.submit(initial);
       });
-
   }
 
   get focused() {

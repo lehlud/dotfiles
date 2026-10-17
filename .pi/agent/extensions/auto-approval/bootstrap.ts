@@ -38,7 +38,6 @@ async function matches(path: string, expected: string): Promise<boolean> {
 
     return false;
   }
-
 }
 
 function run(directory: string, args: string[]): void {
@@ -50,7 +49,6 @@ function run(directory: string, args: string[]): void {
 
   if (result.exitCode !== 0)
     throw new Error(`Auto-Approval setup failed: bun ${args[0]} (exit ${result.exitCode})`);
-
 }
 
 /** The separate extensions share the SDK dependencies pinned here. */
@@ -79,16 +77,13 @@ export async function prepareCompanionDependencies(directory: string): Promise<v
       await symlink("../auto-approval/node_modules", modules, "dir");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-
     }
 
     if ((await realpath(modules)) !== (await realpath(join(directory, "node_modules"))))
       throw new Error(
         `${name}: node_modules must refer to the pinned Auto-Approval SDK dependencies`,
       );
-
   }
-
 }
 
 export async function prepareExecutor(
@@ -141,7 +136,6 @@ export async function prepareExecutor(
     executable = (await stat(runner)).isFile();
   } catch (error) {
     if (!["ENOENT", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
-
   }
 
   if (!executable || !(await matches(`${runner}.sources.sha256`, sources))) {
@@ -160,7 +154,6 @@ export async function prepareExecutor(
     } finally {
       await rm(staging, { recursive: true, force: true });
     }
-
   }
 
   await assertSandboxReady(config);
@@ -177,6 +170,5 @@ if (import.meta.main) {
     console.error(`pi: ${String(error)}; startup blocked`);
     process.exitCode = 1;
   }
-
 }
 

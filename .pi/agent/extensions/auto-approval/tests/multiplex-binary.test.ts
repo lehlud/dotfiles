@@ -125,11 +125,8 @@ binaryTest(
           try {
             events.push(JSON.parse(line));
           } catch {}
-
         }
-
       }
-
     })();
     const errors = new Response(child.stderr).text();
     const until = async (check: () => boolean) => {
@@ -263,7 +260,6 @@ binaryTest(
       await errors;
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   30000,
@@ -374,11 +370,8 @@ binaryTest(
           try {
             events.push(JSON.parse(line));
           } catch {}
-
         }
-
       }
-
     })();
     const until = async (check: () => boolean) => {
       for (let i = 0; i < 1000; i++) {
@@ -437,7 +430,6 @@ binaryTest(
       await errors;
       await rm(directory, { recursive: true, force: true });
     }
-
   },
 
   30000,

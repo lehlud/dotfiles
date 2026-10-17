@@ -15,7 +15,6 @@ try {
   previous = await readFile(stamp, "utf8");
 } catch (error) {
   if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-
 }
 
 if (previous !== digest) {

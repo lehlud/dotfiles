@@ -103,7 +103,6 @@ export class Mailboxes {
       try {
         this.onSend?.(from, recipients, text);
       } catch {}
-
     }
 
     return letters.map(({ text: _text, ...receipt }) => receipt);
@@ -125,7 +124,6 @@ export class Mailboxes {
         name,
         this.pending.get(name)!.filter((value) => value > sequence),
       );
-
   }
 
   share(from: string, kind: "audit" | "result", data: Record<string, unknown>) {
@@ -135,9 +133,7 @@ export class Mailboxes {
 
     for (const [name, sink] of this.sinks) {
       if (name !== from) sink[kind](structuredClone({ ...data, multiplexAgent: from }));
-
     }
-
   }
 
   close() {

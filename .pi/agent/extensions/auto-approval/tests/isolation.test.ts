@@ -18,7 +18,6 @@ const git = (...args: string[]) => {
   const result = Bun.spawnSync(["/usr/bin/git", ...args], { stdout: "pipe", stderr: "pipe" });
 
   if (result.exitCode) throw new Error(result.stderr.toString());
-
 };
 
 beforeAll(async () => {
@@ -274,7 +273,6 @@ print('offline-during-online',failures)`;
         ),
       );
     }
-
   },
 
   15000,
@@ -507,7 +505,6 @@ nativeTest(
       await rm(writable);
       await rm(readonly);
     }
-
   },
 );
 test("Docker sandbox arguments apply reviewed resource, environment, mount and network changes", () => {
@@ -580,7 +577,6 @@ nativeTest("host secrets, environment, namespaces, and runner writes stay isolat
   } finally {
     delete process.env.PI_TEST_HOST_SECRET;
   }
-
 });
 
 nativeTest("project-internal build hardlinks permit reads and edits", async () => {
@@ -624,7 +620,6 @@ nativeTest("project-internal build hardlinks permit reads and edits", async () =
     await rm(artifact);
     await rm(deps, { recursive: true });
   }
-
 });
 
 nativeTest("escaping symlinks and host hardlinks are rejected before execution", async () => {
@@ -656,7 +651,6 @@ nativeTest("dangling build-cache symlinks do not block unrelated project actions
     await rm(broken, { force: true });
     await rm(join(project, "unrelated.txt"), { force: true });
   }
-
 });
 
 nativeTest(
@@ -687,7 +681,6 @@ nativeTest(
     } finally {
       await rm(join(project, ".zig-cache"), { recursive: true, force: true });
     }
-
   },
 );
 nativeTest("protected descendants are masked instead of exposing credentials", async () => {

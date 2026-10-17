@@ -165,7 +165,6 @@ nativeTest(
       await rm(unsafe);
       await rm(stale);
     }
-
   },
 );
 nativeTest(

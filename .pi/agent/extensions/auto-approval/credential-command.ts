@@ -113,7 +113,6 @@ export async function executeCredentialCommand(input: unknown) {
       JSON.stringify(secret).slice(1, -1),
     ]))
       output = output.split(variant).join("[REDACTED]");
-
   }
 
   return {

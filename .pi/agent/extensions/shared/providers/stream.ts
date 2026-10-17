@@ -43,7 +43,6 @@ export function finalReviewDenial(response: AssistantMessage, context: Context):
   } catch {
     return false;
   }
-
 }
 
 export function unavailableResponse(response: AssistantMessage, context: Context): boolean {
@@ -116,7 +115,6 @@ export function resilientStream(
 
         throw error;
       }
-
     };
 
     void (async () => {
@@ -146,7 +144,6 @@ export function resilientStream(
           stream.push({ type: "error", reason: message.stopReason, error: message });
         else if (message.stopReason === "pending") stream.end(message);
         else stream.push({ type: "done", reason: message.stopReason, message });
-
       } catch (error) {
         const aborted = options?.signal?.aborted;
         const message: AssistantMessage = {
@@ -183,7 +180,6 @@ export function resilientStream(
       } finally {
         finish?.(model);
       }
-
     })();
 
     return stream;

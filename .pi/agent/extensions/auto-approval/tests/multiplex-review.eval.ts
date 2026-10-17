@@ -49,7 +49,6 @@ for (const fixture of multiplexReviewFixtures) {
   );
 
   if (!passed) failures++;
-
 }
 
 if (failures) throw new Error(`${failures} multiplex review evaluations failed`);

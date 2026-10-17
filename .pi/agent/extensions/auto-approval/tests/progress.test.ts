@@ -27,7 +27,6 @@ test("unchanged reordered and subset inspections warn once and halt after eight 
       guard.observe("bash", input, i % 2 ? "Phase 4 remains active\n M source.zig" : output),
     ).toBe(i === 4 ? "warn" : i === 8 ? "halt" : "repeat");
   }
-
 });
 
 test("changed evidence, actual work, new read targets and explicit reset end a stale sequence", () => {
@@ -72,7 +71,6 @@ test("inspection recognition neither executes shell nor mistakes mixed work for 
     "npm install",
   ])
     expect(inspection("bash", { command })).toBe(false);
-
 });
 
 test("empty and large observations stay bounded and new targets remain possible", () => {

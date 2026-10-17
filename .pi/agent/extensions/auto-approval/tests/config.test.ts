@@ -128,7 +128,6 @@ test("local schema accepts only absolute device paths and views, never reviewer 
   ]) {
     expect(() => parseLocalConfig(JSON.stringify(invalid))).toThrow();
   }
-
 });
 
 test("previous filename preserves restrictions until the device configuration is renamed", async () => {

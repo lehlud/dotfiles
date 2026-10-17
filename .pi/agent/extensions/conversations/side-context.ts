@@ -20,7 +20,6 @@ function item(entry: ContextEntry): Item | undefined {
     const text = (entry.data as { text?: unknown })?.text;
 
     if (typeof text === "string") return { source: "operator goal", text };
-
   }
 
   const message = entry.message;

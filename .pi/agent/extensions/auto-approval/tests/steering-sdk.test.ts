@@ -96,7 +96,6 @@ async function fixture(directory: string, outage = false) {
         if (message.stopReason === "error")
           stream.push({ type: "error", reason: "error", error: message });
         else stream.push({ type: "done", reason: message.stopReason, message });
-
       });
 
       return stream;
@@ -245,7 +244,6 @@ test("normal Pi steering carries its main task through the correction and subseq
     state.session.dispose();
     await rm(directory, { recursive: true, force: true });
   }
-
 }, 10000);
 
 test("real Pi /continue recovers a provider-interrupted task without a synthetic user prompt", async () => {
@@ -293,5 +291,4 @@ test("real Pi /continue recovers a provider-interrupted task without a synthetic
     state.session.dispose();
     await rm(directory, { recursive: true, force: true });
   }
-
 }, 10000);

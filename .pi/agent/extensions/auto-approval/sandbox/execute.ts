@@ -52,11 +52,8 @@ export async function executeIsolated(
                 process.kill(-child.pid, "SIGKILL");
               } catch (error) {
                 if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-
               }
-
             }
-
           })
         : new Promise<void>((done) => {
             const rm = spawn(executable, ["rm", "--force", name], { stdio: "ignore" });
@@ -95,12 +92,10 @@ export async function executeIsolated(
       } catch {
         stop("Executor output limit exceeded");
       }
-
     });
 
     child.stderr.on("data", (chunk: Buffer) => {
       if (stderr.length < 20000) stderr += diagnosticDecoder.write(chunk);
-
     });
 
     child.stdin.on("error", () => {});
@@ -132,5 +127,4 @@ export async function executeIsolated(
     await remove();
     await cleanTemporaryMountpoints(workspace.temporaryDirectory, mountpoints);
   }
-
 }

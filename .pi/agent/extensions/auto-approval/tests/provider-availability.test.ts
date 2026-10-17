@@ -142,7 +142,6 @@ test("507 and connection failures are transient; refusals, authentication, schem
     "billing exhausted",
   ])
     expect(transientProviderError(text)).toBe(false);
-
 });
 
 test("reported coded 401 failures are recoverable; unrelated authentication and terminal failures stay final", () => {
@@ -166,7 +165,6 @@ test("reported coded 401 failures are recoverable; unrelated authentication and 
     Object.assign(new Error("HTTP 503 model overloaded"), { status: 403, code: "token_expired" }),
   ])
     expect(transientProviderError(error)).toBe(false);
-
 });
 
 test("coded token expiry gets five retries, a five-minute hold, one probe and a reset after recovery", async () => {
@@ -356,9 +354,7 @@ test("request-bound denial, invalid JSON, refusals and partial denial followed b
 
     if (response.content.some((block) => block.type === "text" && block.text === denial))
       expect(response.stopReason).toBe("error");
-
   }
-
 });
 
 test("cybersecurity refusals are final even when a transport status appears in the same error", async () => {
@@ -391,7 +387,6 @@ test("cybersecurity refusals are final even when a transport status appears in t
     expect(response.errorMessage).not.toContain("synthetic-private-data");
     expect(isRetryableAssistantError(response)).toBe(false);
   }
-
 });
 
 test("raw refusal markers prevent retries even if a transport throw follows the refusal", async () => {
@@ -432,5 +427,4 @@ test("raw refusal markers prevent retries even if a transport throw follows the 
     expect(result.rawStopReason).toBe("refusal");
     expect(isRetryableAssistantError(result)).toBe(false);
   }
-
 });

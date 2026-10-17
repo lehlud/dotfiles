@@ -68,7 +68,6 @@ export function registerEndpoint(pi: ExtensionAPI, current: () => Endpoint | und
     attach(ctx);
 
     if (current() && !current()!.boxes.closed) pi.setActiveTools(["approved_action", MAILBOX_TOOL]);
-
   };
 
   pi.on("session_start", initialize);
@@ -122,7 +121,6 @@ export function registerEndpoint(pi: ExtensionAPI, current: () => Endpoint | und
           isError: event.isError,
         },
       });
-
   });
 
   pi.registerTool({

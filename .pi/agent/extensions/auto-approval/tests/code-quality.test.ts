@@ -62,6 +62,8 @@ test("the standing policy covers semantic groups, wrapping, completed blocks and
     "Group statements by purpose",
     "Always put a blank line",
     "completed control-flow block",
+    "Consecutive closing braces",
+    "even when the inner brace closes control flow",
     "Do not add blank lines just because a callback",
     "JSON structure closes",
     "multiline control-flow bodies",
@@ -71,7 +73,6 @@ test("the standing policy covers semantic groups, wrapping, completed blocks and
     "normal review and sandbox",
   ])
     expect(CODE_POLICY.replace(/\s+/g, " ")).toContain(rule);
-
 });
 
 test("launcher requires code quality and loads it alongside mandatory action approval", async () => {

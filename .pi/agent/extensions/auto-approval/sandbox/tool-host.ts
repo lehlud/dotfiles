@@ -11,7 +11,6 @@ export async function hasContainerHost(): Promise<boolean> {
     });
 
     if (marker?.isFile() && marker.uid === 0) return true;
-
   }
 
   return false;

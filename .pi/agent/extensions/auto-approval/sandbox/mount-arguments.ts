@@ -25,7 +25,6 @@ export function localToolArguments(workspace: Workspace, native: boolean): strin
 
   for (const tool of tools) {
     if (tool.helper) sources.push({ source: tool.helper, target: tool.helper });
-
   }
 
   const targets = new Map<string, { source: string; target: string }>();

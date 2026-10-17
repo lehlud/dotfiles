@@ -95,7 +95,6 @@ export async function prepareAction(
       throw new Error(
         "The agent cannot modify Pi installation, approval code, configuration, or credentials",
       );
-
   }
 
   const sandboxPlan = describeSandbox(request, workspace, config, credentialPlan);

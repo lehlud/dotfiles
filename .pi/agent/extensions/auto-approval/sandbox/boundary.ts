@@ -54,10 +54,8 @@ export async function assertWorkspaceBoundary(
         (!systemRuntime && !bindings.some((binding) => within(binding, target)))
       )
         throw new Error(`Workspace symlink escapes its exposed boundary: ${path}`);
-
     } else if (stat.isDirectory()) {
       for (const name of await readdir(path)) await walk(join(path, name));
-
     } else if (!stat.isFile()) throw new Error(`Workspace contains a special file: ${path}`);
     else if (stat.nlink > 1) {
       const key = `${stat.dev}:${stat.ino}`;
@@ -78,9 +76,7 @@ export async function assertWorkspaceBoundary(
           write: writable(path),
           read: !writable(path),
         });
-
     }
-
   };
 
   // Nested mounts must not cause the same inode entry to be counted twice.
@@ -98,7 +94,5 @@ export async function assertWorkspaceBoundary(
 
     if (entry.write && entry.read)
       throw new Error(`Writable hardlink would modify a read-only grant: ${entry.path}`);
-
   }
-
 }

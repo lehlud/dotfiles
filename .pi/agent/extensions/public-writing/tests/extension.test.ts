@@ -47,7 +47,6 @@ test("the receipt binds the exact original-language draft to the frozen rules", 
       textHash: createHash("sha256").update(text).digest("hex"),
     });
   }
-
 });
 
 test("operator-only text produces a skip receipt", async () => {
@@ -74,5 +73,4 @@ test("malformed, oversized and undeclared inputs are rejected by the tool schema
   ]) {
     expect(Check(writingCheckTool.parameters, args)).toBe(false);
   }
-
 });

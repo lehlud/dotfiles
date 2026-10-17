@@ -50,7 +50,6 @@ export function parsePromptLookup(args: unknown): PromptLookup {
     } catch {
       value = undefined;
     }
-
   }
 
   if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -60,9 +59,7 @@ export function parsePromptLookup(args: unknown): PromptLookup {
       if ((value as Record<string, unknown>)[key] === null) {
         delete (value as Record<string, unknown>)[key];
       }
-
     }
-
   }
 
   if (!Check(promptOriginalTool.parameters, value)) {

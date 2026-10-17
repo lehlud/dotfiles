@@ -113,11 +113,8 @@ export class FeedView {
           if (record.toolCallId) this.rootTool(record.toolCallId);
 
           for (const hash of record.nativeTexts ?? []) this.nativeTexts.add(hash);
-
         }
-
       }
-
   }
 
   private hidesMessage(message: any) {

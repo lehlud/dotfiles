@@ -21,7 +21,6 @@ for await (const name of new Bun.Glob("**/*.{ts,json,md}").scan(root)) {
   changed.push(name);
 
   if (write) await writeFile(path, grouped);
-
 }
 
 if (changed.length) console.log(changed.join("\n"));

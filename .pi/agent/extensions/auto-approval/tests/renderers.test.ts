@@ -242,7 +242,6 @@ test("denied, pending and failed writes never show written additions", () => {
     expect(display(component)).not.toContain("never written");
     expect(display(component)).not.toContain("+1");
   }
-
 });
 
 test("long shell commands collapse only their display and expand back to the complete command", () => {
@@ -281,7 +280,6 @@ test("long shell commands collapse only their display and expand back to the com
     component.setExpanded(false);
     expect(display(component)).toContain("ctrl+o to expand");
   }
-
 });
 
 test("one-command network and selected tool bundles are visible", () => {

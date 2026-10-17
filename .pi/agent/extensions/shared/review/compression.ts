@@ -57,14 +57,11 @@ async function readCache(path: string, key: string, promptId: string): Promise<s
       saved.text.length <= 600
     )
       return saved.text;
-
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-
   } finally {
     await file?.close();
   }
-
 }
 
 async function saveCache(directory: string, key: string, promptId: string, text: string) {
@@ -81,7 +78,6 @@ async function saveCache(directory: string, key: string, promptId: string, text:
     await file.close();
     await rm(staging, { force: true });
   }
-
 }
 
 async function compressText(
@@ -144,7 +140,6 @@ async function compressText(
 
       throw error;
     }
-
   };
 
   for (const [index, piece] of pieces.entries()) {
@@ -214,7 +209,6 @@ export async function preparePromptContext(
 
       await mkdir(directory, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "EEXIST") throw error;
-
       });
 
       const stat = await lstat(directory);
@@ -284,7 +278,6 @@ export async function preparePromptContext(
           record.text = compressed.text;
           record.compressed = true;
         } else record.reason = compressed.reason;
-
       }
 
       const { original: _original, ...saved } = record;

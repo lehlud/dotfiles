@@ -130,7 +130,6 @@ export async function verifyGoal(
           )
         )
           pi.appendEntry("auto-approval-prompt-compression", record);
-
       },
 
       failed: (attempt) =>

@@ -81,7 +81,6 @@ for (const [label, failure] of [
 
           if (failed) stream.push({ type: "error", reason: "error", error: message });
           else stream.push({ type: "done", reason: "stop", message });
-
         });
 
         return stream;
@@ -154,7 +153,6 @@ for (const [label, failure] of [
       session.dispose();
       await rm(directory, { recursive: true, force: true });
     }
-
   }, 10000);
 }
 

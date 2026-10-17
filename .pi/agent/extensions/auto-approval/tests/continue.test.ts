@@ -89,7 +89,6 @@ test("running work, queued input, absent authentication and arguments do not sta
     expect(state.sent).toEqual([]);
     expect(state.notices).toHaveLength(1);
   }
-
 });
 
 test("empty history and busy teams fail before a continuation starts", async () => {

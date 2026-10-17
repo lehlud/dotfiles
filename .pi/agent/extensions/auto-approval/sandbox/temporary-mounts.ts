@@ -42,7 +42,6 @@ export async function temporaryMountpoints(workspace: Workspace): Promise<Tempor
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-
       }
 
       absent.push(path);
@@ -56,7 +55,6 @@ export async function temporaryMountpoints(workspace: Workspace): Promise<Tempor
       try {
         if (path !== target || directory) await mkdir(path, { mode: 0o700 });
         else await writeFile(path, "", { flag: "wx", mode: 0o600 });
-
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
 
@@ -67,7 +65,6 @@ export async function temporaryMountpoints(workspace: Workspace): Promise<Tempor
 
       created.push({ path, dev: stat.dev, ino: stat.ino });
     }
-
   }
 
   return created.sort((a, b) => b.path.length - a.path.length);
@@ -81,13 +78,11 @@ async function unsafeTemporaryParent(root: string, path: string): Promise<boolea
 
     try {
       if (!(await lstat(current)).isDirectory()) return true;
-
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
 
       throw error;
     }
-
   }
 
   return false;
@@ -111,13 +106,9 @@ export async function cleanTemporaryMountpoints(
 
       if (stat.isDirectory()) await rmdir(path);
       else if (stat.isFile() && stat.size === 0 && stat.nlink === 1) await unlink(path);
-
     } catch (error) {
       if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? ""))
         throw error;
-
     }
-
   }
-
 }

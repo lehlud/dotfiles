@@ -56,7 +56,6 @@ export function validateGitArgv(argv: string[]): void {
 
   if (argv.some((arg) => /^(?:--ext-diff|--textconv)(?:=|$)/.test(arg)))
     throw new Error("External Git diff programs are excluded");
-
 }
 
 // Only the fixed internal offline reader can parse original configuration snapshots.

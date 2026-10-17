@@ -242,7 +242,6 @@ beforeEach(async () => {
         currentApprovalStatus = text;
 
         if (text) statuses.push(text);
-
       },
 
       setWidget: (_key: string, lines?: string[]) => widgets.push(lines),
@@ -349,7 +348,6 @@ const exists = async (path: string) => {
   } catch {
     return false;
   }
-
 };
 
 const credentialAction = () => ({
@@ -467,9 +465,7 @@ test("approved Git settings are read after the decision and later actions receiv
   } finally {
     if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL;
     else process.env.GIT_CONFIG_GLOBAL = previous;
-
   }
-
 });
 
 test("Git configuration cannot be attached to bash or hidden in unknown private executor input", async () => {
@@ -688,7 +684,6 @@ test("private temporary storage is reused and removed on quit, reload and sessio
     expect((await stat(root)).mode).toBe(externalMode);
     previous = current;
   }
-
 });
 
 test("every direct, unknown, nested, MCP, and codemode route is blocked", async () => {
@@ -1119,7 +1114,6 @@ test("invalid, errored, or mismatched verdicts fail closed", async () => {
     expect(result.isError).toBe(true);
     expect(await exists(join(root, `${variant}-sentinel`))).toBe(false);
   }
-
 });
 
 test("missing and invalid config fail closed without reviewer or execution", async () => {
@@ -1602,5 +1596,4 @@ test("relocated gate infrastructure stays protected with an alternate agent dire
   } finally {
     await rm(alias);
   }
-
 });
