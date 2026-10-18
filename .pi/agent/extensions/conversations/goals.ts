@@ -1,9 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerGoalTool } from "./goal-tool.ts";
 import { GoalController } from "./goal-controller.ts";
 import { INSTRUCTION_TYPE, instruction, message } from "./goal-state.ts";
 
 export function registerGoals(pi: ExtensionAPI) {
   const controller = new GoalController(pi);
+
+  registerGoalTool(pi);
 
   pi.on("session_start", (event, ctx) => controller.restore(event, ctx));
   pi.on("session_tree", (event, ctx) => controller.restore(event, ctx));
@@ -34,5 +37,8 @@ export function registerGoals(pi: ExtensionAPI) {
     handler: (args, ctx) => controller.command(args, ctx),
   });
 
-  return () => (controller.goal?.status === "running" ? controller.goal.text : undefined);
+  return () =>
+    controller.goal?.status === "running" && controller.goal.source !== "agent"
+      ? controller.goal.text
+      : undefined;
 }

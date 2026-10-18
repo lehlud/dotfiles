@@ -1,14 +1,17 @@
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { OperatorInputKind } from "../contracts/operator-input.ts";
 
+import type { Goal } from "../contracts/goal.ts";
+
 export type ActionLease = {
   scope?: { planId?: string; name: string; task: string; resources: string[]; waiting?: boolean };
   assertCurrent(): void;
   release(): void;
 };
 
-/** Only extensions set these session-bound services; no model tool can access them. */
+/** Trusted session capabilities; models cannot inspect or mutate this registry. */
 export type SessionServices = {
+  setAgentGoal?: (text: string, signal?: AbortSignal) => Promise<Goal>;
   fastMode?: () => boolean;
   operatorGoal?: () => string | undefined;
   operatorGoalId?: () => string | undefined;

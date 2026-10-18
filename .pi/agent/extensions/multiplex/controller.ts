@@ -4,6 +4,7 @@ import type {
   ExtensionContext,
   InputEvent,
 } from "@earendil-works/pi-coding-agent";
+import { availableGoalTools } from "../shared/contracts/goal.ts";
 import { sessionServices } from "../shared/session/services.ts";
 import { assertSandboxReady, loadConfig } from "../shared/configuration/load.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -89,7 +90,7 @@ export class TeamController {
     sessionServices(ctx).continueTeam = undefined;
     this.display(ctx);
     this.attach(ctx);
-    this.pi.setActiveTools(["approved_action"]);
+    this.pi.setActiveTools(["approved_action", ...availableGoalTools(this.pi)]);
     this.closing = Promise.allSettled(previous.peers.map((peer) => peer.close())).then((closed) => {
       if (closed.some((result) => result.status === "rejected"))
         throw new Error(
@@ -214,7 +215,7 @@ export class TeamController {
       )
         return;
 
-      const goal = endpoint.operatorGoal();
+      const goal = sessionServices(ctx).goalInstruction?.();
 
       quiescence.settle(
         goal ? `${sessionServices(ctx).operatorGoalId?.()}:${goal}` : undefined,
@@ -255,7 +256,7 @@ export class TeamController {
       !next.ready ||
       !boxes.coordination.ready ||
       next.peers.some((peer) => peer.busy) ||
-      (!!endpoint.operatorGoal() && boxes.unobserved().length > 0);
+      (!!sessionServices(ctx).goalInstruction?.() && boxes.unobserved().length > 0);
     sessionServices(ctx).peerRevision = () => boxes.revision;
     sessionServices(ctx).continueTeam = (content) => {
       if (next.stopped || this.team !== next || !next.ready)
@@ -331,7 +332,7 @@ export class TeamController {
 
       next.ready = true;
       this.attach(ctx);
-      this.pi.setActiveTools(["approved_action", "mailbox"]);
+      this.pi.setActiveTools(["approved_action", "mailbox", ...availableGoalTools(this.pi)]);
       this.display(ctx);
 
       for (const { event, kind } of next.pending.splice(0))

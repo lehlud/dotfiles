@@ -10,6 +10,7 @@ import { reviewerLabel } from "../shared/review/client.ts";
 import { detectWorkspace } from "./isolation.ts";
 import { createApprovalRenderers } from "./renderers.ts";
 import { definitions, parameters, TOOL_NAME } from "./tool-catalog.ts";
+import { availableGoalTools, GOAL_TOOL } from "../shared/contracts/goal.ts";
 import { ACTION_DESCRIPTION, ACTION_POLICY, LOCK_MESSAGE } from "./instructions.ts";
 import { ActionSession } from "./action-session.ts";
 import { actionHandler } from "./action-handler.ts";
@@ -23,7 +24,11 @@ export default function autoApproval(pi: ExtensionAPI) {
   pi.on("session_shutdown", () => session.cleanup());
 
   function lock(ctx: ExtensionContext) {
-    pi.setActiveTools([TOOL_NAME, ...(sessionServices(ctx).mailbox?.active() ? ["mailbox"] : [])]);
+    pi.setActiveTools([
+      TOOL_NAME,
+      ...availableGoalTools(pi),
+      ...(sessionServices(ctx).mailbox?.active() ? ["mailbox"] : []),
+    ]);
     // Clear a widget left by an older version after /reload.
     ctx.ui.setWidget("auto-approval", undefined);
     ctx.ui.setStatus("auto-approval", undefined);
@@ -56,8 +61,8 @@ export default function autoApproval(pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", (event) => {
-    // Internal transport is owned by multiplex, outside approval and audit.
-    if (event.toolName === "mailbox") return;
+    // Internal mailbox and goal metadata grant no external-action permissions.
+    if (event.toolName === "mailbox" || event.toolName === GOAL_TOOL) return;
 
     if (event.toolName !== TOOL_NAME || event.parentToolCallId)
       return { block: true, reason: LOCK_MESSAGE };

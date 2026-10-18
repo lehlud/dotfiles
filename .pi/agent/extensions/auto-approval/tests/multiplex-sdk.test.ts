@@ -73,6 +73,7 @@ async function fixture(
   failure?: "terminal" | "peer" | "invalid-terminal" | "invalid-peer",
   encoded = false,
   spinning?: "terminal" | "peer",
+  selfAssigned = false,
 ) {
   const agentDir = join(directory, "agent"),
     project = join(directory, "project");
@@ -118,6 +119,7 @@ async function fixture(
     modelsStorePath: join(agentDir, "models-store.json"),
     allowModelNetwork: false,
   });
+  let agentGoalSet = false;
   const stages = new Map<string, number>(),
     contexts: any[] = [],
     reviews: any[] = [],
@@ -195,6 +197,22 @@ async function fixture(
             if (!name) throw new Error("Agent has no bound random identity");
 
             const names = serialized.match(/Members: ([a-z]+(?:, [a-z]+)*)/)?.[1].split(", ") ?? [];
+
+            if (selfAssigned && name === names[1] && !agentGoalSet) {
+              agentGoalSet = true;
+              message.stopReason = "toolUse";
+              message.content = [
+                {
+                  type: "toolCall",
+                  id: "peer-goal",
+                  name: "set_goal",
+                  arguments: { goal: "Complete and verify the assigned fixture files" },
+                },
+              ];
+              stream.push({ type: "done", reason: "toolUse", message });
+
+              return;
+            }
 
             if (
               (failure === "terminal" || failure === "peer") &&
@@ -492,7 +510,7 @@ async function fixture(
     sessionManager: manager,
     settingsManager: settings,
     resourceLoader: loader,
-    tools: ["approved_action", "mailbox"],
+    tools: ["approved_action", "mailbox", "set_goal"],
   });
 
   return {
@@ -579,7 +597,11 @@ nativeTest(
       state = await fixture(directory, true);
       await state.session.bindExtensions({ mode: "json" });
       await state.session.prompt("/multiplex 1");
-      expect(state.session.getActiveToolNames()).toEqual(["approved_action", "mailbox"]);
+      expect(state.session.getActiveToolNames()).toEqual([
+        "approved_action",
+        "mailbox",
+        "set_goal",
+      ]);
       expect(sessionServices(state.root()).mailbox?.active()).toBe(true);
     } finally {
       state?.releases.forEach((release) => release());
@@ -729,7 +751,7 @@ nativeTest(
         expect(userText).not.toContain("PEER-ONLY");
         expect(JSON.stringify(latest.messages)).toContain("PEER-ONLY");
         expect(JSON.stringify(latest.messages)).toContain("BEFORE-MULTIPLEX");
-        expect(latest.tools.sort()).toEqual(["approved_action", "mailbox"]);
+        expect(latest.tools.sort()).toEqual(["approved_action", "mailbox", "set_goal"]);
         expect(JSON.stringify(latest.messages)).not.toContain(ACTIVITY_ENTRY);
         expect(
           JSON.stringify(latest.messages).split("Code readability is a standing requirement")
@@ -912,7 +934,7 @@ nativeTest(
       await state.session.reload();
       expect(statuses.has("00-multiplex")).toBe(false);
       expect(sessionServices(state.root()).mailbox).toBeUndefined();
-      expect(state.session.getActiveToolNames()).toEqual(["approved_action"]);
+      expect(state.session.getActiveToolNames()).toEqual(["approved_action", "set_goal"]);
     } finally {
       state?.releases.forEach((release) => release());
       await main?.catch(() => {});
@@ -1439,7 +1461,7 @@ nativeTest(
       for (let i = 0; i < 40; i++) await tick();
 
       expect(statuses.get("01-goal")).toContain("paused");
-      expect(state.session.getActiveToolNames()).toEqual(["approved_action"]);
+      expect(state.session.getActiveToolNames()).toEqual(["approved_action", "set_goal"]);
       expect(await readdir(state.project)).toEqual([`${backend}.txt`]);
       expect(state.reviews.filter((review) => !review.action)).toEqual([]);
 
@@ -1526,7 +1548,7 @@ nativeTest(
       expect(state.reviews).toHaveLength(3);
       expect(await readdir(state.project)).toEqual([]);
       expect(state.contexts.every((context) => context.stage === 0)).toBe(true);
-      expect(state.session.getActiveToolNames()).toEqual(["approved_action"]);
+      expect(state.session.getActiveToolNames()).toEqual(["approved_action", "set_goal"]);
     } finally {
       state?.releases.forEach((release) => release());
       state?.reviewReleases.forEach((release) => release());
@@ -1683,7 +1705,7 @@ for (const failure of ["terminal", "peer"] as const)
         expect(state.contexts).toHaveLength(0);
         expect(sessionServices(state.root()).mailbox?.active()).not.toBe(true);
         expect(sessionServices(state.root()).operatorGoal?.()).toBeUndefined();
-        expect(state.session.getActiveToolNames()).toEqual(["approved_action"]);
+        expect(state.session.getActiveToolNames()).toEqual(["approved_action", "set_goal"]);
         expect(
           branch.filter(
             (entry) => entry.type === "custom" && entry.customType === "multiplex-team-failure",
@@ -1757,7 +1779,7 @@ for (const failure of ["invalid-terminal", "invalid-peer"] as const)
         expect(invalid).toHaveLength(3);
         expect(state.reviews).toHaveLength(0);
         expect(sessionServices(state.root()).operatorGoal?.()).toBeUndefined();
-        expect(state.session.getActiveToolNames()).toEqual(["approved_action"]);
+        expect(state.session.getActiveToolNames()).toEqual(["approved_action", "set_goal"]);
         expect((await readdir(state.project)).filter((name) => name.endsWith(".txt"))).toEqual([]);
       } finally {
         state?.releases.forEach((release) => release());
@@ -1878,7 +1900,7 @@ for (const spinning of ["terminal", "peer"] as const)
 
         expect(goal.data.status).toBe("paused");
         expect(goal.data.reason).toContain("unchanged inspections");
-        expect(state.session.getActiveToolNames()).toEqual(["approved_action"]);
+        expect(state.session.getActiveToolNames()).toEqual(["approved_action", "set_goal"]);
         expect(sessionServices(state.root()).mailbox?.active()).not.toBe(true);
 
         const repeats = state.reviews.filter((review) =>
@@ -1913,3 +1935,77 @@ for (const spinning of ["terminal", "peer"] as const)
     60000,
   );
 
+nativeTest(
+  "a peer can set a shared agent goal without forging operator intent or bypassing action review",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-peer-goal-sdk-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    let state: Awaited<ReturnType<typeof fixture>> | undefined;
+    let main: Promise<void> | undefined;
+
+    try {
+      state = await fixture(
+        directory,
+        false,
+        false,
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        true,
+      );
+      await state.session.bindExtensions({
+        mode: "json",
+        uiContext: { setStatus() {}, setWidget() {}, notify() {} } as any,
+      });
+      await state.session.prompt("/multiplex 3");
+      main = state.session.prompt(
+        "TEAM-TASK: Complete the three assigned fixture files. Never upload source.",
+      );
+      await until(() => state!.releases.length === 3);
+      expect(sessionServices(state.root()).operatorGoal?.()).toBeUndefined();
+      state.releases.forEach((release) => release());
+      await main;
+      await until(
+        () =>
+          (
+            state!.session.sessionManager
+              .getBranch()
+              .filter((entry: any) => entry.customType === "auto-approval-goal")
+              .at(-1) as any
+          )?.data.status === "complete",
+      );
+
+      const saved = state.session.sessionManager
+        .getBranch()
+        .filter((entry: any) => entry.customType === "auto-approval-goal")
+        .at(-1) as any;
+
+      expect(saved.data.source).toBe("agent");
+      expect(state.reviews.some((data) => data.action?.tool === "set_goal")).toBe(false);
+      expect(state.reviews.filter((data) => data.action).length).toBeGreaterThanOrEqual(3);
+
+      const completion = state.reviews.find((data) => data.goal?.source === "agent");
+
+      expect(completion.operatorGoal).toBeUndefined();
+      expect(completion.userPrompts.join(" ")).toContain("Never upload source");
+      expect(completion.userPrompts).not.toContain(saved.data.text);
+    } finally {
+      state?.releases.forEach((release) => release());
+
+      if (state) {
+        await state.session.abort();
+        await sessionServices(state.root()).stopTeam?.();
+        await main?.catch(() => {});
+        state.session.dispose();
+      }
+
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

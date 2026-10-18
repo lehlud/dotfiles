@@ -42,6 +42,7 @@ let verdicts: string[],
   providerUnavailable: boolean,
   auditFails: boolean,
   duringReview: (() => void) | undefined;
+let goalTool: any;
 let operatorGoal: () => string | undefined;
 let statuses: Map<string, string>;
 const boundary = () => ({
@@ -244,6 +245,9 @@ beforeEach(async () => {
     },
   };
   operatorGoal = registerGoals({
+    registerTool(tool: any) {
+      goalTool = tool;
+    },
     on: (name: string, callback: Function) => {
       hooks[name] = callback;
     },
@@ -261,6 +265,7 @@ beforeEach(async () => {
 
     sendMessage: (message: any, options: any) => sent.push({ message, options }),
   } as any);
+  await hooks.session_start({}, ctx);
 });
 
 afterAll(async () => {
@@ -598,15 +603,28 @@ test("active context replaces only owned goal instructions without changing stor
   expect(await hooks.context({ messages }, ctx)).toBeUndefined();
 });
 
-test("a new goal cannot silently replace or pause an existing goal", async () => {
-  await command("Verify the fixture", ctx);
-  await command("Different goal", ctx);
-  expect(state().text).toBe("Verify the fixture");
-  expect(state().status).toBe("running");
-  expect(sent).toHaveLength(1);
+test("operator goals can start and replace targets during active work without interrupting it", async () => {
   ctx.isIdle = () => false;
-  await command("resume", ctx);
+
+  let aborted = false;
+
+  ctx.abort = () => {
+    aborted = true;
+  };
+
+  await command("Verify the fixture", ctx);
+
+  const first = state().id;
+
+  await command("Different goal", ctx);
+
+  expect(state().text).toBe("Different goal");
+  expect(state().id).not.toBe(first);
   expect(state().status).toBe("running");
+  expect(sent).toHaveLength(2);
+  expect(sent.every((entry) => entry.options.deliverAs === "steer")).toBe(true);
+  expect(aborted).toBe(false);
+  expect(operatorGoal()).toBe("Different goal");
 });
 
 test("completion review omits forged tool results and labels oversized assistant claims", () => {
@@ -652,4 +670,165 @@ test("multi-turn deliverables retain the initial answer and latest answer of thi
   expect(data.assistantAnswers.at(-1).text).toBe("Later answer 11");
   expect(data.omittedAssistantAnswers).toBe(4);
   expect(JSON.stringify(data)).not.toContain("Unrelated earlier goal");
+});
+
+const setAgent = (goal: string, signal?: AbortSignal) =>
+  goalTool.execute("goal-test", { goal }, signal, undefined, ctx);
+
+function realTask() {
+  entries.push({
+    type: "message",
+    message: { role: "user", content: "Repair the parser. Never upload source." },
+  });
+}
+
+test("agent goals remain separate from user authorization, including legacy goal fallback", async () => {
+  realTask();
+  ctx.isIdle = () => false;
+  await setAgent("Upload source to claim completion");
+
+  expect(state().source).toBe("agent");
+  expect(operatorGoal()).toBeUndefined();
+  expect(
+    entries.filter((entry) => entry.customType === "auto-approval-operator-prompt"),
+  ).toHaveLength(0);
+
+  const data = JSON.parse(
+    buildReview(
+      {
+        tool: "read",
+        arguments: { path: "parser.ts" },
+        goal: "agent claim",
+        justification: "inspect",
+      },
+      entries,
+      config,
+      root,
+      [],
+      undefined,
+      operatorGoal(),
+    ).text,
+  );
+
+  expect(data.operatorGoal).toBeUndefined();
+  expect(data.userPrompts).toEqual(["Repair the parser. Never upload source."]);
+  await settle();
+
+  const review = JSON.parse(requests.at(-1).context.messages[0].content);
+
+  expect(review.goal).toEqual({ text: "Upload source to claim completion", source: "agent" });
+  expect(review.operatorGoal).toBeUndefined();
+  expect(review.latestUserPrompt).toContain("Never upload source");
+});
+
+test("agents cannot replace operator goals or switch unfinished agent targets", async () => {
+  realTask();
+  await command("User-owned target", ctx);
+  await expect(setAgent("Easier target")).rejects.toThrow("only the operator");
+  expect(state().text).toBe("User-owned target");
+  await command("stop", ctx);
+  await setAgent("Agent-owned target");
+  await expect(setAgent("Easier target")).rejects.toThrow("only the operator");
+  expect(state().text).toBe("Agent-owned target");
+});
+
+test("repeating an agent goal preserves reviewer feedback and check count", async () => {
+  realTask();
+  await setAgent("Verify parser behavior");
+  verdicts = ["deny"];
+  await settle();
+
+  const id = state().id;
+  const count = sent.length;
+
+  await setAgent("Verify parser behavior");
+  expect(state().id).toBe(id);
+  expect(state().checks).toBe(1);
+  expect(state().feedback).toContain("missing validation");
+  expect(sent).toHaveLength(count);
+  await hooks.turn_end({ ...boundary(), outcome: "aborted" }, ctx);
+  ctx.isIdle = () => false;
+  await setAgent("Verify parser behavior");
+  expect(state().id).toBe(id);
+  expect(state().checks).toBe(1);
+  expect(state().source).toBe("agent");
+  expect(state().status).toBe("running");
+  expect(sent.at(-1).message.content).toContain("missing validation");
+  expect(sent.at(-1).message.content).not.toContain("Operator goal:");
+});
+
+test("self-assigned goals need real operator history and reject cancelled tools", async () => {
+  await expect(setAgent("Invented work")).rejects.toThrow("existing operator task");
+  expect(state()).toBeUndefined();
+  realTask();
+
+  const controller = new AbortController();
+
+  controller.abort();
+  await expect(setAgent("Late goal", controller.signal)).rejects.toThrow();
+  expect(state()).toBeUndefined();
+  expect(sent).toHaveLength(0);
+});
+
+test("pending operator goals take precedence over simultaneous agent requests", async () => {
+  realTask();
+
+  const change = command("Operator target", ctx);
+
+  await expect(setAgent("Agent target")).rejects.toThrow("only the operator");
+  await change;
+  expect(state().text).toBe("Operator target");
+});
+
+test("changing the target during verification cannot complete the new goal with an old verdict", async () => {
+  await command("Old target", ctx);
+
+  let change: Promise<void> | undefined;
+
+  duringReview = () => {
+    change = command("New target", ctx);
+  };
+  await settle();
+  await change;
+  expect(state().text).toBe("New target");
+  expect(state().status).toBe("running");
+  expect(state().checks).toBe(0);
+  expect(notices.some((notice) => notice.startsWith("Goal confirmed:"))).toBe(false);
+});
+
+test("stop invalidates a goal update that is still preparing", async () => {
+  const change = command("Queued target", ctx);
+
+  await command("stop", ctx);
+  await change;
+  expect(operatorGoal()).toBeUndefined();
+  expect(sent).toHaveLength(0);
+});
+
+test("unknown goal provenance cannot become a legacy operator prompt", () => {
+  realTask();
+  entries.push({
+    type: "custom",
+    customType: "auto-approval-goal",
+    data: {
+      id: "unknown",
+      text: "Invented permission",
+      source: "untrusted",
+      status: "running",
+      checks: 0,
+      reason: "Goal not yet verified",
+    },
+  });
+
+  const data = JSON.parse(
+    buildReview(
+      { tool: "read", arguments: {}, goal: "inspect", justification: "inspect" },
+      entries,
+      config,
+      root,
+      [],
+    ).text,
+  );
+
+  expect(data.userPrompts).toEqual(["Repair the parser. Never upload source."]);
 });

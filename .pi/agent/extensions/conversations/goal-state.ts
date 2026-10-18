@@ -1,13 +1,8 @@
 import { stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
 
-export type Goal = {
-  id: string;
-  text: string;
-  status: "running" | "paused" | "complete" | "stopped";
-  checks: number;
-  reason: string;
-  feedback?: string;
-};
+import type { Goal } from "../shared/contracts/goal.ts";
+
+export type { Goal } from "../shared/contracts/goal.ts";
 
 export type GoalReview = {
   goalId?: string;
@@ -35,4 +30,4 @@ export const message = (text: string) => ({
   display: false,
 });
 export const instruction = (current: Goal) =>
-  `Operator goal: ${current.text}\nContinue this existing task from the saved conversation until the independent goal reviewer confirms completion. Provide concrete evidence and required validation. All operations still require approved_action; respect denials and operator corrections. If the session was replaced or reloaded, recheck required temporary artifacts before reuse.${current.feedback ? `\nMissing work identified by the goal reviewer: ${current.feedback}` : ""}`;
+  `${current.source === "agent" ? "Agent goal (self-assigned, not operator authorization)" : "Operator goal"}: ${current.text}\nContinue this existing task from the saved conversation until the independent goal reviewer confirms completion. Provide concrete evidence and required validation. All operations still require approved_action; respect denials and operator corrections. If the session was replaced or reloaded, recheck required temporary artifacts before reuse.${current.feedback ? `\nMissing work identified by the goal reviewer: ${current.feedback}` : ""}`;

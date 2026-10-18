@@ -24,14 +24,15 @@ An empty conversation needs a task before it can continue.
 
 ## Continue until the goal is verified
 
-`/goal <objective>` starts the current working model with a concrete objective. When the model finishes its response, the configured reviewer checks completion using the answer and recorded results of approved actions. A claim by the working model alone is insufficient for code changes or runtime checks.
+`/goal <objective>` sets or replaces the session objective, including while the model or its tools are active. It updates the footer immediately after validation and steers the existing run at its next safe boundary; it does not abort work or start a second run. Superseded completion checks cannot settle the replacement goal. When the model finishes its response, the configured reviewer checks completion using the answer and recorded results of approved actions. A claim by the working model alone is insufficient for code changes or runtime checks.
 
 The goal and its current state appear in the bottom status bar, including during completion review and while paused. Team size, when present, appears once before the goal; approval status follows it only during action review. Long or multiline goals are shortened to one display line. Review counts and the full objective remain available through `/goal status`; they are omitted from the compact footer. Exit and session replacement clear the status, which can then be restored from the selected session.
 
 When work remains, the working model receives the reviewer's reason and continues automatically. Only a positive review marks the goal complete. A negative goal verdict does not try another reviewer; fallbacks apply only to technical unavailability. Every external action still requires its own approval and sandbox execution.
 
 - `/goal` or `/goal status` shows the objective, state, reason and review count.
-- `/goal resume` continues a paused goal.
+- `/goal <objective>` replaces the tracked target without requiring a prior stop.
+- `/goal resume` continues a paused goal, including during ongoing work.
 - `/goal stop` is an explicit operator cancellation and never claims completion. Escape, Ctrl+C and exit remain available.
 
 On resume, the model receives the saved objective and latest valid independent completion feedback. Pause reasons and interface hints such as `/goal resume` remain operator status information. Each model request during an active goal contains exactly one current goal control message; older control messages are removed only from that request context. The saved transcript, actual user text and other extensions' messages remain intact. This also applies to existing sessions.
@@ -39,6 +40,25 @@ On resume, the model receives the saved objective and latest valid independent c
 Review failures, invalid verdicts and interrupted model runs pause the goal. Restart, reload or session replacement restore a saved incomplete goal as paused. It resumes only with `/goal resume`; session shutdown has deleted its private `/tmp`. Session-tree navigation adopts the selected branch's goal state without restarting it automatically.
 
 The session log records the objective, review attempts, deciding model, request ID, evidence fingerprint and usage. The original `/goal` instruction remains an operator instruction for action reviewers even when subsequent model turns have no new user prompt. Later user corrections still apply. Goals have no fixed turn count or total runtime limit; model costs can accumulate until verification or interruption.
+
+## Agent-assigned goals
+
+Working models can call `set_goal({goal: "..."})` directly. This changes session metadata only and
+requires no action approval. The target appears in the same footer and uses the same independent
+completion reviewer. Agents need an existing real operator task; a self-assigned target grants no
+additional authority. It is stored with `source: "agent"`, excluded from operator-prompt history and
+`operatorGoal` authorization, and labeled as self-assigned in model and completion-review context.
+Legacy goals retain operator provenance.
+
+An agent cannot replace an active operator goal or switch an unfinished agent goal to an easier
+target. Repeating the same agent target is idempotent while running and resumes it when paused,
+preserving its ID, check count and reviewer feedback. Only the operator can replace an unfinished
+target, stop it, or impose new scope. Every external operation still needs `approved_action`.
+
+Multiplex members share this session target. Any member can use the internal tool through the
+parent controller; no peer gains authority over another. The shared completion snapshot waits for
+all peer work and unread deliveries, including for agent-assigned goals. Interrupts and session
+changes invalidate pending setters; a late tool cannot recreate a cancelled goal.
 
 ## Corrections during ongoing work
 

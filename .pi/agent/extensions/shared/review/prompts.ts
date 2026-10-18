@@ -76,12 +76,14 @@ export function operatorPromptRecords(entries: readonly Entry[]): OperatorPrompt
       const goal = entry.data as {
         id?: string;
         text?: string;
+        source?: string;
         status?: string;
         checks?: number;
         reason?: string;
       };
 
       if (
+        (goal?.source === undefined || goal.source === "operator") &&
         typeof goal?.id === "string" &&
         typeof goal.text === "string" &&
         goal.text.trim() &&

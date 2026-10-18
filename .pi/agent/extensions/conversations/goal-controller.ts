@@ -19,10 +19,14 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { assertSandboxReady, loadConfig } from "../shared/configuration/load.ts";
 import { buildGoalReview, verifyGoal } from "./goal-review.ts";
 import { ReviewChainError } from "../shared/review/client.ts";
+import { operatorPromptRecords } from "../shared/review/prompts.ts";
+import type { GoalSource } from "../shared/contracts/goal.ts";
 import { sessionServices } from "../shared/session/services.ts";
 
 export class GoalController {
   goal: Goal | undefined;
+  private revision = 0;
+  private pendingOperator?: number;
   private reviewController: AbortController | undefined;
   constructor(private pi: ExtensionAPI) {}
 
@@ -39,6 +43,9 @@ export class GoalController {
   }
 
   private bindServices(ctx: ExtensionContext) {
+    sessionServices(ctx).setAgentGoal = (text, signal) =>
+      this.activate(text, "agent", ctx, false, signal);
+
     sessionServices(ctx).resumeGoal = async (commandContext) => {
       if (this.goal?.status !== "paused") return false;
 
@@ -48,7 +55,7 @@ export class GoalController {
     };
 
     sessionServices(ctx).operatorGoal = () =>
-      this.goal?.status === "running" ? this.goal.text : undefined;
+      this.goal?.status === "running" && this.goal.source !== "agent" ? this.goal.text : undefined;
     sessionServices(ctx).interruptGoal = (reason) => {
       this.reviewController?.abort();
       this.pause(ctx, reason ?? "Interrupted by operator; use /goal resume");
@@ -60,6 +67,9 @@ export class GoalController {
   }
 
   shutdown(ctx: ExtensionContext) {
+    this.revision++;
+    this.pendingOperator = undefined;
+    sessionServices(ctx).setAgentGoal = undefined;
     this.reviewController?.abort();
     this.goal = undefined;
     this.display(ctx);
@@ -75,6 +85,8 @@ export class GoalController {
   }
 
   restore(_event: unknown, ctx: ExtensionContext) {
+    this.revision++;
+    this.pendingOperator = undefined;
     this.bindServices(ctx);
     this.reviewController?.abort();
     ctx.ui.setStatus("goal", undefined); // Clear the old status key after reload.
@@ -91,6 +103,7 @@ export class GoalController {
       typeof saved.text === "string" &&
       typeof saved.id === "string" &&
       Number.isInteger(saved.checks) &&
+      (saved.source === undefined || saved.source === "operator" || saved.source === "agent") &&
       ["running", "paused", "complete", "stopped"].includes(saved.status)
         ? { ...saved }
         : undefined;
@@ -145,6 +158,8 @@ export class GoalController {
     }
 
     if (text === "stop") {
+      this.revision++;
+      this.pendingOperator = undefined;
       this.reviewController?.abort();
 
       if (this.goal && ["running", "paused"].includes(this.goal.status)) {
@@ -165,60 +180,142 @@ export class GoalController {
       return;
     }
 
-    let started = false;
-
     try {
-      if (!ctx.isIdle())
-        throw new Error("An agent run is active. Use /goal stop to interrupt it first.");
+      const resume = text === "resume";
+      const replacing = this.goal && ["running", "paused"].includes(this.goal.status);
+      const goal = await this.activate(
+        resume ? (this.goal?.text ?? "") : text,
+        "operator",
+        ctx,
+        resume,
+      );
 
-      if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model))
-        throw new Error("Working model unavailable; configure it first.");
-
-      await assertSandboxReady(await loadConfig(getAgentDir()));
-
-      if (text === "resume") {
-        if (this.goal?.status !== "paused") throw new Error("No paused goal to resume.");
-
-        this.record(
-          {
-            ...this.goal,
-            status: "running",
-            reason: "Resumed by operator; completion not yet verified",
-          },
-          ctx,
-        );
-      } else {
-        if (this.goal && ["running", "paused"].includes(this.goal.status))
-          throw new Error("A goal already exists. Resume it or stop it before replacing it.");
-
-        if (text.length > 8000) throw new Error("Goal is too long (maximum 8000 characters).");
-
-        const next: Goal = {
-          id: randomUUID(),
-          text,
-          status: "running",
-          checks: 0,
-          reason: "Goal not yet verified",
-        };
-
-        this.pi.appendEntry("auto-approval-operator-prompt", { goalId: next.id, text });
-        this.record(next, ctx);
-      }
-
-      started = true;
-
-      if (text === "resume") sessionServices(ctx).continueTeam?.(instruction(this.goal!));
-
-      sessionServices(ctx).resetProgress?.();
-      this.pi.sendMessage(message(instruction(this.goal!)), { triggerTurn: true });
       ctx.ui.notify(
-        `Goal ${text === "resume" ? "resumed" : "started"}: ${this.goal!.text}`,
+        `Goal ${resume ? "resumed" : replacing ? "updated" : "started"}: ${goal.text}`,
         "info",
       );
     } catch (error) {
-      if (started) this.pause(ctx, "Start failed; use /goal resume after resolving the error");
-
       ctx.ui.notify(`Goal: ${String(error)}`, "error");
+    }
+  }
+
+  private async ready(ctx: ExtensionContext, revision: number, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+
+    if (!ctx.model || !ctx.modelRegistry.hasConfiguredAuth(ctx.model)) {
+      throw new Error("Working model unavailable; configure it first.");
+    }
+
+    await assertSandboxReady(await loadConfig(getAgentDir()));
+    signal?.throwIfAborted();
+
+    if (revision !== this.revision) {
+      throw new Error("Goal request superseded by a later control request");
+    }
+  }
+
+  private agentTarget(text: string, ctx: ExtensionContext): Goal | undefined {
+    const current = this.goal;
+    const active = current && ["running", "paused"].includes(current.status);
+
+    if (
+      this.pendingOperator !== undefined ||
+      (active && (current.source !== "agent" || current.text !== text))
+    ) {
+      throw new Error("An existing goal takes precedence; only the operator may replace it");
+    }
+
+    if (!operatorPromptRecords(ctx.sessionManager.getBranch()).length) {
+      throw new Error("An agent goal needs an existing operator task");
+    }
+
+    return active ? current : undefined;
+  }
+
+  private start(next: Goal, ctx: ExtensionContext, resume: boolean) {
+    this.record(next, ctx);
+    this.reviewController?.abort();
+
+    if (resume && ctx.isIdle()) {
+      sessionServices(ctx).continueTeam?.(instruction(next));
+    }
+
+    sessionServices(ctx).resetProgress?.();
+    this.pi.sendMessage(message(instruction(next)), { triggerTurn: true, deliverAs: "steer" });
+  }
+
+  private async activate(
+    input: string,
+    source: GoalSource,
+    ctx: ExtensionContext,
+    resume = false,
+    signal?: AbortSignal,
+  ): Promise<Goal> {
+    signal?.throwIfAborted();
+
+    const text = input.trim();
+    const current = this.goal;
+
+    if (source === "agent") {
+      const existing = this.agentTarget(text, ctx);
+
+      if (existing?.status === "running") {
+        return existing;
+      }
+
+      resume = !!existing;
+    }
+
+    if (resume && current?.status !== "paused") {
+      throw new Error("No paused goal to resume.");
+    }
+
+    if (!text || text.length > 8000) {
+      throw new Error("Goal must contain 1–8000 characters.");
+    }
+
+    const revision = ++this.revision;
+
+    if (source === "operator") {
+      this.pendingOperator = revision;
+    }
+
+    let next: Goal | undefined;
+
+    try {
+      await this.ready(ctx, revision, signal);
+      next = resume
+        ? {
+            ...current!,
+            status: "running",
+            reason: `Resumed by ${source}; completion not yet verified`,
+          }
+        : {
+            id: randomUUID(),
+            text,
+            source,
+            status: "running",
+            checks: 0,
+            reason: "Goal not yet verified",
+          };
+
+      if (source === "operator" && !resume) {
+        this.pi.appendEntry("auto-approval-operator-prompt", { goalId: next.id, text });
+      }
+
+      this.start(next, ctx, resume);
+
+      return next;
+    } catch (error) {
+      if (next && this.goal === next) {
+        this.pause(ctx, "Start failed; use /goal resume after resolving the error");
+      }
+
+      throw error;
+    } finally {
+      if (this.pendingOperator === revision) {
+        this.pendingOperator = undefined;
+      }
     }
   }
 
@@ -236,7 +333,8 @@ export class GoalController {
     if (
       event.message.role !== "assistant" ||
       event.message.content.some((block) => block.type === "toolCall") ||
-      ctx.hasPendingMessages()
+      ctx.hasPendingMessages() ||
+      this.pendingOperator !== undefined
     )
       return;
 
@@ -261,7 +359,9 @@ export class GoalController {
         ctx,
         current,
         signal,
-        (status) => this.display(ctx, status),
+        (status) => {
+          if (this.goal === current) this.display(ctx, status);
+        },
         (prepared) => {
           envelope = prepared;
         },
@@ -273,7 +373,8 @@ export class GoalController {
 
       const peerChanged = sessionServices(ctx).peerRevision?.() !== peerRevision;
       const peersBusy = sessionServices(ctx).peersBusy?.() ?? false;
-      const superseded = ctx.hasPendingMessages() || peerChanged || peersBusy;
+      const superseded =
+        ctx.hasPendingMessages() || peerChanged || peersBusy || this.pendingOperator !== undefined;
 
       this.pi.appendEntry("auto-approval-goal-review", {
         goalId: current.id,
@@ -320,6 +421,8 @@ export class GoalController {
           entries: [{ type: "custom_message", ...message(instruction(this.goal!)) }],
         };
     } catch (error) {
+      if (this.goal !== current) return;
+
       if (this.goal?.id === current.id)
         this.pause(
           ctx,

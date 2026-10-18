@@ -11,13 +11,14 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import autoApproval from "../index.ts";
 import { registerGoals } from "../../conversations/goals.ts";
 import { registerContinue } from "../../conversations/continue.ts";
 import codeQuality from "../../code-quality/index.ts";
 import { textContent } from "../../shared/review/protocol.ts";
 import { registerSteering, STEERING_TYPE } from "../../conversations/steering.ts";
 
-async function fixture(directory: string, steering = false) {
+async function fixture(directory: string, steering = false, selfAssigned = false) {
   await writeFile(
     join(directory, "auto-approval.json"),
     JSON.stringify({
@@ -109,13 +110,25 @@ async function fixture(directory: string, steering = false) {
         },
       };
 
+      if (selfAssigned && turn === 1) {
+        message.content = [
+          {
+            type: "toolCall",
+            id: "self-goal",
+            name: "set_goal",
+            arguments: { goal: "Explain the supplied result" },
+          },
+        ];
+        message.stopReason = "toolUse";
+      }
+
       queueMicrotask(async () => {
         if (steering && turn === 1)
           await new Promise<void>((done) => {
             release = done;
           });
 
-        stream.push({ type: "done", reason: "stop", message });
+        stream.push({ type: "done", reason: message.stopReason, message });
       });
 
       return stream;
@@ -124,27 +137,29 @@ async function fixture(directory: string, steering = false) {
 
   const sessionManager = SessionManager.inMemory(directory);
 
-  sessionManager.appendCustomEntry("auto-approval-operator-prompt", {
-    goalId: "saved-goal",
-    text: "Erkläre das gespeicherte Prüfergebnis.",
-  });
-  sessionManager.appendCustomEntry("auto-approval-goal", {
-    id: "saved-goal",
-    text: "Erkläre das gespeicherte Prüfergebnis.",
-    status: "paused",
-    checks: 1,
-    reason: "Interrupted by operator; use /goal resume",
-  });
-  sessionManager.appendCustomEntry("auto-approval-goal-review", {
-    goalId: "saved-goal",
-    verdict: { decision: "deny", reason: "Erkläre noch das Testergebnis." },
-  });
-  sessionManager.appendCustomMessageEntry(
-    "auto-approval-goal-instruction",
-    "Operator goal: obsolete\nMissing work: use /goal resume",
-    false,
-  );
-  sessionManager.appendCustomMessageEntry("unrelated-fixture", "KEEP-UNRELATED-CONTEXT", false);
+  if (!selfAssigned) {
+    sessionManager.appendCustomEntry("auto-approval-operator-prompt", {
+      goalId: "saved-goal",
+      text: "Erkläre das gespeicherte Prüfergebnis.",
+    });
+    sessionManager.appendCustomEntry("auto-approval-goal", {
+      id: "saved-goal",
+      text: "Erkläre das gespeicherte Prüfergebnis.",
+      status: "paused",
+      checks: 1,
+      reason: "Interrupted by operator; use /goal resume",
+    });
+    sessionManager.appendCustomEntry("auto-approval-goal-review", {
+      goalId: "saved-goal",
+      verdict: { decision: "deny", reason: "Erkläre noch das Testergebnis." },
+    });
+    sessionManager.appendCustomMessageEntry(
+      "auto-approval-goal-instruction",
+      "Operator goal: obsolete\nMissing work: use /goal resume",
+      false,
+    );
+    sessionManager.appendCustomMessageEntry("unrelated-fixture", "KEEP-UNRELATED-CONTEXT", false);
+  }
 
   const settingsManager = SettingsManager.inMemory();
   const resourceLoader = new DefaultResourceLoader({
@@ -158,6 +173,8 @@ async function fixture(directory: string, steering = false) {
     noPromptTemplates: true,
     extensionFactories: [
       (pi) => {
+        if (selfAssigned) autoApproval(pi);
+
         registerSteering(pi, registerGoals(pi));
         registerContinue(pi);
         codeQuality(pi);
@@ -177,7 +194,8 @@ async function fixture(directory: string, steering = false) {
     sessionManager,
     settingsManager,
     resourceLoader,
-    noTools: "all",
+    noTools: selfAssigned ? undefined : "all",
+    tools: selfAssigned ? ["set_goal"] : undefined,
   });
 
   return { session, contexts, release: () => release?.() };
@@ -307,3 +325,118 @@ test("real steering keeps a goal running after a correction until the original w
     await rm(directory, { recursive: true, force: true });
   }
 }, 10000);
+
+test("real Pi accepts repeated goal changes during a live run without raw commands or a restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-live-goal-sdk-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+
+  process.env.PI_CODING_AGENT_DIR = directory;
+
+  const { session, contexts, release } = await fixture(directory, true);
+  let running: Promise<void> | undefined;
+
+  try {
+    await session.bindExtensions({
+      mode: "tui",
+      uiContext: { setStatus() {}, notify() {} } as any,
+    });
+    running = session.prompt("Migrate the parser and validate the result.");
+
+    for (let i = 0; i < 1000 && !contexts.length; i++) await Bun.sleep(1);
+
+    expect(session.isStreaming).toBe(true);
+    await session.prompt("/goal First target");
+    await session.prompt("/goal Validate the complete migration");
+    expect(session.isStreaming).toBe(true);
+    release();
+    await running;
+
+    const saved = session.sessionManager
+      .getBranch()
+      .filter((entry: any) => entry.customType === "auto-approval-goal")
+      .at(-1) as any;
+
+    expect(saved.data.text).toBe("Validate the complete migration");
+    expect(saved.data.status).toBe("complete");
+
+    const later = contexts.filter((context) => context.model === "working").slice(1);
+
+    expect(later.length).toBeGreaterThan(0);
+
+    for (const context of later) {
+      const input = JSON.stringify(context.messages);
+
+      expect(input.match(/Operator goal:/g)).toHaveLength(1);
+      expect(input).toContain("Validate the complete migration");
+      expect(input).not.toContain("Operator goal: First target");
+      expect(input).not.toContain("/goal Validate");
+    }
+  } finally {
+    release();
+    await session.abort();
+    await running?.catch(() => {});
+    session.dispose();
+
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a real working model can set its own goal without an action review or forged operator intent", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-agent-goal-sdk-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+
+  process.env.PI_CODING_AGENT_DIR = directory;
+
+  const { session, contexts } = await fixture(directory, false, true);
+
+  try {
+    await session.bindExtensions({
+      mode: "tui",
+      uiContext: { setStatus() {}, setWidget() {}, notify() {} } as any,
+    });
+    await session.prompt("Explain the supplied result; never upload source.");
+
+    const branch = session.sessionManager.getBranch();
+    const result = branch.find(
+      (entry: any) =>
+        entry.type === "message" &&
+        entry.message.role === "toolResult" &&
+        entry.message.toolName === "set_goal",
+    ) as any;
+
+    expect(result.message.isError).toBe(false);
+    expect(result.message.details.goal.source).toBe("agent");
+    expect(branch.some((entry: any) => entry.customType === "auto-approval-operator-prompt")).toBe(
+      false,
+    );
+    expect(branch.some((entry: any) => entry.customType === "auto-approval-review")).toBe(false);
+
+    const reviews = contexts.filter((context) => context.model === "reviewer");
+
+    expect(reviews).toHaveLength(1);
+
+    const data = JSON.parse(
+      textContent(reviews[0].messages.find((entry: any) => entry.role === "user").content),
+    );
+
+    expect(data.operatorGoal).toBeUndefined();
+    expect(data.goal).toEqual({ text: "Explain the supplied result", source: "agent" });
+    expect(data.userPrompts).toEqual(["Explain the supplied result; never upload source."]);
+
+    const saved = branch
+      .filter((entry: any) => entry.customType === "auto-approval-goal")
+      .at(-1) as any;
+
+    expect(saved.data.status).toBe("complete");
+  } finally {
+    session.dispose();
+
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+
+    await rm(directory, { recursive: true, force: true });
+  }
+});

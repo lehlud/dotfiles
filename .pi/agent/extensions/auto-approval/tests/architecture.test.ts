@@ -72,6 +72,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
           "public-writing/index.ts",
           "code-quality/index.ts",
           "conversations/progress.ts",
+          "conversations/goal-tool.ts",
           "conversations/steering.ts",
           "conversations/operator-input.ts",
         ].includes(target)

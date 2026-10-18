@@ -14,6 +14,7 @@ import {
 import autoApproval from "../auto-approval/index.ts";
 import publicWriting from "../public-writing/index.ts";
 import codeQuality from "../code-quality/index.ts";
+import { registerGoalTool } from "../conversations/goal-tool.ts";
 import { registerProgress } from "../conversations/progress.ts";
 import { registerSteering } from "../conversations/steering.ts";
 import { registerOperatorInputs } from "../conversations/operator-input.ts";
@@ -254,9 +255,19 @@ export async function createPeer(
       codeQuality,
       (pi) => {
         registerOperatorInputs(pi);
+        registerGoalTool(pi);
         registerFastRequests(pi);
         pi.on("session_start", (_event, child) => {
           sessionServices(child).operatorGoal = endpoint.operatorGoal;
+          sessionServices(child).setAgentGoal = (text, signal) => {
+            const set = sessionServices(ctx).setAgentGoal;
+
+            if (!set) {
+              throw new Error("Session goal controller unavailable");
+            }
+
+            return set(text, signal);
+          };
           sessionServices(child).fastMode = () => sessionServices(ctx).fastMode?.() ?? false;
         });
 
@@ -303,7 +314,7 @@ export async function createPeer(
     sessionManager: manager,
     settingsManager: settings,
     resourceLoader: loader,
-    tools: ["approved_action", "mailbox"],
+    tools: ["approved_action", "mailbox", "set_goal"],
   });
 
   try {
