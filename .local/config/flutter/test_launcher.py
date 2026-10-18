@@ -9,7 +9,7 @@ import unittest
 
 
 class LauncherTests(unittest.TestCase):
-    def run_launcher(self, name, *, runs=1, legacy_key=False):
+    def run_launcher(self, name, *, runs=1, legacy_key=False, repository=False):
         launchers = Path(__file__).resolve().parents[2] / "bin"
 
         with tempfile.TemporaryDirectory(prefix="flutter-launcher-") as directory:
@@ -19,6 +19,16 @@ class LauncherTests(unittest.TestCase):
             host_cache = sdk / "bin/cache"
             host_cache.mkdir(parents=True)
             (host_cache / "host-artifact").write_text("arm64")
+            workspace = root / "workspace with spaces"
+            workspace.mkdir()
+            working_dir = workspace
+            if repository:
+                subprocess.run(["git", "init", "--quiet", str(workspace)], check=True)
+                working_dir = workspace / "apps/client app"
+                working_dir.mkdir(parents=True)
+                sibling = working_dir.parent / "shared ui"
+                sibling.mkdir()
+                (sibling / "pubspec.yaml").write_text("name: shared_ui\n")
             containerfile = Path(__file__).with_name("Containerfile")
             if legacy_key:
                 state = root / ".cache/flutter-container"
@@ -41,7 +51,7 @@ with Path(os.environ["MOCK_LOG"]).open("a") as log:
             for _ in range(runs):
                 result = subprocess.run(
                     [str(launchers / name), "--version"],
-                    cwd=root,
+                    cwd=working_dir,
                     env={
                         "PATH": "/usr/bin:/bin",
                         "HOME": str(root),
@@ -58,7 +68,14 @@ with Path(os.environ["MOCK_LOG"]).open("a") as log:
 
             self.assertEqual((host_cache / "host-artifact").read_text(), "arm64")
 
-            return [json.loads(line) for line in log.read_text().splitlines()]
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            for call in calls:
+                if call[0] != "run":
+                    continue
+                self.assertIn(f"{workspace.resolve()}:/workspace", call)
+                expected_workdir = "/workspace/apps/client app" if repository else "/workspace"
+                self.assertEqual(call[call.index("--workdir") + 1], expected_workdir)
+            return calls
 
     def test_flutter_retains_its_default_container_workflow(self):
         calls = self.run_launcher("flutter")
@@ -71,6 +88,9 @@ with Path(os.environ["MOCK_LOG"]).open("a") as log:
         calls = self.run_launcher("dart")
 
         self.assertEqual(calls[-1][-2:], ["dart", "--version"])
+
+    def test_nested_project_can_resolve_sibling_packages_in_the_repository(self):
+        self.run_launcher("flutter", repository=True)
 
     def test_legacy_image_is_rebuilt_once_and_uses_an_isolated_amd64_cache(self):
         calls = self.run_launcher("flutter", runs=2, legacy_key=True)
