@@ -93,6 +93,9 @@ _flutter_main() {
     local key_file="$state_dir/build.key"
     local current_key
     local previous_key=
+    local working_dir
+    local workspace_dir
+    local container_workdir=/workspace
     local -a run_args
 
     runtime="$(_flutter_runtime)"
@@ -105,6 +108,13 @@ _flutter_main() {
     if ! command -v git >/dev/null 2>&1; then
         printf 'flutter container failed: git not found\n' >&2
         return 1
+    fi
+
+    working_dir="$(pwd -P)"
+    workspace_dir="$(git -C "$working_dir" rev-parse --show-toplevel 2>/dev/null)" || workspace_dir="$working_dir"
+    workspace_dir="$(cd -- "$workspace_dir" && pwd -P)"
+    if [ "$working_dir" != "$workspace_dir" ]; then
+        container_workdir="/workspace/${working_dir#"$workspace_dir"/}"
     fi
 
     _flutter_ensure_sdk "$sdk_dir"
@@ -141,8 +151,9 @@ _flutter_main() {
     esac
 
     run_args+=(
-        --workdir /workspace
-        --volume "$PWD:/workspace"
+        # Mount the repository so relative dependencies in sibling packages resolve.
+        --workdir "$container_workdir"
+        --volume "$workspace_dir:/workspace"
         --volume "$state_dir/home:/home/flutter"
         --volume "$sdk_dir:/home/flutter/flutter"
         # Keep Dart and engine artifacts separate from the host architecture.
