@@ -187,6 +187,7 @@ async function fixture(
                   requestId: data.requestId,
                   decision,
                   reason: "Synthetic action-bound review decision.",
+                  ...(!data.action ? { blocked: false } : {}),
                 }),
               },
             ];

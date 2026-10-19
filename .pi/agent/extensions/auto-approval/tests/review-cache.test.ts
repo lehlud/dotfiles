@@ -100,6 +100,7 @@ function wireRegistry(provider = "openai", apiKey = "sk-synthetic") {
         requestId: staleId ?? data.requestId,
         decision: "approve",
         reason: "Synthetic independent verdict.",
+        ...(data.goal ? { blocked: false } : {}),
       });
       const events = provider === "openai" ? responseEvents(verdict) : completionEvents(verdict);
       const sdk = provider === "openai" ? responses : completions;
@@ -166,6 +167,47 @@ test("real OpenAI requests reuse keys, schema and explicit prefixes across disti
     "different requestId",
   );
   expect(wire.requests).toHaveLength(3);
+});
+
+test("goal blocker metadata keeps a stable completion schema and cache prefix", async () => {
+  const wire = wireRegistry();
+  const snapshots = [
+    buildGoalReview("Finish the client", entries, config, "/project"),
+    buildGoalReview(
+      "Finish the client",
+      [
+        ...entries,
+        {
+          type: "message",
+          message: { role: "assistant", content: "New validation evidence." },
+        },
+      ],
+      config,
+      "/project",
+    ),
+  ];
+
+  for (const envelope of snapshots) {
+    const checked = await reviewWithFallback(
+      config,
+      wire.registry,
+      envelope,
+      observer,
+      undefined,
+      GOAL_REVIEW_SYSTEM,
+    );
+
+    expect(checked.verdict.blocked).toBe(false);
+  }
+
+  const [a, b] = wire.requests.map((request) => request.body);
+
+  expect(a.text.format).toEqual(b.text.format);
+  expect(a.text.format.schema.required).toContain("blocked");
+  expect(a.prompt_cache_key).toBe(b.prompt_cache_key);
+  expect(a.input.find((message: any) => message.role === "user").content[0]).toEqual(
+    b.input.find((message: any) => message.role === "user").content[0],
+  );
 });
 
 test("real OpenRouter requests keep session affinity without unsupported cache fields", async () => {

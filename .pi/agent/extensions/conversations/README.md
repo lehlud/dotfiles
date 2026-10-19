@@ -28,7 +28,7 @@ An empty conversation needs a task before it can continue.
 
 The goal and its current state appear in the bottom status bar, including during completion review and while paused. Team size, when present, appears once before the goal; approval status follows it only during action review. Long or multiline goals are shortened to one display line. Review counts and the full objective remain available through `/goal status`; they are omitted from the compact footer. Exit and session replacement clear the status, which can then be restored from the selected session.
 
-When work remains, the working model receives the reviewer's reason and continues automatically. Only a positive review marks the goal complete. A negative goal verdict does not try another reviewer; fallbacks apply only to technical unavailability. Every external action still requires its own approval and sandbox execution.
+When work remains and is still actionable, the working model receives the reviewer's reason and continues automatically. An external blocker pauses the goal instead. Only a positive review marks the goal complete. A negative goal verdict does not try another reviewer; fallbacks apply only to technical unavailability. Every external action still requires its own approval and sandbox execution.
 
 - `/goal` or `/goal status` shows the objective, state, reason and review count.
 - `/goal <objective>` replaces the tracked target without requiring a prior stop.
@@ -38,6 +38,15 @@ When work remains, the working model receives the reviewer's reason and continue
 On resume, the model receives the saved objective and latest valid independent completion feedback. Pause reasons and interface hints such as `/goal resume` remain operator status information. Each model request during an active goal contains exactly one current goal control message; older control messages are removed only from that request context. The saved transcript, actual user text and other extensions' messages remain intact. This also applies to existing sessions.
 
 Review failures, invalid verdicts and interrupted model runs pause the goal. Restart, reload or session replacement restore a saved incomplete goal as paused. It resumes only with `/goal resume`; session shutdown has deleted its private `/tmp`. Session-tree navigation adopts the selected branch's goal state without restarting it automatically.
+
+Completion reviews also require a boolean `blocked` flag. An incomplete but actionable goal
+continues with `blocked: false`. If no useful authorized work remains without operator input
+or an external change, the reviewer returns `deny` with `blocked: true` and names the enabling
+input. The controller then records the goal as paused and displays `Goal waiting` once,
+without scheduling another work or review turn. Resume with `/goal resume` or `/continue`
+after resolving the dependency. This never completes the goal or lifts an action denial.
+Action approval and prompt compression reject this extra flag; it belongs only to completion
+reviews. Missing or contradictory blocker metadata pauses verification instead of restarting it.
 
 The session log records the objective, review attempts, deciding model, request ID, evidence fingerprint and usage. The original `/goal` instruction remains an operator instruction for action reviewers even when subsequent model turns have no new user prompt. Later user corrections still apply. Goals have no fixed turn count or total runtime limit; model costs can accumulate until verification or interruption.
 

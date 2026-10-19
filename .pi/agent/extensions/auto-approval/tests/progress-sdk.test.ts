@@ -95,6 +95,7 @@ for (const changing of [false, true])
                 requestId: request.requestId,
                 decision: "approve",
                 reason: "Synthetic completion evidence.",
+                ...(!request.action ? { blocked: false } : {}),
               }),
             },
           ];

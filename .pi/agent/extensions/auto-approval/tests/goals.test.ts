@@ -39,6 +39,7 @@ let hooks: Record<string, Function>,
   requests: any[],
   notices: string[];
 let verdicts: string[],
+  reviewBlocked: boolean,
   providerUnavailable: boolean,
   auditFails: boolean,
   duringReview: (() => void) | undefined;
@@ -178,6 +179,7 @@ beforeEach(async () => {
   requests = [];
   notices = [];
   verdicts = ["approve"];
+  reviewBlocked = false;
   providerUnavailable = false;
   auditFails = false;
   duringReview = undefined;
@@ -231,6 +233,7 @@ beforeEach(async () => {
                       : JSON.stringify({
                           requestId,
                           decision,
+                          blocked: reviewBlocked,
                           reason:
                             decision === "deny"
                               ? "Run the missing validation"
@@ -317,6 +320,74 @@ test("incomplete verdict continues with missing work; only a later independent a
   expect(requests.every((request) => request.model.provider === "openai")).toBe(true);
   expect(requests[0].context.systemPrompt).toBe(GOAL_REVIEW_SYSTEM);
   expect(requests[0].context.tools).toBeUndefined();
+});
+
+test("an independently identified external blocker waits once without repeating work or review", async () => {
+  await command("Finish the validation", ctx);
+  verdicts = ["deny"];
+  reviewBlocked = true;
+
+  expect(await settle()).toBeUndefined();
+  expect(state().status).toBe("paused");
+  expect(state().checks).toBe(1);
+  expect(state().feedback).toBe("Run the missing validation");
+  expect(notices.at(-1)).toContain("Goal waiting:");
+  expect(notices.at(-1)).toContain("/goal resume");
+  expect(operatorGoal()).toBeUndefined();
+
+  for (let round = 0; round < 20; round++) {
+    entries.push({
+      type: "message",
+      message: { role: "assistant", content: `Still waiting ${round}` },
+    });
+    expect(await settle()).toBeUndefined();
+  }
+
+  expect(requests).toHaveLength(1);
+  expect(sent).toHaveLength(1);
+  expect(entries.filter((entry) => entry.customType === "auto-approval-goal-review")).toHaveLength(
+    1,
+  );
+
+  await command("resume", ctx);
+  expect(state().status).toBe("running");
+  expect(state().checks).toBe(1);
+  expect(sent).toHaveLength(2);
+  reviewBlocked = false;
+  verdicts = ["approve"];
+  await settle();
+  expect(state().status).toBe("complete");
+  expect(state().checks).toBe(2);
+});
+
+test("a contradictory blocked approval pauses without completion or fallback", async () => {
+  await command("Finish the fixture", ctx);
+  reviewBlocked = true;
+  await settle();
+
+  expect(state().status).toBe("paused");
+  expect(state().checks).toBe(0);
+  expect(requests).toHaveLength(1);
+  expect(notices.join("\n")).not.toContain("Goal confirmed:");
+  expect(notices.at(-1)).toContain("blocked goal cannot be approved");
+});
+
+test("queued operator input supersedes a blocker verdict before it can pause the goal", async () => {
+  await command("Complete the fixture", ctx);
+  verdicts = ["deny"];
+  reviewBlocked = true;
+  duringReview = () => {
+    ctx.hasPendingMessages = () => true;
+  };
+
+  expect(await settle()).toBeUndefined();
+  expect(state().status).toBe("running");
+  expect(state().checks).toBe(0);
+  expect(notices.join("\n")).not.toContain("Goal waiting:");
+  expect(
+    entries.filter((entry) => entry.customType === "auto-approval-goal-review").at(-1).data
+      .superseded,
+  ).toBe(true);
 });
 
 test("provider unavailability uses the configured fallback, never denial", async () => {

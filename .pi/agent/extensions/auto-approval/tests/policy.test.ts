@@ -686,6 +686,44 @@ describe("review policy", () => {
     ).toThrow("empty reason");
   });
 
+  test("dependency flags belong only to completion reviews and cannot weaken action verdicts", () => {
+    const blocked = JSON.stringify({
+      requestId: "id",
+      decision: "deny",
+      reason: "Need operator input",
+      blocked: true,
+    });
+
+    expect(() => parseVerdict(blocked, "id")).toThrow("exactly requestId");
+    expect(parseVerdict(blocked, "id", true).blocked).toBe(true);
+    expect(() => parseVerdict(blocked, "other", true)).toThrow("different requestId");
+    expect(() =>
+      parseVerdict('{"requestId":"id","decision":"deny","reason":"Incomplete"}', "id", true),
+    ).toThrow("boolean blocked flag");
+    expect(() =>
+      parseVerdict(
+        '{"requestId":"id","decision":"deny","reason":"Incomplete","blocked":"true"}',
+        "id",
+        true,
+      ),
+    ).toThrow("boolean blocked flag");
+    expect(() =>
+      parseVerdict(
+        '{"requestId":"id","decision":"approve","reason":"Done","blocked":true}',
+        "id",
+        true,
+      ),
+    ).toThrow("blocked goal cannot be approved");
+
+    const model = { provider: "openai", api: "openai-responses" };
+    const completion: any = constrainReviewPayload({}, model, true);
+    const action: any = constrainReviewPayload({}, model);
+
+    expect(completion.text.format.schema.required).toContain("blocked");
+    expect(completion.text.format.schema.properties.blocked).toEqual({ type: "boolean" });
+    expect(action.text.format.schema.properties.blocked).toBeUndefined();
+  });
+
   test("thinking blocks cannot masquerade as verdict text", () => {
     expect(
       textContent([

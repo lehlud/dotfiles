@@ -7,7 +7,7 @@ export type { Goal } from "../shared/contracts/goal.ts";
 export type GoalReview = {
   goalId?: string;
   superseded?: boolean;
-  verdict?: { decision?: string; reason?: string };
+  verdict?: { decision?: string; reason?: string; blocked?: boolean };
 };
 
 export const STATE_ENTRY = "auto-approval-goal";

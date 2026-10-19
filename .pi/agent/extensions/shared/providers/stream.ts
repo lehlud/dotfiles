@@ -34,11 +34,12 @@ const zeroUsage = () => ({
 export function finalReviewDenial(response: AssistantMessage, context: Context): boolean {
   try {
     const first = context.messages.find((message) => message.role === "user");
-    const requestId = JSON.parse(textContent(first?.content)).requestId;
+    const data = JSON.parse(textContent(first?.content));
+    const requestId = data.requestId;
 
     return (
       typeof requestId === "string" &&
-      parseVerdict(textContent(response.content), requestId).decision === "deny"
+      parseVerdict(textContent(response.content), requestId, !!data.goal).decision === "deny"
     );
   } catch {
     return false;

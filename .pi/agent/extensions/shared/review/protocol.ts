@@ -43,6 +43,7 @@ export function textContent(content: unknown): string {
 export function constrainReviewPayload(
   payload: unknown,
   model: { provider: string; api?: string },
+  goalCheck = false,
 ): unknown | undefined {
   if (
     model.provider !== "openai" ||
@@ -61,7 +62,7 @@ export function constrainReviewPayload(
     schema: {
       type: "object",
       additionalProperties: false,
-      required: ["requestId", "decision", "reason"],
+      required: ["requestId", "decision", "reason", ...(goalCheck ? ["blocked"] : [])],
       properties: {
         // parseVerdict binds the ID locally so this provider schema stays cacheable.
         requestId: { type: "string" },
@@ -73,6 +74,7 @@ export function constrainReviewPayload(
           description:
             "Explain the verdict in the language of latestUserPrompt's own operator prose, excluding quotations/code. The draft language and English policy text do not set this language. Quote offending draft words verbatim inside that explanation.",
         },
+        ...(goalCheck ? { blocked: { type: "boolean" } } : {}),
       },
     },
   };
@@ -98,7 +100,14 @@ const verdictSchema = Type.Object(
   { additionalProperties: false },
 );
 
-export function parseVerdict(text: string, requestId: string) {
+const goalVerdictSchema = Type.Object(
+  { ...verdictSchema.properties, blocked: Type.Boolean() },
+  { additionalProperties: false },
+);
+
+export type Verdict = Static<typeof verdictSchema> & { blocked?: boolean };
+
+export function parseVerdict(text: string, requestId: string, goalCheck = false): Verdict {
   let verdict: unknown;
 
   try {
@@ -107,9 +116,9 @@ export function parseVerdict(text: string, requestId: string) {
     throw new Error("Reviewer returned invalid JSON; nothing executed");
   }
 
-  if (!Check(verdictSchema, verdict))
+  if (!Check(goalCheck ? goalVerdictSchema : verdictSchema, verdict))
     throw new Error(
-      "Reviewer verdict must contain exactly requestId, approve/deny decision, and a reason of 1–600 characters; nothing executed",
+      `Reviewer verdict must contain exactly requestId, approve/deny decision, a reason of 1–600 characters${goalCheck ? ", and a boolean blocked flag" : ""}; nothing executed`,
     );
 
   if (verdict.requestId !== requestId)
@@ -117,6 +126,9 @@ export function parseVerdict(text: string, requestId: string) {
 
   if (!verdict.reason.trim())
     throw new Error("Reviewer verdict has an empty reason; nothing executed");
+
+  if ("blocked" in verdict && verdict.blocked && verdict.decision === "approve")
+    throw new Error("A blocked goal cannot be approved; completion not confirmed");
 
   return verdict;
 }

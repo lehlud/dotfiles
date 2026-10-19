@@ -17,8 +17,14 @@ import { registerContinue } from "../../conversations/continue.ts";
 import codeQuality from "../../code-quality/index.ts";
 import { textContent } from "../../shared/review/protocol.ts";
 import { registerSteering, STEERING_TYPE } from "../../conversations/steering.ts";
+import type { Goal } from "../../shared/contracts/goal.ts";
 
-async function fixture(directory: string, steering = false, selfAssigned = false) {
+async function fixture(
+  directory: string,
+  steering = false,
+  selfAssigned = false,
+  externalBlocker = false,
+) {
   await writeFile(
     join(directory, "auto-approval.json"),
     JSON.stringify({
@@ -70,16 +76,18 @@ async function fixture(directory: string, steering = false, selfAssigned = false
             )
           : undefined;
       const incomplete =
-        steering &&
-        data &&
-        !data.assistantAnswers.some((entry: any) =>
-          entry.text.includes("MAIN-VALIDATION-COMPLETE"),
-        );
+        externalBlocker ||
+        (steering &&
+          data &&
+          !data.assistantAnswers.some((entry: any) =>
+            entry.text.includes("MAIN-VALIDATION-COMPLETE"),
+          ));
       const turn = data ? 0 : ++workingTurns;
       const text = data
         ? JSON.stringify({
             requestId: data.requestId,
             decision: incomplete ? "deny" : "approve",
+            blocked: externalBlocker,
             reason: incomplete
               ? "Die ursprüngliche Validierung fehlt noch."
               : "Das Ergebnis liegt vor.",
@@ -198,8 +206,68 @@ async function fixture(directory: string, steering = false, selfAssigned = false
     tools: selfAssigned ? ["set_goal"] : undefined,
   });
 
-  return { session, contexts, release: () => release?.() };
+  return {
+    session,
+    contexts,
+    release: () => release?.(),
+    unblock: () => {
+      externalBlocker = false;
+    },
+  };
 }
+
+test("real Pi waits on an independent blocker without starting another work or review turn", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-goal-blocker-sdk-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+
+  process.env.PI_CODING_AGENT_DIR = directory;
+
+  const state = await fixture(directory, false, false, true);
+  const notices: string[] = [];
+
+  try {
+    await state.session.bindExtensions({
+      mode: "tui",
+      uiContext: { setStatus() {}, notify: (text: string) => notices.push(text) } as any,
+    });
+    await state.session.prompt("/goal resume");
+
+    for (let i = 0; i < 1000 && !notices.some((text) => text.startsWith("Goal waiting:")); i++)
+      await new Promise<void>((done) => setTimeout(done, 1));
+
+    expect(notices.some((text) => text.startsWith("Goal waiting:"))).toBe(true);
+    expect(state.contexts.filter((entry) => entry.model === "working")).toHaveLength(1);
+    expect(state.contexts.filter((entry) => entry.model === "reviewer")).toHaveLength(1);
+
+    const goals = () =>
+      state.session.sessionManager
+        .getBranch()
+        .flatMap((entry) =>
+          entry.type === "custom" && entry.customType === "auto-approval-goal"
+            ? [entry.data as Goal]
+            : [],
+        );
+
+    expect(goals().at(-1)?.status).toBe("paused");
+    expect(notices.some((text) => text.startsWith("Goal confirmed:"))).toBe(false);
+    state.unblock();
+    await state.session.prompt("/continue");
+
+    for (let i = 0; i < 1000 && !notices.some((text) => text.startsWith("Goal confirmed:")); i++)
+      await new Promise<void>((done) => setTimeout(done, 1));
+
+    expect(goals().at(-1)?.status).toBe("complete");
+    expect(state.contexts.filter((entry) => entry.model === "working")).toHaveLength(2);
+    expect(state.contexts.filter((entry) => entry.model === "reviewer")).toHaveLength(2);
+  } finally {
+    state.session.dispose();
+
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 for (const command of ["/goal resume", "/continue"]) {
   test(`real Pi SDK ${command} resumes a legacy goal with one task instruction and no raw command`, async () => {

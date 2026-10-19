@@ -399,23 +399,29 @@ export class GoalController {
       }
 
       const complete = checked.verdict.decision === "approve";
+      const waiting = !complete && checked.verdict.blocked === true;
+      const label = complete ? "confirmed" : waiting ? "waiting" : "incomplete";
+      const notice = [`Goal ${label}: ${checked.verdict.reason}`];
+
+      if (waiting) {
+        notice.push(
+          "Waiting for external input; use /goal resume or /continue after resolving it.",
+        );
+      }
 
       this.record(
         {
           ...current,
           checks: current.checks + 1,
-          status: complete ? "complete" : "running",
+          status: complete ? "complete" : waiting ? "paused" : "running",
           reason: checked.verdict.reason,
           feedback: complete ? undefined : checked.verdict.reason,
         },
         ctx,
       );
-      ctx.ui.notify(
-        `Goal ${complete ? "confirmed" : "incomplete"}: ${checked.verdict.reason}`,
-        "info",
-      );
+      ctx.ui.notify(notice.join("\n"), waiting ? "warning" : "info");
 
-      if (!complete)
+      if (!complete && !waiting)
         return {
           continue: true,
           entries: [{ type: "custom_message", ...message(instruction(this.goal!)) }],

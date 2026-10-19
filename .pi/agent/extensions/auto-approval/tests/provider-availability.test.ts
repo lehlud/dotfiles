@@ -318,6 +318,40 @@ test("final exhaustion suppresses SDK outer retries and reuses cooldown without 
   expect(calls).toBe(6);
 });
 
+test("a goal blocker delivered before a transport error stays final without retries", async () => {
+  let calls = 0;
+  const denial = JSON.stringify({
+    requestId: "synthetic-id",
+    decision: "deny",
+    reason: "Need operator input",
+    blocked: true,
+  });
+  const goalContext = {
+    ...context,
+    messages: [
+      {
+        role: "user" as const,
+        content: JSON.stringify({
+          requestId: "synthetic-id",
+          goal: { text: "Complete the fixture", source: "operator" },
+        }),
+        timestamp: 0,
+      },
+    ],
+  };
+  const response = await resilientStream(
+    (() => {
+      calls++;
+
+      return source("error", denial, "HTTP 507");
+    }) as any,
+    gate,
+  )(model, goalContext).result();
+
+  expect(calls).toBe(1);
+  expect(response.content).toEqual([{ type: "text", text: denial }]);
+});
+
 test("request-bound denial, invalid JSON, refusals and partial denial followed by a transport throw are never retried", async () => {
   const denial = JSON.stringify({
     requestId: "synthetic-id",

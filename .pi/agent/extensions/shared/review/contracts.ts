@@ -21,6 +21,7 @@ export type ReviewEnvelope = {
   fingerprint: string;
   text: string;
   cachePrefix?: string;
+  goalCheck?: true;
   promptSources?: Map<string, string>;
   compressionUsage?: Usage;
 };

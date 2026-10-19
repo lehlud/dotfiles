@@ -69,12 +69,16 @@ function providerFailureDetail(error: unknown): string {
   return "";
 }
 
-function incompleteReview(response: AssistantMessage, requestId: string) {
+function incompleteReview(response: AssistantMessage, envelope: ReviewEnvelope) {
   if (response.errorMessage === new RecoveryAuditError().message)
     return { blocked: response.errorMessage };
 
   try {
-    const verdict = parseVerdict(textContent(response.content), requestId);
+    const verdict = parseVerdict(
+      textContent(response.content),
+      envelope.requestId,
+      envelope.goalCheck,
+    );
 
     if (verdict.decision === "deny") return { denial: verdict };
   } catch {
@@ -176,7 +180,7 @@ async function requestReview(
             sessionId: reviewCacheKey(envelope, context),
             onPayload: (payload, providerModel) =>
               cacheReviewPayload(
-                constrainReviewPayload(payload, providerModel) ?? payload,
+                constrainReviewPayload(payload, providerModel, envelope.goalCheck) ?? payload,
                 providerModel,
                 envelope,
               ),
@@ -254,7 +258,10 @@ async function requestCandidate(
     if (!calls.length) return response;
 
     try {
-      if (parseVerdict(textContent(response.content), envelope.requestId).decision === "deny")
+      if (
+        parseVerdict(textContent(response.content), envelope.requestId, envelope.goalCheck)
+          .decision === "deny"
+      )
         return response;
     } catch {
       /* A tool turn need not contain a verdict yet. */
@@ -365,7 +372,7 @@ export async function requestVerdict(
       if (response.stopReason !== "stop") {
         // An explicit request-bound denial stays final even if transport fails
         // after delivering it. An approval from a failed response is never used.
-        const stopped = incompleteReview(response, envelope.requestId);
+        const stopped = incompleteReview(response, envelope);
 
         if (stopped.denial) {
           attempts.push({ ...candidate, status: "deny", reason: stopped.denial.reason });
@@ -402,7 +409,11 @@ export async function requestVerdict(
     let verdict: ReturnType<typeof parseVerdict>;
 
     try {
-      verdict = parseVerdict(textContent(response!.content), envelope.requestId);
+      verdict = parseVerdict(
+        textContent(response!.content),
+        envelope.requestId,
+        envelope.goalCheck,
+      );
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Invalid reviewer verdict";
 
