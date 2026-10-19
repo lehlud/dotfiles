@@ -3,7 +3,7 @@ import { sessionServices } from "../shared/session/services.ts";
 
 export const CONTINUE_TYPE = "conversation-continuation";
 export const CONTINUE_INSTRUCTION =
-  "The operator requests continuation of the existing task. Recover the task, latest corrections and remaining work from the conversation, then continue its implementation and validation. If it is already complete, report that; do not invent additional work. If a provider or other dependency remains unavailable, report the actual blocker. Preserve all existing constraints and action denials; this request grants no new access or permission to bypass approval. Use the language of the latest actual operator message.";
+  "The operator requests continuation of the existing task. Recover the task, latest corrections and remaining work from the conversation, then continue its implementation and validation. If it is already complete, report that; do not invent additional work. If a provider or other dependency remains unavailable, report the actual blocker. Preserve actual operator constraints and require independent approval for each action. A prior denial is evidence for reassessment, not a new user prohibition; never execute a denied request without fresh approval. This command grants no new access. Use the language of the latest actual operator message.";
 
 export function registerContinue(pi: ExtensionAPI) {
   let starting = false;

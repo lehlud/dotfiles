@@ -4,7 +4,7 @@ import { textContent } from "../shared/review/protocol.ts";
 
 export const STEERING_TYPE = "auto-approval-steering-instruction";
 export const STEERING_POLICY =
-  "The operator supplied steering during this task. Apply their corrections to the ongoing work, then continue its remaining implementation and validation without waiting for the operator to repeat the original request. Finishing a correction alone does not finish the whole task. Explain intermediate progress as intermediate progress. Follow later constraints and explicit requests to stop or replace the task. Every operation still requires approved_action; steering grants no permission to bypass a denial. Reply in the language of the operator's latest actual message.";
+  "The operator supplied steering during this task. Apply their corrections to the ongoing work, then continue its remaining implementation and validation without waiting for the operator to repeat the original request. Finishing a correction alone does not finish the whole task. Explain intermediate progress as intermediate progress. Follow later constraints and explicit requests to stop or replace the task. Every operation still requires approved_action; never execute a denied request without fresh approval. Reply in the language of the operator's latest actual message.";
 
 /** Reinforce steering without rewriting user input or adding model turns. */
 export function registerSteering(

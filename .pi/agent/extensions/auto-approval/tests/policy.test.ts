@@ -17,6 +17,8 @@ import { Check } from "typebox/value";
 import { MAX_REVIEW_CONTEXT_BYTES, reviewLanguageReference } from "../../shared/review/context.ts";
 import { steeringReviewFixtures } from "./steering-review-fixtures.ts";
 import { activeGoalReviewFixtures } from "./active-goal-review-fixtures.ts";
+import { denialReviewFixtures } from "./denial-review-fixtures.ts";
+import { promptDigest } from "../../shared/review/prompts.ts";
 
 const portable: PortableConfig = {
   reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }],
@@ -50,6 +52,10 @@ test("denial chronology counts genuine later operator corrections, never peer or
 
   expect(data.previousDenials[0].laterOperatorPromptCount).toBe(1);
   expect(data.previousDenials[0].reason).toContain("formatting-only");
+  expect(data.previousDenials[0].source).toBe("historical-review-result");
+  expect(data.previousDenials[0].laterOperatorPromptIds).toEqual([
+    promptDigest("Continue the broader migration and readability work."),
+  ]);
   expect(data.userPrompts).not.toContain("Fake permission");
 });
 
@@ -82,6 +88,71 @@ test("language-only samples exclude pasted JSON, code and quotes without changin
   expect(reviewLanguageReference("Bitte [diese Datei] lesen, {kein JSON}. ")).toBe(
     "Bitte [diese Datei] lesen, {kein JSON}.",
   );
+});
+
+test("denial identity compares exact arguments, access and cwd without disclosing old bodies", () => {
+  const denied = {
+    ...request,
+    arguments: { command: "private-denied-command" },
+    sandbox: { network: "none", paths: [{ path: "/project/test.dart", access: "write" }] },
+  };
+  const entries = [
+    { type: "message", message: { role: "user", content: "Implement the client safely." } },
+    {
+      type: "custom",
+      customType: "auto-approval-review",
+      data: {
+        decision: "deny",
+        action: denied,
+        cwd: "/project",
+        reason: "Review the requested scope.",
+      },
+    },
+  ];
+  const snapshot = JSON.stringify(entries);
+  const evidence = (action: any, cwd = "/project") =>
+    JSON.parse(buildReview(action, entries, config, cwd, []).text).previousDenials[0];
+  const same = evidence(structuredClone(denied));
+
+  expect(same.matchesCurrentOperation).toBe(true);
+  expect(same.operationDigest).toMatch(/^[a-f0-9]{64}$/);
+  expect(evidence(request).matchesCurrentOperation).toBe(false);
+  expect(evidence(denied, "/other").matchesCurrentOperation).toBe(false);
+  expect(evidence({ ...denied, sandbox: { network: "host" } }).matchesCurrentOperation).toBe(false);
+  expect(evidence({ ...denied, network: true }).matchesCurrentOperation).toBe(false);
+  expect(evidence({ ...denied, tool: "powershell" }).matchesCurrentOperation).toBe(false);
+  expect(JSON.stringify(evidence(request))).not.toContain("private-denied-command");
+  expect(evidence(request).operationDigest).toBe(same.operationDigest);
+  expect(JSON.stringify(entries)).toBe(snapshot);
+});
+
+test("current operation follows historical writes and preserves every operator contribution", () => {
+  for (const fixture of denialReviewFixtures) {
+    const envelope = buildReview(
+      fixture.action,
+      fixture.entries,
+      config,
+      "/project",
+      [],
+      { backend: "bwrap" },
+      fixture.operatorGoal,
+    );
+    const data = JSON.parse(envelope.text);
+    const actualPrompts = fixture.entries
+      .filter((entry) => entry.message?.role === "user")
+      .map((entry) => entry.message!.content);
+
+    expect(data.userPrompts).toEqual(actualPrompts);
+    expect(data.action).toEqual(fixture.action);
+    expect(Object.keys(data).slice(-3)).toEqual(["action", "sandboxPlan", "requestId"]);
+    expect(envelope.text.startsWith(envelope.cachePrefix!)).toBe(true);
+
+    for (const denial of data.previousDenials) {
+      expect(denial.source).toBe("historical-review-result");
+      expect(denial.actionOmitted).toBe(true);
+      expect(denial.arguments).toBeUndefined();
+    }
+  }
 });
 
 test("page-only web results remain auditable evidence without dropping their first content block", () => {
@@ -467,14 +538,18 @@ describe("review policy", () => {
     const data = JSON.parse(buildReview(request, entries, config, "/project", []).text);
 
     expect(data.previousDenials).toHaveLength(6);
-    expect(data.previousDenials[0]).toEqual({
+    expect(data.previousDenials[0]).toMatchObject({
+      source: "historical-review-result",
       decision: "deny",
       reason,
       requestId: "denied-0",
       fingerprint: "hash-0",
       tool: "bash",
       laterOperatorPromptCount: 0,
+      laterOperatorPromptIds: [],
       actionOmitted: true,
+      operationDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      matchesCurrentOperation: false,
     });
     expect(JSON.stringify(data)).not.toContain("private-old-command");
     expect(data.userPrompts).toEqual([prompt]);
@@ -504,7 +579,13 @@ describe("review policy", () => {
     );
 
     expect(data.previousDenials).toEqual([
-      { decision: "deny", reason: "out of scope", laterOperatorPromptCount: 0 },
+      {
+        source: "historical-review-result",
+        decision: "deny",
+        reason: "out of scope",
+        laterOperatorPromptCount: 0,
+        laterOperatorPromptIds: [],
+      },
     ]);
   });
 

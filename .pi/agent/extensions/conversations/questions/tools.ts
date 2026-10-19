@@ -64,7 +64,7 @@ export function registerQuestionTools(pi: ExtensionAPI) {
     exposure: "model-only",
     executionMode: "parallel",
     description:
-      "Ask 1–3 clarification questions without waiting. The question panel replaces the operator's prompt editor until they answer, dismiss, or you withdraw all pending questions. Continue independent work. Answers and dismissals arrive automatically; do not poll. Use user_questions to withdraw obsolete questions. Ask only necessary questions; never request secrets or treat silence/dismissal as permission.",
+      "Ask 1–3 clarification questions without waiting when an actual decision is missing from user instructions. Do not request confirmation for routine authorized work or solely because an earlier reviewer denied it; submit relevant new evidence or authorization to the same action gate. The question panel replaces the prompt editor until answered, dismissed or withdrawn. Continue independent work. Responses arrive automatically; do not poll. Use user_questions to withdraw obsolete questions. Never request secrets or treat silence/dismissal as permission.",
     parameters: Type.Object(
       { questions: Type.Array(questionInputSchema, { minItems: 1, maxItems: 3 }) },
       { additionalProperties: false },

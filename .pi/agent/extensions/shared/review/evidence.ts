@@ -94,9 +94,7 @@ export function buildEvidence(
   };
   const core = {
     ...shared,
-    previousDenials: previousDenials(entries),
-    action,
-    sandboxPlan,
+    previousDenials: previousDenials(entries, action, cwd),
   };
   const selectedEvidence: typeof reviewedEvidence = [];
   const omittedReads: unknown[] = [];
@@ -113,6 +111,8 @@ export function buildEvidence(
           ...core,
           reviewedReads: candidate.filter((entry) => entry.tool === "read"),
           reviewedContext: candidate.filter((entry) => entry.tool !== "read"),
+          action,
+          sandboxPlan,
         }),
       ) <=
         MAX_REVIEW_CONTEXT_BYTES - 4096
@@ -135,6 +135,9 @@ export function buildEvidence(
     reviewedReads: selectedEvidence.filter((item) => item.tool === "read"),
     reviewedContext: selectedEvidence.filter((item) => item.tool !== "read"),
     omittedReadEvidence: omittedReads,
+    // Keep the sole proposed operation next to its plan, after historical evidence.
+    action,
+    sandboxPlan,
   };
 
   return {

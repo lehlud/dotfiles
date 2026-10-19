@@ -56,7 +56,8 @@ test("continuation preserves operator context, broadcasts once and resets progre
       options: { triggerTurn: true },
     },
   ]);
-  expect(CONTINUE_INSTRUCTION).toContain("Preserve all existing constraints and action denials");
+  expect(CONTINUE_INSTRUCTION).toContain("Preserve actual operator constraints");
+  expect(CONTINUE_INSTRUCTION).toContain("never execute a denied request without fresh approval");
 });
 
 test("paused goals use their own resume service without sending a second instruction", async () => {

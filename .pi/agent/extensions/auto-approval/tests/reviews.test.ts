@@ -8,6 +8,7 @@ import { ProviderAvailability } from "../../shared/providers/availability.ts";
 import { expiredTokenResponse } from "./provider-error-fixtures.ts";
 import { steeringReviewFixtures } from "./steering-review-fixtures.ts";
 import { taskContinuationReviewFixtures } from "./task-continuation-review-fixtures.ts";
+import { denialReviewFixtures } from "./denial-review-fixtures.ts";
 
 const primary = { provider: "openai", model: "gpt-6-luna", thinking: "medium" as const };
 const fallback = {
@@ -185,6 +186,51 @@ const registry: any = {
 };
 const run = (settings = config, signal?: AbortSignal, callbacks = observer) =>
   reviewWithFallback(settings, registry, envelope, callbacks, signal, undefined, availability);
+
+test("provider receives current formatter separately from historical writes and renewed authorization", async () => {
+  for (const fixture of denialReviewFixtures.slice(0, 2)) {
+    const request = buildReview(
+      fixture.action,
+      fixture.entries,
+      config,
+      "/project",
+      [],
+      { backend: "bwrap" },
+      fixture.operatorGoal,
+    );
+
+    await reviewWithFallback(
+      config,
+      registry,
+      request,
+      observer,
+      undefined,
+      undefined,
+      availability,
+    );
+
+    const data = JSON.parse(calls.at(-1).context.messages[0].content);
+
+    expect(data.operatorGoal).toBe(fixture.operatorGoal);
+    expect(data.action.tool).toBe("bash");
+    expect(data.action.arguments.command).toStartWith("dart format ");
+    expect(Object.keys(data).slice(-3)).toEqual(["action", "sandboxPlan", "requestId"]);
+    expect(data.previousDenials[0].source).toBe("historical-review-result");
+    expect(data.previousDenials[0].matchesCurrentOperation).toBe(
+      fixture === denialReviewFixtures[0],
+    );
+
+    if (fixture === denialReviewFixtures[0]) {
+      expect(data.latestUserPrompt).toContain("Continue; you have permission");
+      expect(data.previousDenials[0].laterOperatorPromptIds).toEqual([
+        data.userPromptInfo.at(-1).promptId,
+      ]);
+    } else {
+      expect(data.reviewedContext[0].tool).toBe("write");
+      expect(data.reviewedContext[0].arguments.path).toContain("customer_related_error_test.dart");
+    }
+  }
+});
 
 test.each([0, 4])(
   "continuation retains the original goal and completed refinement for either delivery mode (case %i)",

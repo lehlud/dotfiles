@@ -7,6 +7,7 @@ import { reviewerLabel } from "../../shared/review/client.ts";
 import { steeringReviewFixtures } from "./steering-review-fixtures.ts";
 import { taskContinuationReviewFixtures } from "./task-continuation-review-fixtures.ts";
 import { activeGoalReviewFixtures } from "./active-goal-review-fixtures.ts";
+import { denialReviewFixtures } from "./denial-review-fixtures.ts";
 
 const agent = getAgentDir();
 const runtime = await ModelRuntime.create({
@@ -20,9 +21,16 @@ const registry = new ModelRegistry(runtime);
 const config = await loadConfig(agent);
 let failures = 0;
 
-const fixtures = process.argv.includes("--active-goal-only")
-  ? activeGoalReviewFixtures
-  : [...activeGoalReviewFixtures, ...taskContinuationReviewFixtures, ...steeringReviewFixtures];
+const fixtures = process.argv.includes("--denial-context-only")
+  ? denialReviewFixtures
+  : process.argv.includes("--active-goal-only")
+    ? activeGoalReviewFixtures
+    : [
+        ...denialReviewFixtures,
+        ...activeGoalReviewFixtures,
+        ...taskContinuationReviewFixtures,
+        ...steeringReviewFixtures,
+      ];
 
 for (const fixture of fixtures) {
   const plan = {

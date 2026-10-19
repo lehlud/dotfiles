@@ -372,6 +372,28 @@ For external actions, every working model uses only `approved_action` with `tool
 
 Reviewers receive actual user prompts from the active branch, the exact action, goal, justification, working directory, protected paths and previous denials. They have no general-purpose action tools; compressed originals are accessible only through the bounded `prompt_original` reader described above. Fallback retains the same request, request ID and fingerprint. Every attempt and deciding model is logged; tokens and costs are summed across attempts. `requestTimeoutMs` applies per reviewer. A valid verdict applies only to the exact request. Review and execution are serialized; approvals are not reused.
 
+Historical denials carry an explicit source label, an operation digest, a local equality comparison
+against the current tool/arguments/access/cwd, and IDs of up to ten subsequent operator inputs.
+Their command bodies remain omitted. Equality reports identity, not whether a concern is resolved;
+different requests can retain the same risk. Actual user instructions remain authoritative.
+The current action and resolved plan follow historical receipts in the request so an earlier
+approved write is not confused with a later formatter or read.
+
+A denial prevents execution of that submission. It does not create a user restriction on future
+files or features. Corrected requests, new evidence or actual renewed authorization can receive
+fresh review through the same gate; unchanged unsafe operations remain denied, with no reviewer
+shopping or alternative execution. Host Keychain/login restrictions apply to operator access,
+not merely writing app-side secure-storage code. An explicit user restriction on that application
+feature still applies. Clarification questions are for genuinely missing decisions, not repeated
+confirmation of existing authorization.
+
+`bun run eval:steering --denial-context-only` checks nine synthetic cases with the configured
+reviewer: new-test formatting after a scope denial, historical-write separation, app/host Keychain
+boundaries, continuing explicit restrictions and unsafe operations. It requires existing reviewer
+authentication and executes none of the proposed actions. Offline tests verify evidence transport,
+chronology, isolation metadata and that historical command bodies stay omitted; they cannot
+establish how a live model will decide.
+
 For explanation language, reviewers separately receive the latest actual user prompt as `latestUserPrompt`. This includes the objective entered through `/goal`; later user prompts supersede it as the language reference. Action and goal reviewers must use the operator's own instruction language, excluding foreign-language logs, quotations, older explanations and model text.
 
 Review evaluates authorization and security risks. For newly authored or materially reworded public prose, it also applies local, language-independent editorial rules. `writing_check` assesses the exact draft; ordinary operator replies and code/layout-only changes remain exempt. See [Public Writing](../public-writing/README.md). A requested source change normally authorizes appropriate tests, documentation and local checks. Bounded edits and fully visible Python/shell changes do not require reading every affected file in full first. Possible coding mistakes, incorrect test assumptions or preferred work order alone are not grounds for denial. Additional information is needed when a concrete risk cannot otherwise be assessed. Secret access, unrelated changes, unjustified broad deletion and interference with the approval gate remain prohibited.

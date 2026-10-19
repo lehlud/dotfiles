@@ -1,8 +1,52 @@
+import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { ActionAudit, Entry, ReviewedEvidence } from "./entries.ts";
-import { operatorPromptRecords } from "./prompts.ts";
+import { operatorPromptRecords, promptDigest } from "./prompts.ts";
+
+function operationIdentity(action: unknown, cwd: unknown) {
+  if (!action || typeof action !== "object" || !("tool" in action)) return undefined;
+
+  const value = action as Record<string, unknown>;
+
+  return {
+    cwd,
+    tool: value.tool,
+    arguments: value.arguments,
+    sandbox: value.sandbox,
+    network: value.network,
+  };
+}
+
+/** Compare locally; historical command bodies and access requests stay out of the envelope. */
+function denialEvidence(audit: ActionAudit, later: readonly Entry[], current: unknown) {
+  const operation = operationIdentity(audit.action, audit.cwd);
+  const prompts = operatorPromptRecords(later);
+
+  return {
+    source: "historical-review-result",
+    decision: audit.decision,
+    reason: audit.reason,
+    requestId: audit.requestId,
+    fingerprint: audit.fingerprint,
+    tool: audit.action?.tool,
+    technicalFailure: audit.technicalFailure,
+    technicalStage: audit.technicalStage,
+    laterOperatorPromptCount: prompts.length,
+    laterOperatorPromptIds: prompts.slice(-10).map((prompt) => promptDigest(prompt.text)),
+    ...(operation
+      ? {
+          actionOmitted: true,
+          operationDigest: createHash("sha256").update(JSON.stringify(operation)).digest("hex"),
+          ...(current ? { matchesCurrentOperation: isDeepStrictEqual(operation, current) } : {}),
+        }
+      : {}),
+  };
+}
 
 /** Only verdict audits are review evidence; a local coordination failure grants or denies no action. */
-export function previousDenials(entries: readonly Entry[]) {
+export function previousDenials(entries: readonly Entry[], action?: unknown, cwd?: string) {
+  const current = operationIdentity(action, cwd);
+
   // Local coordination failures are preflight results, not action-review verdicts.
   return entries
     .map((entry, index) => ({ entry, index }))
@@ -14,17 +58,7 @@ export function previousDenials(entries: readonly Entry[]) {
         !(audit.technicalFailure === true && audit.technicalStage === "team coordination"),
     )
     .slice(-6)
-    .map(({ audit: d, index }) => ({
-      decision: d.decision,
-      reason: d.reason,
-      requestId: d.requestId,
-      fingerprint: d.fingerprint,
-      tool: d.action?.tool,
-      technicalFailure: d.technicalFailure,
-      technicalStage: d.technicalStage,
-      laterOperatorPromptCount: operatorPromptRecords(entries.slice(index + 1)).length,
-      ...(d.action ? { actionOmitted: true } : {}),
-    }));
+    .map(({ audit, index }) => denialEvidence(audit, entries.slice(index + 1), current));
 }
 
 function isTextBlock(item: unknown): boolean {
