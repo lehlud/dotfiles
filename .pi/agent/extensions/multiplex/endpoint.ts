@@ -1,3 +1,4 @@
+import { availableQuestionTools } from "../shared/contracts/questions.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { availableGoalTools } from "../shared/contracts/goal.ts";
 import { Type } from "typebox";
@@ -69,7 +70,12 @@ export function registerEndpoint(pi: ExtensionAPI, current: () => Endpoint | und
     attach(ctx);
 
     if (current() && !current()!.boxes.closed)
-      pi.setActiveTools(["approved_action", MAILBOX_TOOL, ...availableGoalTools(pi)]);
+      pi.setActiveTools([
+        "approved_action",
+        MAILBOX_TOOL,
+        ...availableGoalTools(pi),
+        ...availableQuestionTools(pi),
+      ]);
   };
 
   pi.on("session_start", initialize);

@@ -1,3 +1,4 @@
+import { availableQuestionTools, QUESTION_TOOLS } from "../shared/contracts/questions.ts";
 import { join } from "node:path";
 import {
   getAgentDir,
@@ -27,6 +28,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     pi.setActiveTools([
       TOOL_NAME,
       ...availableGoalTools(pi),
+      ...availableQuestionTools(pi),
       ...(sessionServices(ctx).mailbox?.active() ? ["mailbox"] : []),
     ]);
     // Clear a widget left by an older version after /reload.
@@ -61,8 +63,13 @@ export default function autoApproval(pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", (event) => {
-    // Internal mailbox and goal metadata grant no external-action permissions.
-    if (event.toolName === "mailbox" || event.toolName === GOAL_TOOL) return;
+    // Internal mailbox, goal and question metadata grant no external-action permissions.
+    if (
+      event.toolName === "mailbox" ||
+      event.toolName === GOAL_TOOL ||
+      QUESTION_TOOLS.some((name) => name === event.toolName)
+    )
+      return;
 
     if (event.toolName !== TOOL_NAME || event.parentToolCallId)
       return { block: true, reason: LOCK_MESSAGE };

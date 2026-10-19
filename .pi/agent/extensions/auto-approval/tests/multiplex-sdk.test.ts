@@ -511,7 +511,7 @@ async function fixture(
     sessionManager: manager,
     settingsManager: settings,
     resourceLoader: loader,
-    tools: ["approved_action", "mailbox", "set_goal"],
+    tools: ["approved_action", "ask_user", "mailbox", "set_goal", "user_questions"],
   });
 
   return {
@@ -602,6 +602,8 @@ nativeTest(
         "approved_action",
         "mailbox",
         "set_goal",
+        "ask_user",
+        "user_questions",
       ]);
       expect(sessionServices(state.root()).mailbox?.active()).toBe(true);
     } finally {
@@ -698,6 +700,14 @@ nativeTest(
       await state.session.prompt("STEERING: Kommentare auf Deutsch; setzt danach TEAM-TASK fort.", {
         streamingBehavior: "steer",
       });
+      sessionServices(state.root()).broadcastOperatorInput?.(
+        "QUESTION-ANSWER: Desktop",
+        "steering",
+      );
+      sessionServices(state.root()).broadcastConversationMessage?.(
+        "question-dismissed",
+        "QUESTION-DISMISSED: no permission supplied",
+      );
       state.releases.forEach((release) => release());
       await main;
       await until(() => !sessionServices(state!.root()).peersBusy?.());
@@ -749,10 +759,24 @@ nativeTest(
 
         expect(userText.match(/TEAM-TASK: Arbeitet/g)).toHaveLength(1);
         expect(userText.match(/STEERING: Kommentare/g)).toHaveLength(1);
+
+        if (name !== sessionServices(state.root()).mailbox?.name) {
+          expect(JSON.stringify(latest.messages)).toContain("QUESTION-ANSWER: Desktop");
+          expect(JSON.stringify(latest.messages)).toContain(
+            "QUESTION-DISMISSED: no permission supplied",
+          );
+        }
+
         expect(userText).not.toContain("PEER-ONLY");
         expect(JSON.stringify(latest.messages)).toContain("PEER-ONLY");
         expect(JSON.stringify(latest.messages)).toContain("BEFORE-MULTIPLEX");
-        expect(latest.tools.sort()).toEqual(["approved_action", "mailbox", "set_goal"]);
+        expect(latest.tools.sort()).toEqual([
+          "approved_action",
+          "ask_user",
+          "mailbox",
+          "set_goal",
+          "user_questions",
+        ]);
         expect(JSON.stringify(latest.messages)).not.toContain(ACTIVITY_ENTRY);
         expect(
           JSON.stringify(latest.messages).split("Code readability is a standing requirement")
@@ -935,7 +959,12 @@ nativeTest(
       await state.session.reload();
       expect(statuses.has("00-multiplex")).toBe(false);
       expect(sessionServices(state.root()).mailbox).toBeUndefined();
-      expect(state.session.getActiveToolNames()).toEqual(["approved_action", "set_goal"]);
+      expect(state.session.getActiveToolNames()).toEqual([
+        "approved_action",
+        "set_goal",
+        "ask_user",
+        "user_questions",
+      ]);
     } finally {
       state?.releases.forEach((release) => release());
       await main?.catch(() => {});
@@ -1462,7 +1491,12 @@ nativeTest(
       for (let i = 0; i < 40; i++) await tick();
 
       expect(statuses.get("01-goal")).toContain("paused");
-      expect(state.session.getActiveToolNames()).toEqual(["approved_action", "set_goal"]);
+      expect(state.session.getActiveToolNames()).toEqual([
+        "approved_action",
+        "set_goal",
+        "ask_user",
+        "user_questions",
+      ]);
       expect(await readdir(state.project)).toEqual([`${backend}.txt`]);
       expect(state.reviews.filter((review) => !review.action)).toEqual([]);
 
@@ -1549,7 +1583,12 @@ nativeTest(
       expect(state.reviews).toHaveLength(3);
       expect(await readdir(state.project)).toEqual([]);
       expect(state.contexts.every((context) => context.stage === 0)).toBe(true);
-      expect(state.session.getActiveToolNames()).toEqual(["approved_action", "set_goal"]);
+      expect(state.session.getActiveToolNames()).toEqual([
+        "approved_action",
+        "set_goal",
+        "ask_user",
+        "user_questions",
+      ]);
     } finally {
       state?.releases.forEach((release) => release());
       state?.reviewReleases.forEach((release) => release());
@@ -1706,7 +1745,12 @@ for (const failure of ["terminal", "peer"] as const)
         expect(state.contexts).toHaveLength(0);
         expect(sessionServices(state.root()).mailbox?.active()).not.toBe(true);
         expect(sessionServices(state.root()).operatorGoal?.()).toBeUndefined();
-        expect(state.session.getActiveToolNames()).toEqual(["approved_action", "set_goal"]);
+        expect(state.session.getActiveToolNames()).toEqual([
+          "approved_action",
+          "set_goal",
+          "ask_user",
+          "user_questions",
+        ]);
         expect(
           branch.filter(
             (entry) => entry.type === "custom" && entry.customType === "multiplex-team-failure",
@@ -1780,7 +1824,12 @@ for (const failure of ["invalid-terminal", "invalid-peer"] as const)
         expect(invalid).toHaveLength(3);
         expect(state.reviews).toHaveLength(0);
         expect(sessionServices(state.root()).operatorGoal?.()).toBeUndefined();
-        expect(state.session.getActiveToolNames()).toEqual(["approved_action", "set_goal"]);
+        expect(state.session.getActiveToolNames()).toEqual([
+          "approved_action",
+          "set_goal",
+          "ask_user",
+          "user_questions",
+        ]);
         expect((await readdir(state.project)).filter((name) => name.endsWith(".txt"))).toEqual([]);
       } finally {
         state?.releases.forEach((release) => release());
@@ -1901,7 +1950,12 @@ for (const spinning of ["terminal", "peer"] as const)
 
         expect(goal.data.status).toBe("paused");
         expect(goal.data.reason).toContain("unchanged inspections");
-        expect(state.session.getActiveToolNames()).toEqual(["approved_action", "set_goal"]);
+        expect(state.session.getActiveToolNames()).toEqual([
+          "approved_action",
+          "set_goal",
+          "ask_user",
+          "user_questions",
+        ]);
         expect(sessionServices(state.root()).mailbox?.active()).not.toBe(true);
 
         const repeats = state.reviews.filter((review) =>

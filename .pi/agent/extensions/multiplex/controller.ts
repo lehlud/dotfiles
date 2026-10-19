@@ -1,3 +1,4 @@
+import { availableQuestionTools } from "../shared/contracts/questions.ts";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -29,6 +30,7 @@ type Team = {
   stopped: boolean;
   ready: boolean;
   pending: { event: InputEvent; kind?: OperatorInputKind }[];
+  pendingMessages: { customType: string; content: string; display: boolean }[];
   failures: ActionFailures;
   goal?: string;
   settle(): void;
@@ -88,9 +90,15 @@ export class TeamController {
     sessionServices(ctx).peerRevision = undefined;
     sessionServices(ctx).stopTeam = undefined;
     sessionServices(ctx).continueTeam = undefined;
+    sessionServices(ctx).broadcastOperatorInput = undefined;
+    sessionServices(ctx).broadcastConversationMessage = undefined;
     this.display(ctx);
     this.attach(ctx);
-    this.pi.setActiveTools(["approved_action", ...availableGoalTools(this.pi)]);
+    this.pi.setActiveTools([
+      "approved_action",
+      ...availableGoalTools(this.pi),
+      ...availableQuestionTools(this.pi),
+    ]);
     this.closing = Promise.allSettled(previous.peers.map((peer) => peer.close())).then((closed) => {
       if (closed.some((result) => result.status === "rejected"))
         throw new Error(
@@ -200,6 +208,7 @@ export class TeamController {
       stopped: false,
       ready: false,
       pending: [],
+      pendingMessages: [],
       failures: new ActionFailures(),
       settle() {},
     };
@@ -258,6 +267,27 @@ export class TeamController {
       next.peers.some((peer) => peer.busy) ||
       (!!sessionServices(ctx).goalInstruction?.() && boxes.unobserved().length > 0);
     sessionServices(ctx).peerRevision = () => boxes.revision;
+    sessionServices(ctx).broadcastConversationMessage = (customType, content) => {
+      if (next.stopped || this.team !== next) return;
+
+      const message = { customType, content, display: false };
+
+      if (!next.ready) next.pendingMessages.push(message);
+      else for (const peer of next.peers) peer.message(message);
+    };
+    sessionServices(ctx).broadcastOperatorInput = (text, kind) => {
+      if (next.stopped || this.team !== next) return;
+
+      const event: InputEvent = {
+        type: "input",
+        text,
+        source: "extension",
+        streamingBehavior: "steer",
+      };
+
+      if (!next.ready) next.pending.push({ event, kind });
+      else for (const peer of next.peers) peer.prompt(event, kind);
+    };
     sessionServices(ctx).continueTeam = (content) => {
       if (next.stopped || this.team !== next || !next.ready)
         throw new Error("Team startup or shutdown is still in progress.");
@@ -332,11 +362,20 @@ export class TeamController {
 
       next.ready = true;
       this.attach(ctx);
-      this.pi.setActiveTools(["approved_action", "mailbox", ...availableGoalTools(this.pi)]);
+      this.pi.setActiveTools([
+        "approved_action",
+        "mailbox",
+        ...availableGoalTools(this.pi),
+        ...availableQuestionTools(this.pi),
+      ]);
       this.display(ctx);
 
       for (const { event, kind } of next.pending.splice(0))
         for (const peer of next.peers) peer.prompt(event, kind);
+
+      for (const message of next.pendingMessages.splice(0)) {
+        for (const peer of next.peers) peer.message(message);
+      }
 
       const instruction = sessionServices(ctx).goalInstruction?.();
 

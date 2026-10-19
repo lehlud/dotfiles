@@ -24,6 +24,15 @@ export function registerOperatorInputs(pi: ExtensionAPI) {
     const services = sessionServices(ctx);
 
     services.flushOperatorInputs = () => flush(ctx);
+    services.recordOperatorInput = (text, kind) => {
+      pending.push({
+        promptId: promptDigest(text),
+        kind,
+        afterId: ctx.sessionManager.getBranch().at(-1)?.id,
+      });
+
+      if (pending.length > 128) pending.shift();
+    };
     services.operatorInputKind = (text) =>
       pending.findLast((item) => item.promptId === promptDigest(text))?.kind;
     services.forwardOperatorInput = (text, kind) => {

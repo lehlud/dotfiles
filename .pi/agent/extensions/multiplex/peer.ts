@@ -14,6 +14,7 @@ import {
 import autoApproval from "../auto-approval/index.ts";
 import publicWriting from "../public-writing/index.ts";
 import codeQuality from "../code-quality/index.ts";
+import { registerQuestionTools, bindPeerQuestions } from "../conversations/questions/tools.ts";
 import { registerGoalTool } from "../conversations/goal-tool.ts";
 import { registerProgress } from "../conversations/progress.ts";
 import { registerSteering } from "../conversations/steering.ts";
@@ -256,9 +257,12 @@ export async function createPeer(
       (pi) => {
         registerOperatorInputs(pi);
         registerGoalTool(pi);
+        registerQuestionTools(pi);
         registerFastRequests(pi);
         pi.on("session_start", (_event, child) => {
           sessionServices(child).operatorGoal = endpoint.operatorGoal;
+
+          bindPeerQuestions(ctx, child, endpoint.name);
           sessionServices(child).setAgentGoal = (text, signal) => {
             const set = sessionServices(ctx).setAgentGoal;
 
@@ -314,7 +318,7 @@ export async function createPeer(
     sessionManager: manager,
     settingsManager: settings,
     resourceLoader: loader,
-    tools: ["approved_action", "mailbox", "set_goal"],
+    tools: ["approved_action", "mailbox", "set_goal", "ask_user", "user_questions"],
   });
 
   try {

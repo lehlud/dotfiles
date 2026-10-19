@@ -374,6 +374,8 @@ test("mailbox bypasses approval entirely while external actions still require re
 
   expect(hooks.tool_call({ toolName: "mailbox" }, inaccessible)).toBeUndefined();
   expect(hooks.tool_call({ toolName: "set_goal" }, inaccessible)).toBeUndefined();
+  expect(hooks.tool_call({ toolName: "ask_user" }, inaccessible)).toBeUndefined();
+  expect(hooks.tool_call({ toolName: "user_questions" }, inaccessible)).toBeUndefined();
   expect(
     hooks.tool_call({ toolName: "mailbox", parentToolCallId: "nested" }, inaccessible),
   ).toBeUndefined();

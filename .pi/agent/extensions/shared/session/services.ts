@@ -1,6 +1,7 @@
 import type { ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { OperatorInputKind } from "../contracts/operator-input.ts";
 
+import type { QuestionClient } from "../contracts/questions.ts";
 import type { Goal } from "../contracts/goal.ts";
 
 export type ActionLease = {
@@ -11,6 +12,10 @@ export type ActionLease = {
 
 /** Trusted session capabilities; models cannot inspect or mutate this registry. */
 export type SessionServices = {
+  questions?: (owner: string) => QuestionClient;
+  recordOperatorInput?: (text: string, kind: OperatorInputKind) => void;
+  broadcastConversationMessage?: (customType: string, text: string) => void;
+  broadcastOperatorInput?: (text: string, kind: OperatorInputKind) => void;
   setAgentGoal?: (text: string, signal?: AbortSignal) => Promise<Goal>;
   fastMode?: () => boolean;
   operatorGoal?: () => string | undefined;

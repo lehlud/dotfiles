@@ -2,7 +2,21 @@
 
 For module ownership, lifecycle and development checks, see the [architecture guide](../README.md).
 
-This extension owns conversation control: `/continue`, `/goal`, `/side` and steering. It has no executor and cannot approve actions. Action review uses a session service supplied by the goal controller; the actual conversation history remains the source of user instructions.
+This extension owns conversation control: `/continue`, `/goal`, `/side`, asynchronous clarification questions and steering. It has no executor and cannot approve actions. Action review uses a session service supplied by the goal controller; the actual conversation history remains the source of user instructions.
+
+## Clarification questions during a run
+
+The model uses `ask_user` with one to three questions, each containing a short `header`, a `question` and optional `options` (`label` and optional `description`). It returns question IDs immediately; the model keeps working on independent tasks. Models should ask only necessary questions, avoid secrets and withdraw questions that become irrelevant. They must not treat silence or dismissal as an answer or permission, and should not poll for responses.
+
+While any question is pending, a compact question editor replaces the normal prompt field. Use arrow keys and Enter to select a choice, or Tab to write a free-text answer. Ctrl+X discards the current question; the menu also offers discard-all when several questions are open. Ctrl+O expands activity output containing the full question and choice descriptions. Escape still interrupts work. New ordinary prompts are blocked until all pending questions have been answered, discarded or withdrawn. The previous prompt draft and custom editor are restored afterward; an existing draft is never submitted as a question answer.
+
+`user_questions` lists the model's own questions or withdraws pending IDs with `operation: "withdraw"` and `ids: [...]`. Repeating the same pending question reuses its ID. Up to twelve questions can be pending; the in-memory list retains the latest 128 records. State is journaled in the session and restored on reload or branch selection. Old clients and editor callbacks cannot act on another session.
+
+Answers are delivered as real operator steering, with the agent's question quoted as context. The answer's own prose remains the language reference. Discarding sends a conversation notification rather than inventing an operator answer. Neither tool executes actions or grants sandbox access, and neither goes through action approval. All subsequent external operations still require their own review.
+
+Multiplex members share the same question panel. Requester names come from their session bindings; a peer cannot withdraw another member's questions. Answers reach every member as operator input, even in an individual agent view. Dismissal notifications reach every member without becoming user authorization.
+
+For RPC or command-driven use: `/questions` lists open questions, `/questions answer <id> <text>` answers one, and `/questions discard <id|all>` dismisses them. The interactive editor is available only in TUI mode.
 
 ## Resume interrupted work
 
