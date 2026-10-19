@@ -282,6 +282,15 @@ and compression costs. These provider token counters are distinct from the local
 cache's `cacheHit` flag. Offline SDK tests verify the request layout and usage mapping;
 they do not measure live provider cache savings.
 
+Run `bun run eval:cache --compare-legacy` in this extension directory for a live comparison
+using the configured reviewers and existing Pi login. It submits three synthetic read-action
+reviews per layout and provider, with no action execution. Legacy mode replays the old nonce
+placement, per-action routing key and changing output schema through the current client.
+The report under `/tmp/pi-review-cache-live-*.json` contains token usage, SDK cost estimates,
+latency and cache-layout checks, without credentials or raw requests. A run fails if a provider
+is unavailable, a verdict is invalid or warm corrected requests report no cache reads. Model
+calls incur normal provider charges. Omitting `--compare-legacy` tests only the corrected layout.
+
 ## Reusable prompt compression
 
 For selected user prompts larger than 16,000 UTF-8 bytes, the configured small reviewer compresses the prompt before the actual review. It must preserve tasks, prohibitions, exceptions, paths, versions and conditions while summarizing bulky logs or JSON. Summaries allow at most 600 characters. Large prompts are processed in up to 64 sections of at most 64,000 characters each, then combined. If necessary constraints cannot fit, compression is denied and the raw prompt is retained if it fits the review budget. A compression denial never tries another compressor.
