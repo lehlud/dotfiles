@@ -8,6 +8,8 @@ COPY auto-approval/node_modules ./node_modules
 COPY auto-approval/runner.ts ./runner.ts
 COPY auto-approval/credential-command.ts ./credential-command.ts
 COPY auto-approval/git-command.ts ./git-command.ts
+COPY auto-approval/git-process.ts ./git-process.ts
+COPY auto-approval/git-rebase.ts ./git-rebase.ts
 COPY shared/configuration/credential-profile.ts /extensions/shared/configuration/credential-profile.ts
 RUN ln -s ../auto-approval/node_modules /extensions/shared/node_modules
 COPY web-research /extensions/web-research

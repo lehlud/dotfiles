@@ -39,7 +39,14 @@ beforeAll(async () => {
     filter: (path) => !path.includes("node_modules"),
   });
 
-  for (const name of ["package.json", "bun.lock", "credential-command.ts", "git-command.ts"])
+  for (const name of [
+    "package.json",
+    "bun.lock",
+    "credential-command.ts",
+    "git-command.ts",
+    "git-process.ts",
+    "git-rebase.ts",
+  ])
     await copyFile(join(import.meta.dir, "..", name), join(source, name));
 
   await writeFile(join(source, "runner.ts"), 'console.log("first executor");\n');

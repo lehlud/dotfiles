@@ -1,16 +1,16 @@
-import { spawn } from "node:child_process";
-import { StringDecoder } from "node:string_decoder";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { Text } from "@earendil-works/pi-tui";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { runGit } from "./git-process.ts";
+import { validateRebaseArgv, validateRebaseState } from "./git-rebase.ts";
 
 const value = Type.String({ maxLength: 16384, pattern: "^[^\\u0000]*$" });
 export const gitTool: ToolDefinition<any, any> = {
   name: "git",
   label: "Local Git command",
   description:
-    "One reviewed local Git command, as argv without a shell. Supports status, diff, show, log, add, commit, rev-parse, ls-files, ls-tree and describe. Request sandbox.gitConfig: true to use the operator's public global Git settings and identity read-only for this command. No credentials, network, aliases, external hooks, or config editing through this route.",
+    "One reviewed local Git command, as argv without a shell. Supports status, diff, show, log, add, commit, rev-parse, ls-files, ls-tree, describe and noninteractive rebase, including --continue, --abort and --skip. Request sandbox.gitConfig: true to use the operator's public global settings and identity read-only for this command. Rebase --continue preserves the prepared commit message automatically; do not request GIT_EDITOR or other environment variables. No credentials, network, aliases, hooks, rebase shell steps, interactive sequence editing or config editing through this route.",
   parameters: Type.Object(
     { argv: Type.Array(value, { minItems: 1, maxItems: 64 }) },
     { additionalProperties: false },
@@ -46,16 +46,19 @@ const commands = new Set([
   "ls-files",
   "ls-tree",
   "describe",
+  "rebase",
 ]);
 
 export function validateGitArgv(argv: string[]): void {
   if (!commands.has(argv[0]))
     throw new Error(
-      "Unsupported local Git command; global options, aliases, remote and destructive commands are excluded",
+      "Unsupported local Git command; only the documented local inspection, commit and rebase operations are supported",
     );
 
   if (argv.some((arg) => /^(?:--ext-diff|--textconv)(?:=|$)/.test(arg)))
     throw new Error("External Git diff programs are excluded");
+
+  if (argv[0] === "rebase") validateRebaseArgv(argv);
 }
 
 // Only the fixed internal offline reader can parse original configuration snapshots.
@@ -76,7 +79,9 @@ export async function executeGit(argv: string[], share: boolean, reader?: GitCon
     GIT_CONFIG_SYSTEM: "/dev/null",
     GIT_CONFIG_GLOBAL: share ? "/opt/pi-git/config" : "/dev/null",
     GIT_PAGER: "cat",
-    GIT_EDITOR: "false",
+    GIT_EDITOR:
+      argv[0] === "rebase" && argv.includes("--continue") ? "/usr/bin/true" : "/usr/bin/false",
+    GIT_SEQUENCE_EDITOR: "/usr/bin/false",
   };
   const fixed = [
     "-c",
@@ -106,45 +111,14 @@ export async function executeGit(argv: string[], share: boolean, reader?: GitCon
     ];
   } else {
     validateGitArgv(argv);
+
+    if (argv[0] === "rebase") {
+      fixed.push("-c", "rebase.instructionFormat=%s", "-c", "rebase.updateRefs=false");
+      await validateRebaseState(argv, (args) => runGit([...fixed, ...args], env));
+    }
   }
 
-  const child = spawn("/usr/bin/git", [...fixed, ...argv], {
-    cwd: process.cwd(),
-    env,
-    shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const streams = {
-    stdout: { text: "", decoder: new StringDecoder("utf8") },
-    stderr: { text: "", decoder: new StringDecoder("utf8") },
-  };
-  let bytes = 0,
-    exceeded = false;
-  const collect = (name: keyof typeof streams, chunk: Buffer) => {
-    bytes += chunk.length;
-
-    if (bytes > 1024 * 1024) {
-      exceeded = true;
-      child.kill("SIGKILL");
-
-      return;
-    }
-
-    streams[name].text += streams[name].decoder.write(chunk);
-  };
-
-  child.stdout.on("data", (chunk) => collect("stdout", chunk));
-  child.stderr.on("data", (chunk) => collect("stderr", chunk));
-
-  const exitCode = await new Promise<number | null>((done, reject) => {
-    child.once("error", reject);
-    child.once("close", done);
-  });
-
-  if (exceeded) throw new Error("Git output limit exceeded");
-
-  const stdout = streams.stdout.text + streams.stdout.decoder.end(),
-    stderr = streams.stderr.text + streams.stderr.decoder.end();
+  const { stdout, stderr, exitCode } = await runGit([...fixed, ...argv], env);
 
   if (reader && exitCode !== 0) throw new Error("Global Git configuration could not be parsed");
 

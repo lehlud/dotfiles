@@ -22,6 +22,8 @@
 
 !auto-approval/credential-command.ts
 !auto-approval/git-command.ts
+!auto-approval/git-process.ts
+!auto-approval/git-rebase.ts
 !shared/
 !shared/configuration/
 !shared/configuration/credential-profile.ts

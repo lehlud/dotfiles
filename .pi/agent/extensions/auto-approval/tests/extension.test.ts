@@ -469,6 +469,24 @@ test("approved Git settings are read after the decision and later actions receiv
   }
 });
 
+test("rebase reaches independent review and a denial executes nothing", async () => {
+  await configureGitFixture();
+  mode = "deny";
+
+  const request = {
+    ...gitAction(),
+    arguments: { argv: ["rebase", "synthetic-upstream", "lkl/rush"] },
+    goal: "Rebase the user-selected local branch",
+    justification: "The user requested this local rebase with their existing identity",
+  };
+  const denied = await call(request);
+
+  expect(denied.isError).toBe(true);
+  expect(requested).toHaveLength(1);
+  expect(requested[0].data).toMatchObject({ action: { arguments: request.arguments } });
+  expect(executedRequests).toEqual([]);
+});
+
 test("Git configuration cannot be attached to bash or hidden in unknown private executor input", async () => {
   await configureGitFixture();
 

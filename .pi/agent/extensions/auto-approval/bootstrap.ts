@@ -118,6 +118,8 @@ export async function prepareExecutor(
     "credential-command.ts",
     "../shared/configuration/credential-profile.ts",
     "git-command.ts",
+    "git-process.ts",
+    "git-rebase.ts",
     "package.json",
     "bun.lock",
     "../web-research/index.ts",
