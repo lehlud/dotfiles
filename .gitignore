@@ -70,6 +70,10 @@
 !/.local/share/typst/
 /.local/share/typst/*
 !/.local/share/typst/packages/
+!/.local/share/lubox/
+/.local/share/lubox/*
+!/.local/share/lubox/podman_reconfigure.py
+!/.local/share/lubox/RECONFIGURE.md
 
 !/.config/
 /.config/*

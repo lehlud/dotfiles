@@ -60,10 +60,21 @@ configuration is needed for this Lubox setup. Restart Pi through its normal
 launcher. The model requests budgets such as `memoryMiB: 1024`, `cpus: 1` and
 `pids: 64` per action; independent approval still applies to each request.
 
-This does not migrate or restart an existing box. Read-only cgroup mounts in an
-already running Lubox cannot be repaired by an action inside that sandbox.
-The existing box and its writable filesystem remain intact; installed packages
-in that writable layer are not automatically copied to a newly created box.
+For an existing Podman box, save work and leave its sessions, then run from the
+host terminal:
+
+```sh
+lubox stop fedora1 --engine podman
+lubox reconfigure fedora1 --engine podman --cgroup-limits
+lubox start fedora1 --engine podman
+lubox enter fedora1 --engine podman
+```
+
+The offline migration retains installed packages, existing mounts and a stopped
+original backup. It leaves the replacement stopped until the operator starts it.
+See `~/.local/share/lubox/RECONFIGURE.md` for supported configuration and rollback.
+Read-only cgroup mounts in an already running box cannot be repaired by an action
+inside that sandbox. The migration never stops a running container itself.
 On other Linux environments, an operator can provide an equivalent private
 delegation with the trusted runtime in a sibling leaf of the action cgroups.
 If its path differs from `/sys/fs/cgroup/pi-actions`, merge

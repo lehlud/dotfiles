@@ -4,7 +4,7 @@ function __fish_lubox_seen_command
     set -l tokens (commandline -opc)
     for token in $tokens[2..-1]
         switch $token
-            case doctor list create destroy start stop enter exec code-server enable host-exec
+            case doctor list create reconfigure destroy start stop enter exec code-server enable host-exec
                 echo $token
                 return 0
         end
@@ -23,7 +23,7 @@ end
 
 function __fish_lubox_using_any_engine_command
     set -l command (__fish_lubox_seen_command)
-    contains -- "$command" doctor list create destroy start stop enter exec code-server enable
+    contains -- "$command" doctor list create reconfigure destroy start stop enter exec code-server enable
 end
 
 function __fish_lubox_boxes
@@ -50,6 +50,9 @@ complete -c lubox -f -n '__fish_lubox_using_command create' -l no-host-exec -d '
 complete -c lubox -f -n '__fish_lubox_using_command create' -l rebuild -d 'Recreate existing container'
 complete -c lubox -f -n '__fish_lubox_using_command create' -l bwrap -d 'Allow unprivileged bubblewrap'
 complete -c lubox -f -n '__fish_lubox_using_command create' -l cgroup-limits -d 'Delegate per-action resource limits (Podman and bwrap)'
+complete -c lubox -f -n '__fish_lubox_using_command reconfigure' -l bwrap -d 'Enable bubblewrap in a stopped container, retaining a backup'
+complete -c lubox -f -n '__fish_lubox_using_command reconfigure' -l cgroup-limits -d 'Enable per-action resource delegation in a stopped Podman container'
+complete -c lubox -f -n '__fish_lubox_using_command reconfigure' -a '(__fish_lubox_boxes)' -d 'Container'
 
 complete -c lubox -f -n '__fish_lubox_using_command enter' -l xquartz -d 'Enable XQuartz forwarding'
 

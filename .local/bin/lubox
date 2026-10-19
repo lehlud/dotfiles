@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 import hmac
 import http.client
+import importlib.util
 import json
 import os
 import pathlib
@@ -36,7 +37,7 @@ import urllib.parse
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-VERSION = "0.1.10"
+VERSION = "0.1.11"
 DEFAULT_IMAGE = "docker.io/library/fedora:latest"
 LABEL_PREFIX = "dev.lubox"
 CONTAINER_CONFIG_PATH = "/run/lubox/hostexec.json"
@@ -1619,8 +1620,6 @@ class ContainerManager:
             if self.engine.name == "docker":
                 self.require_bwrap_profile()
             if rebuild:
-                if self.engine.name == "podman":
-                    die("lubox: --bwrap --rebuild is refused; create a new box with a different name to preserve the existing container")
                 die("lubox: --bwrap --rebuild is refused; use reconfigure NAME --bwrap on a stopped container to preserve its filesystem")
         cname = container_name(name)
         progress = Progress(f"lubox create {name}", 6)
@@ -1787,6 +1786,31 @@ class ContainerManager:
         self.start(name, announce=False)
         self.engine.run(["exec", cname, "/usr/bin/bwrap", "--unshare-all", "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--new-session", "--", "/bin/true"])
         print(f"lubox: enabled and verified bubblewrap in {cname}; only /proc submount restrictions relaxed, no extra capabilities")
+
+    def reconfigure(self, name: str, *, cgroup_limits: bool = False) -> None:
+        validate_box_name(name)
+        if self.engine.name == "docker":
+            if cgroup_limits:
+                die("lubox: cgroup delegation requires Podman")
+
+            self.reconfigure_bwrap(name)
+            return
+
+        path = pathlib.Path(__file__).resolve().parent.parent / "share/lubox/podman_reconfigure.py"
+        spec = importlib.util.spec_from_file_location("lubox_podman_reconfigure", path)
+        if spec is None or spec.loader is None:
+            die("lubox: Podman migration helper is unavailable")
+
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except OSError:
+            die(f"lubox: migration helper unavailable: {path}; update the Lubox support files")
+
+        try:
+            module.reconfigure(self, name, cgroup_limits)
+        except module.MigrationError as exc:
+            die(f"lubox: {exc}")
 
     def socket_forward_plan(self, host_exec: bool) -> SocketForwardPlan:
         ssh_sock = current_ssh_auth_sock()
@@ -5369,6 +5393,7 @@ def command_fish_complete(args: argparse.Namespace) -> int:
             ("doctor", "diagnose lubox setup"),
             ("list", "list lubox containers"),
             ("create", "create lubox container"),
+            ("reconfigure", "migrate a stopped container while retaining a backup"),
             ("destroy", "destroy lubox container"),
             ("start", "start lubox container"),
             ("stop", "stop lubox container"),
@@ -5440,7 +5465,8 @@ destroy keeps lubox/NAME:latest by default; destroy --force also removes it.
     p = sub.add_parser("reconfigure", help="migrate a stopped container without losing its writable filesystem")
     add_engine(p)
     p.add_argument("name", metavar="NAME")
-    p.add_argument("--bwrap", action="store_true", required=True, help="enable bubblewrap (Docker only); refuses running containers and keeps a rollback backup")
+    p.add_argument("--bwrap", action="store_true", help="enable bubblewrap; refuses running containers and keeps a rollback backup")
+    p.add_argument("--cgroup-limits", action="store_true", help="enable bwrap and per-action resource delegation (Podman only)")
 
     p = sub.add_parser("destroy", help="stop and remove container; --force also removes image")
     add_engine(p)
@@ -5587,7 +5613,10 @@ def dispatch(args: argparse.Namespace) -> int:
         )
         return 0
     if args.command == "reconfigure":
-        manager.reconfigure_bwrap(args.name)
+        if not args.bwrap and not args.cgroup_limits:
+            die("lubox: reconfigure requires --bwrap or --cgroup-limits")
+
+        manager.reconfigure(args.name, cgroup_limits=args.cgroup_limits)
         return 0
     if args.command == "destroy":
         manager.destroy(args.name, args.force)
