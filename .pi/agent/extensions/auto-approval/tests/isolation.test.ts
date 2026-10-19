@@ -67,7 +67,7 @@ test("no Git repository and symlinked cwd both resolve to the actual directory",
 
 const bwrap = Bun.which("bwrap");
 const nativeTest = process.platform === "linux" && bwrap ? test : test.skip;
-let native: SandboxConfig;
+let native: Extract<SandboxConfig, { backend: "bwrap" }>;
 let project: string;
 let privateTmp: string;
 
@@ -486,7 +486,9 @@ nativeTest(
       }),
     ).rejects.toThrow("whole home");
     await expect(
-      validateWorkspace(project, native, [], { limits: { memoryMiB: 2048 } }),
+      validateWorkspace(project, { ...native, cgroupRoot: join(fixture, "missing-cgroup") }, [], {
+        limits: { memoryMiB: 2048 },
+      }),
     ).rejects.toThrow("delegated cgroup v2 subtree");
 
     const writable = join(project, "write-alias.txt");

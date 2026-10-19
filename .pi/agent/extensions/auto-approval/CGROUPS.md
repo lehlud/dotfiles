@@ -24,6 +24,13 @@ concurrent actions are outside that child's limits and cleanup.
 The executor never enables parent controllers, moves Pi, changes a container's
 limits, changes operator configuration or falls back to unrestricted execution.
 Delegation must already exist. A required limit without delegation fails closed.
+Resource budgets belong to each action request and are independently reviewed.
+They do not grant kernel permissions or prepare the host's delegation.
+For bwrap, Pi automatically inspects `/sys/fs/cgroup/pi-actions`, the standard
+Lubox delegation. An optional device-owned `sandbox.cgroupRoot` overrides that
+path for other operator-provided delegations. An invalid override fails closed;
+it never silently selects another root. Action arguments and environment
+variables cannot select the root.
 Persistent session `/tmp` still does not support a `tmpBytes` cap; disk quotas are
 not implemented by this extension.
 
@@ -48,19 +55,10 @@ is required. Container-root membership files and limit controls stay unchanged.
 Later exec sessions join the runtime leaf. The subtree is recreated after a
 container restart.
 
-Then merge this field into the existing `sandbox` object in
-`~/.pi/agent/auto-approval.device.json`, preserving other device settings:
-
-```json
-{
-  "sandbox": {
-    "cgroupRoot": "/sys/fs/cgroup/pi-actions"
-  }
-}
-```
-
-Keep `backend: "bwrap"` in the shared configuration. Restart Pi through its normal
-launcher. Per-action resource requests still require independent approval.
+Keep `backend: "bwrap"` in the shared configuration. No additional Pi path
+configuration is needed for this Lubox setup. Restart Pi through its normal
+launcher. The model requests budgets such as `memoryMiB: 1024`, `cpus: 1` and
+`pids: 64` per action; independent approval still applies to each request.
 
 This does not migrate or restart an existing box. Read-only cgroup mounts in an
 already running Lubox cannot be repaired by an action inside that sandbox.
@@ -68,6 +66,9 @@ The existing box and its writable filesystem remain intact; installed packages
 in that writable layer are not automatically copied to a newly created box.
 On other Linux environments, an operator can provide an equivalent private
 delegation with the trusted runtime in a sibling leaf of the action cgroups.
+If its path differs from `/sys/fs/cgroup/pi-actions`, merge
+`"cgroupRoot": "/absolute/delegated/path"` into the existing `sandbox` object in
+`~/.pi/agent/auto-approval.device.json`, preserving other device settings.
 
 ## Verification
 
@@ -86,8 +87,10 @@ The harness pins the local image ID, disables networking, mounts only test code
 and Bun read-only, applies outer container limits, and removes only its own
 randomly named container. It checks actual aggregate OOM handling, PID exhaustion,
 CPU throttling, cancellation, concurrent-action separation, hidden controls and
-changed-plan rejection, including delegation after restarting its own disposable
-container. It never stops or reconfigures the running Lubox.
+changed-plan rejection, including automatic root discovery without device
+configuration and delegation after restarting its own disposable container.
+Invalid explicit overrides are rejected even when the standard root is usable.
+It never stops or reconfigures the running Lubox.
 
 The implementation follows the kernel's [cgroup v2 delegation and controller
 documentation](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)

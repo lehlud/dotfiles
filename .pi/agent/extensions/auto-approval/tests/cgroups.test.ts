@@ -20,7 +20,6 @@ test("aggregate limits map to kernel controls; unrelated limits require no cgrou
     "pids.max": "64",
   });
   expect(await planCgroup(native, { executionTimeoutMs: 1000 })).toBeUndefined();
-  await expect(planCgroup(native, { memoryMiB: 256 })).rejects.toThrow("delegated cgroup v2");
 
   for (const limits of [
     { cpus: NaN },
@@ -36,6 +35,9 @@ test("ordinary directories cannot impersonate kernel resource enforcement", asyn
   const directory = await mkdtemp(join(tmpdir(), "pi-fake-cgroup-"));
 
   try {
+    await expect(
+      planCgroup({ ...native, cgroupRoot: join(directory, "missing") }, { memoryMiB: 256 }),
+    ).rejects.toThrow("delegated cgroup v2 subtree");
     await expect(planCgroup({ ...native, cgroupRoot: directory }, { pids: 64 })).rejects.toThrow(
       "not a cgroup v2",
     );

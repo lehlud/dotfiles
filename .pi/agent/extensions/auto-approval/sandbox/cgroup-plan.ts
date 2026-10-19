@@ -49,13 +49,10 @@ export async function planCgroup(
 
   if (config.backend !== "bwrap" || !Object.keys(controls).length) return undefined;
 
-  if (!config.cgroupRoot)
-    throw new Error(
-      "Bwrap aggregate limits require a delegated cgroup v2 subtree: configure sandbox.cgroupRoot in auto-approval.device.json outside Pi. Required limits cannot be dropped.",
-    );
+  const rootPath = config.cgroupRoot ?? "/sys/fs/cgroup/pi-actions";
 
   try {
-    const root = await realpath(config.cgroupRoot);
+    const root = await realpath(rootPath);
     const info = await stat(root);
 
     if (
@@ -90,7 +87,7 @@ export async function planCgroup(
     return { root, device: info.dev, inode: info.ino, controls };
   } catch (error) {
     throw new Error(
-      `Bwrap cgroup delegation unavailable at ${config.cgroupRoot}; repair delegation outside Pi, not by removing required limits. ${String(error)}`,
+      `Bwrap aggregate limits require a delegated cgroup v2 subtree, unavailable at ${rootPath}. Prepare Lubox with --bwrap --cgroup-limits, or configure sandbox.cgroupRoot for an existing operator-provided delegation. Required limits cannot be dropped. ${String(error)}`,
       { cause: error },
     );
   }

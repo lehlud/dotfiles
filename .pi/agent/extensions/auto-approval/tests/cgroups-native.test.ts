@@ -6,13 +6,14 @@ import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { executeIsolated, validateWorkspace, type SandboxConfig } from "../isolation.ts";
 import { createCgroupScope } from "../sandbox/cgroup-scope.ts";
+import { planCgroup } from "../sandbox/cgroup-plan.ts";
 import type { Request } from "../../shared/contracts/action.ts";
 
 const root = process.env.PI_CGROUP_TEST_ROOT;
 const native = root ? test : test.skip;
 let fixture: string;
 let project: string;
-let config: SandboxConfig;
+let config: Extract<SandboxConfig, { backend: "bwrap" }>;
 
 beforeAll(async () => {
   if (!root) return;
@@ -40,7 +41,6 @@ beforeAll(async () => {
     backend: "bwrap",
     executable: "/usr/bin/bwrap",
     runnerExecutable: runner,
-    cgroupRoot: root,
   };
 });
 
@@ -72,6 +72,23 @@ async function waitFor(check: () => Promise<boolean>) {
 
   throw new Error("Timed out waiting for bounded cgroup fixture");
 }
+
+native(
+  "Lubox delegation is discovered without configuration; explicit overrides never fall back",
+  async () => {
+    const limits = { memoryMiB: 256, cpus: 1, pids: 64 };
+    const discovered = await planCgroup(config, limits);
+
+    expect(discovered?.root).toBe(root);
+    expect(await planCgroup({ ...config, cgroupRoot: root }, limits)).toEqual(discovered);
+    await expect(
+      planCgroup({ ...config, cgroupRoot: join(fixture, "missing-cgroup") }, limits),
+    ).rejects.toThrow("delegated cgroup v2 subtree");
+    await expect(planCgroup({ ...config, cgroupRoot: project }, limits)).rejects.toThrow(
+      "not a cgroup v2",
+    );
+  },
+);
 
 native(
   "limits are installed before payload execution and controller mounts stay hidden",
