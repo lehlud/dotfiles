@@ -9,6 +9,8 @@ import type { GitConfigReader } from "../git-command.ts";
 import { temporaryMountpoints, cleanTemporaryMountpoints } from "./temporary-mounts.ts";
 import { sandboxArguments } from "./arguments.ts";
 import type { SandboxConfig, Workspace } from "./types.ts";
+import { createCgroupScope, type CgroupScope } from "./cgroup-scope.ts";
+import { assertCgroupsHidden } from "./cgroup-boundary.ts";
 
 /** Both backends are mandatory isolation. A launch failure never executes on the host. */
 export async function executeIsolated(
@@ -21,6 +23,43 @@ export async function executeIsolated(
 ): Promise<AgentToolResult<any>> {
   signal?.throwIfAborted();
 
+  await assertCgroupsHidden(workspace);
+
+  const scope = await createCgroupScope(config, workspace, request.sandbox);
+
+  try {
+    signal?.throwIfAborted();
+
+    return await executeCommand(
+      request,
+      workspace,
+      config,
+      signal,
+      credentialExecution,
+      gitConfigReader,
+      scope,
+    );
+  } catch (error) {
+    if (scope && (await scope.memoryKilled()))
+      throw new Error("Isolated action exceeded its aggregate cgroup memory limit", {
+        cause: error,
+      });
+
+    throw error;
+  } finally {
+    await scope?.dispose();
+  }
+}
+
+async function executeCommand(
+  request: Request,
+  workspace: Workspace,
+  config: SandboxConfig,
+  signal: AbortSignal | undefined,
+  credentialExecution: CredentialExecution | undefined,
+  gitConfigReader: GitConfigReader | undefined,
+  scope: CgroupScope,
+): Promise<AgentToolResult<any>> {
   const input = JSON.stringify({
     ...request,
     ...(credentialExecution ? { credentialExecution } : {}),
@@ -34,9 +73,12 @@ export async function executeIsolated(
   const executable = native ? config.executable : config.dockerExecutable;
   // Bind mount scaffolding must not survive an action-specific access grant.
   const mountpoints = await temporaryMountpoints(workspace);
-  const child = spawn(executable, sandboxArguments(workspace, config, name, request.sandbox), {
+  const args = sandboxArguments(workspace, config, name, request.sandbox);
+  const launch = scope?.launch(executable, args) ?? { executable, args };
+  const child = spawn(launch.executable, launch.args, {
     stdio: ["pipe", "pipe", "pipe"],
     detached: native,
+    ...(scope ? { env: { PATH: "/usr/bin:/bin", LANG: "C.UTF-8" } } : {}),
   });
   const output = new BoundedOutput(request.sandbox?.limits?.maxOutputBytes ?? 16 * 1024 * 1024);
   const diagnosticDecoder = new StringDecoder("utf8");
@@ -46,7 +88,9 @@ export async function executeIsolated(
   const remove = () => {
     if (!cleanup)
       cleanup = native
-        ? Promise.resolve().then(() => {
+        ? Promise.resolve().then(async () => {
+            await scope?.kill();
+
             if (child.pid) {
               try {
                 process.kill(-child.pid, "SIGKILL");
@@ -67,7 +111,7 @@ export async function executeIsolated(
 
   const stop = (reason: string) => {
     failure ??= new Error(reason);
-    void remove();
+    void remove().catch(() => {});
     child.kill("SIGTERM");
   };
 

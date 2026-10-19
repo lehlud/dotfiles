@@ -57,7 +57,7 @@ Supported dimensions:
 - `network`: `"none"` or `"host"`. Host networking also reaches local services. The exact command and possible data transfers are reviewed.
 - `environment`: explicit literal values. Host environment variables and secrets are not inherited automatically.
 - `executableSearchPaths`: additional absolute tool directories, mounted read-only and added to the search path.
-- `limits`: `executionTimeoutMs` and `maxOutputBytes`; Docker also supports `memoryMiB`, `cpus` and `pids`. Persistent session `/tmp` is filesystem-backed and cannot enforce `tmpBytes`; such requests are rejected. `tmpBytes` remains available for individual executor calls using ephemeral tmpfs. Native bwrap cgroup limits are not implemented and are rejected with a specific error.
+- `limits`: `executionTimeoutMs` and `maxOutputBytes`; Docker and properly delegated native bwrap also support `memoryMiB`, `cpus` and `pids`. Persistent session `/tmp` is filesystem-backed and cannot enforce `tmpBytes`; such requests are rejected. `tmpBytes` remains available for individual executor calls using ephemeral tmpfs. Native aggregate limits require a configured writable cgroup v2 delegation; missing delegation fails closed.
 
 Necessary `nvm install` downloads, `npm install` project dependencies and `npm audit` registry queries should be approved when they match the user task. Review considers concrete destinations, data transfers and effects. The theoretical reachability of other hosts or local services through `network: host` is insufficient by itself to deny an action; the backend provides no domain allowlist. Unnecessary networking, credential uploads and unrelated local-service access remain grounds for denial. Every call is reviewed separately.
 
@@ -356,7 +356,7 @@ Each Pi session receives its own writable `/tmp`. Files and scripts remain avail
 
 On exit, extension reload or replacement with a new, resumed or forked session, `session_shutdown` deletes the entire private `/tmp` after the running action finishes. The next session receives a new empty directory. A cancelled session switch does not trigger cleanup. Forced process termination such as `SIGKILL` cannot run a shutdown handler.
 
-Cancellation terminates the sandbox process; descendants cannot outlive the action. Output and runtime are bounded. Docker-specific memory, CPU and PID limits apply only to Docker; bwrap does not configure equivalent cgroup limits.
+Cancellation terminates the sandbox process; descendants cannot outlive the action. Output and runtime are bounded. Native bwrap uses one cgroup per limited action; Docker uses container resource controls. Missing controllers or delegation never silently remove requested limits.
 
 After `runner.ts` or dependency changes, restart Pi through the launcher or run `bun bootstrap.ts` outside Pi. Custom executor paths remain manually managed. Reviewer selection is configured through `auto-approval.json`. Extension code changes require a Pi restart.
 
@@ -367,6 +367,9 @@ The existing Docker backend remains available. Set `sandbox.backend: "docker"` a
 The backend is selected explicitly. Startup failure never executes the action on the host or automatically tries another backend.
 
 ## Review and audit
+
+For native aggregate CPU/memory/PID enforcement and safe Lubox preparation, see
+[Native aggregate resource limits](CGROUPS.md).
 
 For external actions, every working model uses only `approved_action` with `tool`, unchanged Pi `arguments`, `goal` and `justification`. Operations include `read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls`, `websearch`, `webfetch`, `writing_check`, argv-based `git` and `credential_exec`. Web operations request networking for precisely that call before review; the fixed worker command appears in the review plan. `webfetch` returns only cleaned page text to the model, while approval stays in result details and the activity log.
 
@@ -387,16 +390,16 @@ not merely writing app-side secure-storage code. An explicit user restriction on
 feature still applies. Clarification questions are for genuinely missing decisions, not repeated
 confirmation of existing authorization.
 
-`bun run eval:steering --denial-context-only` checks nine synthetic cases with the configured
+`bun run eval:steering --denial-context-only` checks twelve synthetic cases with the configured
 reviewer: new-test formatting after a scope denial, historical-write separation, app/host Keychain
-boundaries, continuing explicit restrictions and unsafe operations. It requires existing reviewer
+boundaries, continuing explicit restrictions unsafe operations, explicit negative tests and obvious unintended errors. It requires existing reviewer
 authentication and executes none of the proposed actions. Offline tests verify evidence transport,
 chronology, isolation metadata and that historical command bodies stay omitted; they cannot
 establish how a live model will decide.
 
 For explanation language, reviewers separately receive the latest actual user prompt as `latestUserPrompt`. This includes the objective entered through `/goal`; later user prompts supersede it as the language reference. Action and goal reviewers must use the operator's own instruction language, excluding foreign-language logs, quotations, older explanations and model text.
 
-Review evaluates authorization and security risks. For newly authored or materially reworded public prose, it also applies local, language-independent editorial rules. `writing_check` assesses the exact draft; ordinary operator replies and code/layout-only changes remain exempt. See [Public Writing](../public-writing/README.md). A requested source change normally authorizes appropriate tests, documentation and local checks. Bounded edits and fully visible Python/shell changes do not require reading every affected file in full first. Possible coding mistakes, incorrect test assumptions or preferred work order alone are not grounds for denial. Additional information is needed when a concrete risk cannot otherwise be assessed. Secret access, unrelated changes, unjustified broad deletion and interference with the approval gate remain prohibited.
+Review evaluates authorization and security risks. It does not enforce implementation preferences, coding workflow or public-prose style. Directly evident unintended errors must be identified precisely; deliberate negative fixtures and intermediate refactoring are legitimate. The separate `writing_check` service assesses an explicitly submitted draft against local editorial rules; these rules never gate ordinary writes/edits/commands. See [Public Writing](../public-writing/README.md). A requested source change normally authorizes appropriate tests, documentation and local checks. Bounded edits and fully visible Python/shell changes do not require reading every affected file in full first. Possible coding mistakes, incorrect test assumptions or preferred work order alone are not grounds for denial. Additional information is needed when a concrete risk cannot otherwise be assessed. Secret access, unrelated changes, unjustified broad deletion and interference with the approval gate remain prohibited.
 
 For OpenAI Responses and Chat Completions, a JSON schema enforces the three verdict fields and current request ID. Other providers use strictly validated JSON text. Invalid JSON, wrong fields, a foreign request ID and empty reasons produce distinct failures and block execution.
 

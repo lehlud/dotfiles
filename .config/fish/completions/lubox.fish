@@ -49,6 +49,7 @@ complete -c lubox -f -n '__fish_lubox_using_command create' -l image -r -d 'Base
 complete -c lubox -f -n '__fish_lubox_using_command create' -l no-host-exec -d 'Disable host-exec bridge'
 complete -c lubox -f -n '__fish_lubox_using_command create' -l rebuild -d 'Recreate existing container'
 complete -c lubox -f -n '__fish_lubox_using_command create' -l bwrap -d 'Allow unprivileged bubblewrap'
+complete -c lubox -f -n '__fish_lubox_using_command create' -l cgroup-limits -d 'Delegate per-action resource limits (Podman and bwrap)'
 
 complete -c lubox -f -n '__fish_lubox_using_command enter' -l xquartz -d 'Enable XQuartz forwarding'
 

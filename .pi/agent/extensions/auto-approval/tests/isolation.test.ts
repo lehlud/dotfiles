@@ -487,7 +487,7 @@ nativeTest(
     ).rejects.toThrow("whole home");
     await expect(
       validateWorkspace(project, native, [], { limits: { memoryMiB: 2048 } }),
-    ).rejects.toThrow("Docker backend");
+    ).rejects.toThrow("delegated cgroup v2 subtree");
 
     const writable = join(project, "write-alias.txt");
 

@@ -8,6 +8,8 @@ import { assertWorkspaceBoundary } from "./boundary.ts";
 import { assertToolHost } from "./tool-host.ts";
 import { within, backendPaths } from "./paths.ts";
 import type { SandboxConfig, Workspace } from "./types.ts";
+import { planCgroup } from "./cgroup-plan.ts";
+import { assertCgroupsHidden } from "./cgroup-boundary.ts";
 
 /** A home-level dotfiles repository must never enlarge an unrelated directory. */
 export async function detectWorkspace(
@@ -112,17 +114,7 @@ export async function validateWorkspace(
 
   let bindings = await projectBindings(workspace, config, protectedRoots, mode);
 
-  if (
-    config.backend === "bwrap" &&
-    request?.limits &&
-    [request.limits.memoryMiB, request.limits.cpus, request.limits.pids].some(
-      (value) => value !== undefined,
-    )
-  ) {
-    throw new Error(
-      "Memory, CPU and PID cgroup limits require the Docker backend; bwrap supports executionTimeoutMs, maxOutputBytes and tmpBytes.",
-    );
-  }
+  const cgroup = await planCgroup(config, request?.limits);
 
   const access = await additionalGrants(bindings, request, temporaryDirectory, protectedRoots);
 
@@ -141,8 +133,10 @@ export async function validateWorkspace(
     masked,
     ...(localTools.length ? { localTools } : {}),
     ...(temporaryDirectory ? { temporaryDirectory } : {}),
+    ...(cgroup ? { cgroup } : {}),
   };
 
+  await assertCgroupsHidden(plan);
   await assertWorkspaceBoundary(plan, protectedRoots, config, writable);
 
   return plan;

@@ -56,5 +56,13 @@ export function describeSandbox(
     },
     requested: request.sandbox ?? {},
     backend: config.sandbox.backend ?? "docker",
+    resourceEnforcement: workspace.cgroup
+      ? {
+          backend: "cgroup-v2",
+          scope: "one action and all descendants",
+          controls: workspace.cgroup.controls,
+          cgroupFilesystemExposed: false,
+        }
+      : undefined,
   };
 }

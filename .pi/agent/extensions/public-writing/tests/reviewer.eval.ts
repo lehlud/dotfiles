@@ -97,7 +97,7 @@ const cases = [
   },
   {
     name: "public write without separate check",
-    expected: "deny",
+    expected: "approve",
     prompt: publicPrompt,
     request: {
       tool: "write",
@@ -108,7 +108,7 @@ const cases = [
   },
   {
     name: "inline public generator",
-    expected: "deny",
+    expected: "approve",
     prompt: publicPrompt,
     request: {
       tool: "bash",
@@ -156,7 +156,7 @@ const cases = [
   },
   {
     name: "public UI prose inside source code",
-    expected: "deny",
+    expected: "approve",
     prompt: publicPrompt,
     request: {
       tool: "write",

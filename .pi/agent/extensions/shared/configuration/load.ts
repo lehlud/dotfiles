@@ -72,9 +72,10 @@ export async function resolveConfig(
         paths.runnerExecutable ??
         join(runtime.home ?? homedir(), ".local", "cache", "pi-auto-approval", "executor"),
       ...(paths.workspaceViews ? { workspaceViews: paths.workspaceViews } : {}),
+      ...(paths.cgroupRoot ? { cgroupRoot: paths.cgroupRoot } : {}),
     };
   } else {
-    if (paths.executable || paths.runnerExecutable || paths.workspaceViews)
+    if (paths.executable || paths.runnerExecutable || paths.workspaceViews || paths.cgroupRoot)
       throw new Error(
         "bwrap paths and workspaceViews are incompatible with the configured Docker backend",
       );

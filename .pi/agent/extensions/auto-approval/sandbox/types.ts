@@ -1,6 +1,7 @@
 import type { Config } from "../../shared/configuration/schemas.ts";
 import type { LocalTool } from "../local-tools.ts";
 import type { WebRuntime } from "../../web-research/runtime.ts";
+import type { CgroupPlan } from "./cgroup-plan.ts";
 
 export type SandboxConfig = Config["sandbox"];
 
@@ -15,5 +16,6 @@ export type Workspace = {
   credentialExecutable?: string;
   gitSnapshots?: { source: string; target: string }[];
   temporaryDirectory?: string;
+  cgroup?: CgroupPlan;
   masked: { path: string; directory: boolean }[];
 };

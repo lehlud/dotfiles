@@ -4,7 +4,7 @@ import type { Request } from "../shared/contracts/action.ts";
 import type { Config } from "../shared/configuration/schemas.ts";
 import type { PreparedPrompts } from "../shared/review/compression.ts";
 import { requestVerdict } from "../shared/review/client.ts";
-import { REVIEW_SYSTEM } from "./review-policy.ts";
+import { REVIEW_SYSTEM, WRITING_REVIEW_SYSTEM } from "./review-policy.ts";
 
 type VerdictArguments = Parameters<typeof requestVerdict>;
 
@@ -15,10 +15,16 @@ export function reviewWithFallback(
   envelope: VerdictArguments[2],
   observer: VerdictArguments[3],
   signal?: AbortSignal,
-  systemPrompt = REVIEW_SYSTEM,
+  systemPrompt?: string,
   availability?: VerdictArguments[6],
 ) {
-  return requestVerdict(config, registry, envelope, observer, signal, systemPrompt, availability);
+  const policy =
+    systemPrompt ??
+    (JSON.parse(envelope.text).action?.tool === "writing_check"
+      ? WRITING_REVIEW_SYSTEM
+      : REVIEW_SYSTEM);
+
+  return requestVerdict(config, registry, envelope, observer, signal, policy, availability);
 }
 
 export function buildReview(

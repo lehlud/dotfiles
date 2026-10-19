@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { registerGoals } from "../../conversations/goals.ts";
 import { buildGoalReview, GOAL_REVIEW_SYSTEM } from "../../conversations/goal-review.ts";
 import { buildReview } from "../review.ts";
-import { REVIEW_SYSTEM } from "../review-policy.ts";
+import { REVIEW_SYSTEM, WRITING_REVIEW_SYSTEM } from "../review-policy.ts";
 import { type Config } from "../../shared/configuration/schemas.ts";
 import { WRITING_RULEBOOK } from "../../public-writing/rules.ts";
 import { FooterComponent, initTheme } from "@earendil-works/pi-coding-agent";
@@ -156,7 +156,8 @@ test("footer summaries preserve Unicode, bound long input and clear across sessi
 });
 
 test("goal completion stays independent of the public-writing rulebook", () => {
-  expect(REVIEW_SYSTEM).toContain(WRITING_RULEBOOK);
+  expect(REVIEW_SYSTEM).not.toContain(WRITING_RULEBOOK);
+  expect(WRITING_REVIEW_SYSTEM).toContain(WRITING_RULEBOOK);
   expect(GOAL_REVIEW_SYSTEM).not.toContain(WRITING_RULEBOOK);
   expect(GOAL_REVIEW_SYSTEM).not.toContain("writing_check");
 });

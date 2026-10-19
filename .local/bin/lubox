@@ -1498,6 +1498,42 @@ class SocketForwardPlan:
 BWRAP_PROFILE_SHA256 = "896bef499d0251ad753116a1fad04b5b049a4c86bdc7c0f4f49c8edf1cd9735a"
 
 
+def command_container_cgroups(uid: int, gid: int) -> int:
+    """Delegate only this new container's empty action subtree, never the host hierarchy."""
+    root = pathlib.Path("/sys/fs/cgroup")
+    actions = root / "pi-actions"
+    if os.geteuid() != 0 or uid <= 0 or gid < 0:
+        die("lubox: cgroup setup requires container root and a non-root target user")
+    if not pathlib.Path("/run/.containerenv").exists():
+        die("lubox: cgroup setup is supported only inside a Podman container")
+    if actions.exists():
+        die("lubox: refusing to modify existing cgroup delegation; restart from the host if setup failed")
+    if pathlib.Path("/proc/1/cgroup").read_text().strip() != "0::/":
+        die("lubox: refusing cgroup setup outside a fresh private container namespace")
+    controllers = set((root / "cgroup.controllers").read_text().split())
+    if not {"cpu", "memory", "pids"}.issubset(controllers):
+        die("lubox: host must delegate the cpu, memory and pids cgroup v2 controllers")
+
+    actions.mkdir(mode=0o700)
+    # Keep the trusted runtime in a sibling of each action, within the delegation.
+    # Migration then needs only the delegated membership file, never the container root.
+    runtime = actions / "lubox-runtime"
+    runtime.mkdir()
+    for pid in (root / "cgroup.procs").read_text().split():
+        try:
+            (runtime / "cgroup.procs").write_text(pid)
+        except ProcessLookupError:
+            pass
+
+    (root / "cgroup.subtree_control").write_text("+cpu +memory +pids")
+    (actions / "cgroup.subtree_control").write_text("+cpu +memory +pids")
+    for name in ("", "cgroup.procs", "cgroup.threads", "cgroup.subtree_control"):
+        os.chown(actions / name, uid, gid)
+
+    print(f"cgroup delegation ready: {actions} (uid={uid}, gid={gid})")
+    return 0
+
+
 def bwrap_container_config(info: Dict[str, Any], image: str, profile: Dict[str, Any]) -> Dict[str, Any]:
     """Preserve inspect configuration, changing only the bwrap prerequisites."""
     config = json.loads(json.dumps(info.get("Config") or {}))
@@ -1567,8 +1603,18 @@ class ContainerManager:
         self.paths = paths
         self._locale_cache: Dict[str, List[str]] = {}
 
-    def create(self, name: str, base_image: str, no_host_exec: bool, rebuild: bool, bwrap: bool = False) -> None:
+    def create(
+        self,
+        name: str,
+        base_image: str,
+        no_host_exec: bool,
+        rebuild: bool,
+        bwrap: bool = False,
+        cgroup_limits: bool = False,
+    ) -> None:
         validate_box_name(name)
+        if cgroup_limits and (self.engine.name != "podman" or not bwrap):
+            die("lubox: --cgroup-limits requires Podman and --bwrap; create a new box rather than reconfiguring a running one")
         if bwrap:
             if self.engine.name == "docker":
                 self.require_bwrap_profile()
@@ -1601,7 +1647,10 @@ class ContainerManager:
             shell_path = self.image_shell_path(tag, progress)
 
             progress.begin("create container")
-            args = self.create_args(name, tag, base_image, host_exec, mount_dir, shell_path, bwrap=bwrap)
+            args = self.create_args(
+                name, tag, base_image, host_exec, mount_dir, shell_path,
+                bwrap=bwrap, cgroup_limits=cgroup_limits,
+            )
             self.engine.run_progress(args, progress)
             if bwrap and self.engine.name == "docker":
                 # Docker CLI cannot set MaskedPaths/ReadonlyPaths separately.
@@ -1641,6 +1690,7 @@ class ContainerManager:
         mount_dir: pathlib.Path,
         shell_path: str,
         bwrap: bool = False,
+        cgroup_limits: bool = False,
     ) -> List[str]:
         cname = container_name(name)
         sockets = self.socket_forward_plan(host_exec)
@@ -1648,6 +1698,13 @@ class ContainerManager:
             self.seed_socket_forward_config(name, mount_dir, sockets.groups, sockets.gpg_home)
         self.warn_unforwarded_sockets(host_exec, sockets)
         args = ["create", "--name", cname, "--hostname", socket.gethostname()]
+        if cgroup_limits:
+            if self.engine.name != "podman" or not bwrap:
+                die("lubox: --cgroup-limits requires Podman and --bwrap")
+            args += [
+                "--systemd=always", "--cgroupns=private",
+                "--label", f"{LABEL_PREFIX}.cgroup_limits=true",
+            ]
         # Podman gives explicitly added capabilities to non-root users too.
         # Unprivileged bwrap refuses to run with these inherited capabilities.
         if self.engine.name != "podman" or not bwrap:
@@ -2313,6 +2370,8 @@ class ContainerManager:
             self.engine.run(["start", cname], capture=True)
             running = True
         self.sync_container_lubox(cname, name)
+        if not self.running_from_info(info):
+            self.prepare_cgroup_limits(name, info)
         if start_server and host_exec:
             self.ensure_hostexec_server(name, host_exec, ssh_agent, gpg_agent)
             if start_socket_proxies:
@@ -2320,6 +2379,18 @@ class ContainerManager:
         if announce:
             print(f"started {cname}")
         return info
+
+    def prepare_cgroup_limits(self, name: str, info: Dict[str, Any]) -> None:
+        if self.labels_from_info(info).get(f"{LABEL_PREFIX}.cgroup_limits") != "true":
+            return
+        if self.engine.name != "podman":
+            die("lubox: cgroup delegation requires Podman")
+
+        self.engine.run([
+            "exec", "--user", "0:0", container_name(name),
+            "/usr/local/bin/lubox", "__container-cgroups",
+            str(self.ident.uid), str(self.ident.gid),
+        ], capture=True)
 
     def script_sync_stamp(self) -> str:
         script_path = pathlib.Path(__file__).resolve()
@@ -2567,6 +2638,7 @@ class ContainerManager:
         if not self.running_from_info(info):
             self.engine.run(["start", cname], capture=True)
             self.sync_container_lubox(cname, name)
+            self.prepare_cgroup_limits(name, info)
         if not host_exec:
             return
         self.restart_hostexec_server_from_config(name, info)
@@ -5363,6 +5435,7 @@ destroy keeps lubox/NAME:latest by default; destroy --force also removes it.
     p.add_argument("--no-host-exec", action="store_true", help="disable host-exec bridge")
     p.add_argument("--rebuild", action="store_true", help="recreate existing container and rebuild image")
     p.add_argument("--bwrap", action="store_true", help="allow unprivileged bubblewrap (Podman: relax /proc restrictions; Docker: also use a narrow seccomp profile)")
+    p.add_argument("--cgroup-limits", action="store_true", help="delegate per-action CPU/memory/PID controls in a new Podman --bwrap box")
 
     p = sub.add_parser("reconfigure", help="migrate a stopped container without losing its writable filesystem")
     add_engine(p)
@@ -5464,6 +5537,10 @@ destroy keeps lubox/NAME:latest by default; destroy --force also removes it.
     p.add_argument("--log-file", required=True)
     sub.add_parser("__container-init-check", help=argparse.SUPPRESS)
     hidden_names.append("__container-init-check")
+    p = sub.add_parser("__container-cgroups", help=argparse.SUPPRESS)
+    hidden_names.append("__container-cgroups")
+    p.add_argument("uid", type=int)
+    p.add_argument("gid", type=int)
     sub.add_parser("__install-xdg-open", help=argparse.SUPPRESS)
     hidden_names.append("__install-xdg-open")
     p = sub.add_parser("__fish-complete", help=argparse.SUPPRESS)
@@ -5482,6 +5559,8 @@ def dispatch(args: argparse.Namespace) -> int:
         return HostExecClient([], probe=True).run()
     if args.command == "__container-init-check":
         return command_container_init_check()
+    if args.command == "__container-cgroups":
+        return command_container_cgroups(args.uid, args.gid)
     if args.command == "__install-xdg-open":
         return command_install_xdg_open()
     if args.command == "__hostexec-server":
@@ -5502,7 +5581,10 @@ def dispatch(args: argparse.Namespace) -> int:
         manager.print_list()
         return 0
     if args.command == "create":
-        manager.create(args.name, args.image, args.no_host_exec, args.rebuild, bwrap=args.bwrap)
+        manager.create(
+            args.name, args.image, args.no_host_exec, args.rebuild,
+            bwrap=args.bwrap, cgroup_limits=args.cgroup_limits,
+        )
         return 0
     if args.command == "reconfigure":
         manager.reconfigure_bwrap(args.name)

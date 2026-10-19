@@ -9,6 +9,7 @@ import { expiredTokenResponse } from "./provider-error-fixtures.ts";
 import { steeringReviewFixtures } from "./steering-review-fixtures.ts";
 import { taskContinuationReviewFixtures } from "./task-continuation-review-fixtures.ts";
 import { denialReviewFixtures } from "./denial-review-fixtures.ts";
+import { WRITING_RULEBOOK } from "../../public-writing/rules.ts";
 
 const primary = { provider: "openai", model: "gpt-6-luna", thinking: "medium" as const };
 const fallback = {
@@ -186,6 +187,46 @@ const registry: any = {
 };
 const run = (settings = config, signal?: AbortSignal, callbacks = observer) =>
   reviewWithFallback(settings, registry, envelope, callbacks, signal, undefined, availability);
+
+test("editorial rules apply to writing_check only, never ordinary file mutations", async () => {
+  const actions = [
+    { tool: "write", arguments: { path: "page.txt", content: "Not a tool. A revolution." } },
+    {
+      tool: "edit",
+      arguments: { path: "page.txt", oldText: "Old title", newText: "Not a tool. A revolution." },
+    },
+    { tool: "bash", arguments: { command: "printf 'Not a tool. A revolution.' > page.txt" } },
+    { tool: "writing_check", arguments: { text: "Not a tool. A revolution.", audience: "public" } },
+  ];
+
+  for (const action of actions) {
+    const request = buildReview(
+      {
+        ...action,
+        goal: "Implement the site",
+        justification: "Bounded project work",
+      },
+      [{ type: "message", message: { role: "user", content: "Build the site." } }],
+      config,
+      "/project",
+      [],
+    );
+
+    await reviewWithFallback(
+      config,
+      registry,
+      request,
+      observer,
+      undefined,
+      undefined,
+      availability,
+    );
+
+    const policy = calls.at(-1).context.systemPrompt;
+
+    expect(policy.includes(WRITING_RULEBOOK)).toBe(action.tool === "writing_check");
+  }
+});
 
 test("provider receives current formatter separately from historical writes and renewed authorization", async () => {
   for (const fixture of denialReviewFixtures.slice(0, 2)) {
@@ -577,7 +618,7 @@ test("the same action uses the same review policy regardless of coordination and
   expect(calls).toHaveLength(2);
   expect(calls[0].context.systemPrompt).toEqual(calls[1].context.systemPrompt);
   expect(calls[0].context.systemPrompt).toContain(
-    "The executable operation is action.tool with action.arguments",
+    "Assess the exact action.tool, action.arguments and sandbox access",
   );
   expect(calls[0].context.systemPrompt).toContain("alternative unreviewed execution routes");
 

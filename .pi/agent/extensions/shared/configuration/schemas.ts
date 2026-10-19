@@ -37,6 +37,7 @@ export const localConfigSchema = Type.Object(
         {
           executable: Type.Optional(absolutePath),
           runnerExecutable: Type.Optional(absolutePath),
+          cgroupRoot: Type.Optional(absolutePath),
           dockerExecutable: Type.Optional(absolutePath),
           workspaceViews: Type.Optional(
             Type.Array(
@@ -81,6 +82,7 @@ export const resolvedConfigSchema = Type.Object(
           backend: Type.Literal("bwrap"),
           executable: Type.String({ pattern: "^/", minLength: 1 }),
           runnerExecutable: Type.String({ pattern: "^/", minLength: 1 }),
+          cgroupRoot: Type.Optional(absolutePath),
           workspaceRoots: Type.Optional(
             Type.Array(Type.String({ pattern: "^/", minLength: 1 }), { maxItems: 20 }),
           ),
