@@ -646,18 +646,17 @@ describe("review policy", () => {
     ).toEqual([]);
   });
 
-  test("OpenAI verdict output is constrained to the exact nonce and schema without changing input", () => {
+  test("OpenAI verdict output uses a stable strict schema; nonce matching remains local", () => {
     const body = { model: "example", text: { verbosity: "low" }, input: ["original-context"] };
-    const result = constrainReviewPayload(
-      body,
-      { provider: "openai", api: "openai-responses" },
-      "nonce",
-    ) as any;
+    const result = constrainReviewPayload(body, {
+      provider: "openai",
+      api: "openai-responses",
+    }) as any;
 
     expect(result.input).toEqual(body.input);
     expect(result.text.verbosity).toBe("low");
     expect(result.text.format.strict).toBe(true);
-    expect(result.text.format.schema.properties.requestId.enum).toEqual(["nonce"]);
+    expect(result.text.format.schema.properties.requestId).toEqual({ type: "string" });
     expect(result.text.format.schema.properties.decision.enum).toEqual(["approve", "deny"]);
     expect(result.text.format.schema.properties.reason.description).toContain("latestUserPrompt");
     expect(result.text.format.schema.additionalProperties).toBe(false);
@@ -666,16 +665,13 @@ describe("review policy", () => {
     const chat = constrainReviewPayload(
       { messages: ["unchanged"] },
       { provider: "openai", api: "openai-completions" },
-      "nonce",
     ) as any;
 
-    expect(chat.response_format.json_schema.schema.properties.requestId.enum).toEqual(["nonce"]);
+    expect(chat.response_format.json_schema.schema.properties.requestId).toEqual({
+      type: "string",
+    });
     expect(
-      constrainReviewPayload(
-        body,
-        { provider: "replacement-provider", api: "openai-responses" },
-        "nonce",
-      ),
+      constrainReviewPayload(body, { provider: "replacement-provider", api: "openai-responses" }),
     ).toBeUndefined();
   });
 

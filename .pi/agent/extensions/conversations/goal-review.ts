@@ -39,7 +39,7 @@ export function buildGoalReview(
     operatorGoal: source === "operator" ? goal : undefined,
     prepared,
   });
-  const { action: _action, protectedPaths: _paths, ...data } = JSON.parse(base.text);
+  const { action: _action, protectedPaths: _paths, requestId, ...data } = JSON.parse(base.text);
   const start = goalId
     ? entries.findIndex(
         (entry) =>
@@ -95,6 +95,7 @@ export function buildGoalReview(
       .sort(([a], [b]) => a - b)
       .map(([index, text]) => ({ index, text })),
     omittedAssistantAnswers: answers.length - selected.size,
+    requestId,
   };
   const serialized = checkReviewSize(evidence);
 
@@ -102,6 +103,7 @@ export function buildGoalReview(
     requestId: base.requestId,
     fingerprint: createHash("sha256").update(serialized).digest("hex"),
     text: serialized,
+    cachePrefix: base.cachePrefix,
     promptSources: base.promptSources,
     compressionUsage: base.compressionUsage,
   };

@@ -43,7 +43,6 @@ export function textContent(content: unknown): string {
 export function constrainReviewPayload(
   payload: unknown,
   model: { provider: string; api?: string },
-  requestId: string,
 ): unknown | undefined {
   if (
     model.provider !== "openai" ||
@@ -64,7 +63,8 @@ export function constrainReviewPayload(
       additionalProperties: false,
       required: ["requestId", "decision", "reason"],
       properties: {
-        requestId: { type: "string", enum: [requestId] },
+        // parseVerdict binds the ID locally so this provider schema stays cacheable.
+        requestId: { type: "string" },
         decision: { type: "string", enum: ["approve", "deny"] },
         reason: {
           type: "string",

@@ -103,12 +103,12 @@ async function compressText(
   const ask = async (text: string, part: number, total: number) => {
     const requestId = randomUUID();
     const payload = {
-      requestId,
       latestUserPrompt: languageReference,
       latestUserLanguageReference: languageReference,
       originalPromptChunk: text,
       part,
       total,
+      requestId,
     };
 
     try {

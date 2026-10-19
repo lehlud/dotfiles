@@ -20,6 +20,7 @@ export type ReviewEnvelope = {
   requestId: string;
   fingerprint: string;
   text: string;
+  cachePrefix?: string;
   promptSources?: Map<string, string>;
   compressionUsage?: Usage;
 };

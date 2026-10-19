@@ -253,7 +253,7 @@ test("highest-priority success stops the chain and preserves request-bound outpu
 
   const payload = calls[0].options.onPayload({}, calls[0].model);
 
-  expect(payload.text.format.schema.properties.requestId.enum).toEqual([envelope.requestId]);
+  expect(payload.text.format.schema.properties.requestId).toEqual({ type: "string" });
 });
 
 test("explicit fallback is used for missing auth, missing models and unsupported thinking", async () => {

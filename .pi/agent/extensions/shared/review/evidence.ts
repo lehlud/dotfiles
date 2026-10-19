@@ -57,7 +57,6 @@ export function buildEvidence(
       compressed: prepared?.records[index].compressed ?? false,
       originalBytes: Buffer.byteLength(original),
       compressionVersion: prepared?.records[index].version,
-      cacheHit: prepared?.records[index].cacheHit ?? false,
     };
   });
 
@@ -83,16 +82,19 @@ export function buildEvidence(
       : {}),
   };
   const reviewedEvidence = reviewedReceipts(entries);
-  const core = {
+  const shared = {
     userPrompts,
     userPromptInfo,
     latestUserPrompt: userPrompts.at(-1),
     latestUserLanguageReference: reviewLanguageReference(originals.at(-1)!),
     operatorGoal,
     taskContext,
-    previousDenials: previousDenials(entries),
     cwd,
     protectedPaths,
+  };
+  const core = {
+    ...shared,
+    previousDenials: previousDenials(entries),
     action,
     sandboxPlan,
   };
@@ -138,7 +140,8 @@ export function buildEvidence(
   return {
     requestId,
     fingerprint: createHash("sha256").update(JSON.stringify(evidence)).digest("hex"),
-    text: checkReviewSize({ requestId, ...evidence }),
+    text: checkReviewSize({ ...evidence, requestId }),
+    cachePrefix: JSON.stringify(shared).slice(0, -1),
     promptSources,
     compressionUsage: prepared?.usage,
   };

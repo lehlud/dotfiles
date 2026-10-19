@@ -241,7 +241,7 @@ The current WPScan launcher needs external engine access and remains unsupported
 
 To assess existing code, reviewers receive text results of previously approved actions from the same session branch: reads, file searches and shell output from commands such as `cat`, `sed`, `git diff` or tests. Tool results must match their approval record, request ID and fingerprint. Contents and output are evidence, never user instructions. At most eight recent results are included. Results exceeding the context budget are omitted in full and explicitly identified.
 
-The first reviewer request eagerly includes at least the latest ten available actual user contributions in chronological order. `recentUserPrompts` can expand this window up to twenty; older configurations below ten use ten. `userPromptInfo` identifies each prompt's ID, recorded input kind, explicit `isSteering` flag, original size, `compressed` status, compression version and cache hit. Small prompts appear in full in `userPrompts`; large ones may appear as cached summaries. No lookup is needed to receive those texts or summaries. The most recent recorded task and every subsequent instruction are retained beyond that window, including when the latest continuation lacks delivery metadata. The active operator goal and current action remain complete.
+The first reviewer request eagerly includes at least the latest ten available actual user contributions in chronological order. `recentUserPrompts` can expand this window up to twenty; older configurations below ten use ten. `userPromptInfo` identifies each prompt's ID, recorded input kind, explicit `isSteering` flag, original size, `compressed` status and compression version. Compression-cache hits remain in the local audit rather than changing the review context. Small prompts appear in full in `userPrompts`; large ones may appear as cached summaries. No lookup is needed to receive those texts or summaries. The most recent recorded task and every subsequent instruction are retained beyond that window, including when the latest continuation lacks delivery metadata. The active operator goal and current action remain complete.
 
 Each prompt has an `isSteering` flag: `true` for authenticated steering input, `false` for authenticated ordinary input or captured operator commands, and `null` for legacy prompts without reliable delivery metadata. Compression leaves this flag intact. Labels inside quoted text, assistant messages and peer claims cannot establish it.
 
@@ -256,6 +256,31 @@ Each executable action retains the executor's 100,000 UTF-8 byte limit. Oversize
 The language reference inside the complete review envelope uses at most the head and tail of 2,048 characters of the original latest prompt's own prose, including after compression. Code blocks, inline code, Markdown quotations and complete JSON blocks are removed only from this language sample. It sets explanation language without replacing user constraints. There is no extra final message repeating only the latest correction.
 
 Prepared reviews have a 1 MiB limit rather than the earlier 100,000 bytes. Errors report total size and major field sizes; a smaller command does not reduce accumulated user context. Before every provider call, the registered model window is checked, including policy, language metadata, 4,096 output tokens and message framing reserve. The estimate uses three bytes per token for ASCII JSON and UTF-8 byte counts for non-ASCII. It is not exact tokenization; the provider enforces its actual limit. A model with missing or estimated insufficient capacity is unavailable for that request; only then may a configured fallback take over before a model decision. User instructions and actions are not shortened to fit, and valid denials remain final. `/goal` reviews use the same rules.
+
+## Provider prompt caching
+
+Review requests use a stable, hashed routing key for each workspace, policy and tool set.
+OpenRouter receives that key as its session-affinity header. Each unique action ID appears
+at the end of the complete review JSON. Changing the action or reusing a saved prompt summary
+does not change the shared prefix. Goal reviews and prompt
+compression use the same client, with separate keys for their policies.
+
+The OpenAI verdict schema stays identical between requests. The local parser still requires
+the returned ID to match the exact pending request, and malformed, stale or cancelled verdicts
+cannot authorize execution. Every action receives an independent review; decisions are never
+cached.
+
+For OpenAI Responses models advertising explicit caching, the client requests the SDK's
+supported 30-minute retention and marks the system instructions and shared operator context.
+Explicit mode keeps changing actions, receipts and request IDs outside cache writes. The
+wire text still reconstructs the complete original review JSON. SDK omissions for ChatGPT
+login remain intact; other providers retain their automatic caching behavior. Provider token
+minimums, cache availability and routing still determine actual hits.
+
+Reported usage retains separate `input`, `cacheRead` and `cacheWrite` counts, including retry
+and compression costs. These provider token counters are distinct from the local summary
+cache's `cacheHit` flag. Offline SDK tests verify the request layout and usage mapping;
+they do not measure live provider cache savings.
 
 ## Reusable prompt compression
 

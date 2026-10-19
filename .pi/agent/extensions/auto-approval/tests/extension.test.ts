@@ -728,9 +728,7 @@ test("approved action executes exactly its reviewed command and reports reviewer
 
   const payload = requested[0].options.onPayload({ input: "review-context" }, requested[0].model);
 
-  expect(payload.text.format.schema.properties.requestId.enum).toEqual([
-    requested[0].data.requestId,
-  ]);
+  expect(payload.text.format.schema.properties.requestId).toEqual({ type: "string" });
   expect(result.usage).toEqual(usage);
   expect(entries.at(-1).data.decision).toBe("approve");
 });

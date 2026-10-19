@@ -23,6 +23,7 @@ import {
   type AvailabilityNotice,
 } from "../providers/availability.ts";
 import { installProviderStreams, unavailableResponse } from "../providers/stream.ts";
+import { cacheReviewPayload, reviewCacheKey, reviewCacheRetention } from "./cache.ts";
 
 export type ReviewRegistry = Pick<ModelRegistry, "find" | "hasConfiguredAuth" | "streamSimple">;
 
@@ -171,10 +172,14 @@ async function requestReview(
             reasoning: candidate.thinking === "off" ? undefined : candidate.thinking,
             signal: reviewSignal,
             maxTokens: REVIEW_OUTPUT_TOKENS,
-            cacheRetention: "short",
-            sessionId: envelope.requestId,
+            cacheRetention: reviewCacheRetention(model),
+            sessionId: reviewCacheKey(envelope, context),
             onPayload: (payload, providerModel) =>
-              constrainReviewPayload(payload, providerModel, envelope.requestId),
+              cacheReviewPayload(
+                constrainReviewPayload(payload, providerModel) ?? payload,
+                providerModel,
+                envelope,
+              ),
           })
           .result();
 
