@@ -31,7 +31,7 @@ export function buildEvidence(
   } = {},
 ) {
   const { operatorGoal, prepared, action, protectedPaths, sandboxPlan } = options;
-  const selectedPrompts = selectedOperatorPrompts(entries, config.recentUserPrompts);
+  const selectedPrompts = selectedOperatorPrompts(entries, config.recentUserPrompts, operatorGoal);
   const originals = selectedPrompts.map((prompt) => prompt.text);
 
   if (!originals.length && operatorGoal) originals.push(operatorGoal);
@@ -83,12 +83,12 @@ export function buildEvidence(
   };
   const reviewedEvidence = reviewedReceipts(entries);
   const shared = {
+    operatorGoal,
+    taskContext,
     userPrompts,
     userPromptInfo,
     latestUserPrompt: userPrompts.at(-1),
     latestUserLanguageReference: reviewLanguageReference(originals.at(-1)!),
-    operatorGoal,
-    taskContext,
     cwd,
     protectedPaths,
   };

@@ -114,15 +114,26 @@ export function recordedTaskIndex(prompts: readonly OperatorPrompt[]): number {
   return referenced >= 0 ? referenced : prompts.findLastIndex((prompt) => prompt.kind === "task");
 }
 
-/** Eagerly retain ten recent inputs plus the recorded task and all subsequent instructions. */
+/** Retain recent inputs plus task/active-goal history, including every later constraint. */
 export function selectedOperatorPrompts(
   entries: readonly Entry[],
   limit: number,
+  operatorGoal?: string,
 ): OperatorPrompt[] {
   const prompts = operatorPromptRecords(entries);
   const selected = prompts.slice(-Math.max(MIN_RECENT_USER_PROMPTS, limit));
   const latest = selected.at(-1);
   let start = recordedTaskIndex(prompts);
+
+  if (operatorGoal) {
+    const goalIndex = prompts.findLastIndex(
+      (prompt) => prompt.kind === "operator-command" && prompt.text === operatorGoal,
+    );
+    // Legacy goal checkpoints may lack a captured command: keep their constraints conservatively.
+    const anchor = goalIndex < 0 ? 0 : goalIndex;
+
+    start = start < 0 ? anchor : Math.min(start, anchor);
+  }
 
   if (start < 0 && latest?.kind === "steering") {
     start = prompts.length - 1;
@@ -141,6 +152,10 @@ export function selectedOperatorPrompts(
   return prompts.filter((prompt) => retained.has(prompt));
 }
 
-export function operatorPrompts(entries: readonly Entry[], limit: number): string[] {
-  return selectedOperatorPrompts(entries, limit).map((prompt) => prompt.text);
+export function operatorPrompts(
+  entries: readonly Entry[],
+  limit: number,
+  operatorGoal?: string,
+): string[] {
+  return selectedOperatorPrompts(entries, limit, operatorGoal).map((prompt) => prompt.text);
 }

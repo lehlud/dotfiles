@@ -100,6 +100,7 @@ class ActionRun {
     this.phase = "prompt compression";
 
     const branch = this.ctx.sessionManager.getBranch();
+    const operatorGoal = sessionServices(this.ctx).operatorGoal?.();
     const prepared = await preparePromptContext(
       branch,
       config,
@@ -129,7 +130,7 @@ class ActionRun {
           this.pi.appendEntry("auto-approval-compressor-failure", { toolCallId: this.id, attempt }),
       },
       this.signal,
-      sessionServices(this.ctx).operatorGoal?.(),
+      operatorGoal,
     );
 
     this.phase = "review context preparation";
@@ -144,7 +145,7 @@ class ActionRun {
         "[Additional operator-owned credential sources and executables: privately protected]",
       ],
       sandboxPlan,
-      sessionServices(this.ctx).operatorGoal?.(),
+      operatorGoal,
       prepared,
     );
 
@@ -160,6 +161,7 @@ class ActionRun {
       sandboxPlan,
       requestId: review.requestId,
       fingerprint: review.fingerprint,
+      operatorGoal,
     };
     this.phase = "independent review";
     this.display.reviewer = config.reviewers.map(reviewerLabel).join(" → ");

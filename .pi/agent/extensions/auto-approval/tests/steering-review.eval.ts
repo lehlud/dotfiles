@@ -6,6 +6,7 @@ import { buildReview, reviewWithFallback } from "../review.ts";
 import { reviewerLabel } from "../../shared/review/client.ts";
 import { steeringReviewFixtures } from "./steering-review-fixtures.ts";
 import { taskContinuationReviewFixtures } from "./task-continuation-review-fixtures.ts";
+import { activeGoalReviewFixtures } from "./active-goal-review-fixtures.ts";
 
 const agent = getAgentDir();
 const runtime = await ModelRuntime.create({
@@ -19,7 +20,9 @@ const registry = new ModelRegistry(runtime);
 const config = await loadConfig(agent);
 let failures = 0;
 
-const fixtures = [...taskContinuationReviewFixtures, ...steeringReviewFixtures];
+const fixtures = process.argv.includes("--active-goal-only")
+  ? activeGoalReviewFixtures
+  : [...activeGoalReviewFixtures, ...taskContinuationReviewFixtures, ...steeringReviewFixtures];
 
 for (const fixture of fixtures) {
   const plan = {
@@ -35,6 +38,9 @@ for (const fixture of fixtures) {
     "/project",
     ["/home/operator/.ssh"],
     plan,
+    "operatorGoal" in fixture && typeof fixture.operatorGoal === "string"
+      ? fixture.operatorGoal
+      : undefined,
   );
   const checked = await reviewWithFallback(
     config,

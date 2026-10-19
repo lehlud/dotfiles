@@ -4,6 +4,7 @@ export type ActionAudit = {
   requestId?: string;
   fingerprint?: string;
   toolCallId?: string;
+  operatorGoal?: string;
   multiplexAgent?: string;
   cwd?: unknown;
   action?: { tool: string; arguments: Record<string, unknown> };

@@ -561,3 +561,40 @@ test("a malformed private cache is regenerated without changing the original pro
   expect(calls).toHaveLength(1);
   expect(replacement.records[0].original).toBe(original);
 });
+
+test("compression and review retain the same active-goal history beyond ten refinements", async () => {
+  const goal = "Implement full Flutter/Webapp parity";
+  const entries = [
+    { type: "custom", customType: "auto-approval-operator-prompt", data: { text: goal } },
+    { type: "message", message: { role: "user", content: "Never upload project source." } },
+    ...Array.from({ length: 12 }, (_, index) => ({
+      type: "message",
+      message: { role: "user", content: `Refinement ${index}` },
+    })),
+  ];
+  const prepared = await preparePromptContext(
+    entries,
+    config,
+    registry,
+    join(root, "goal-history"),
+    {},
+    undefined,
+    goal,
+  );
+  const envelope = buildReview(
+    proposed,
+    entries,
+    config,
+    "/project",
+    [],
+    undefined,
+    goal,
+    prepared,
+  );
+  const data = JSON.parse(envelope.text);
+
+  expect(prepared.records).toHaveLength(14);
+  expect(data.userPrompts).toHaveLength(14);
+  expect(data.userPrompts).toContain("Never upload project source.");
+  expect(calls).toHaveLength(0);
+});

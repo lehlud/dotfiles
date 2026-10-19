@@ -95,6 +95,24 @@ try {
       undefined as any,
     );
 
+    // Bash returns the same successful output twice. Keep its metadata without charging
+    // the bounded transport twice for an identical text payload.
+    const structured = result.structuredContent;
+
+    if (
+      name === "bash" &&
+      structured &&
+      typeof structured === "object" &&
+      "output" in structured &&
+      result.content.length === 1 &&
+      result.content[0].type === "text" &&
+      structured.output === result.content[0].text
+    ) {
+      const { output: _duplicate, ...metadata } = structured;
+
+      result = { ...result, structuredContent: metadata };
+    }
+
     if (name === "write" && !result.isError) {
       result.details = { written: true };
     }

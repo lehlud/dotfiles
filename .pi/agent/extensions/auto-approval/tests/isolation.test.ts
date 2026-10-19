@@ -778,3 +778,20 @@ nativeTest("large writes retain a compact confirmation under a small output limi
   expect(await readFile(join(project, "large-write.txt"), "utf8")).toBe(content);
   expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(1024);
 });
+
+nativeTest(
+  "bounded Bash reads do not pay twice for the SDK's duplicate structured output",
+  async () => {
+    const expected = 'quoted "value" 漢🙂\n'.repeat(500);
+
+    await writeFile(join(project, "bounded-read.txt"), expected);
+
+    const result = await scoped({
+      ...action("bash", { command: "cat bounded-read.txt" }),
+      sandbox: { limits: { maxOutputBytes: 18000 } },
+    });
+
+    expect(result.content).toEqual([{ type: "text", text: expected }]);
+    expect((result as any).structuredContent.exit_code).toBe(0);
+  },
+);

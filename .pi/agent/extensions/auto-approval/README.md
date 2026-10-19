@@ -77,6 +77,8 @@ Example of a necessary external read:
 
 Requested access appears beside the normal tool display and is logged with its resolved plan. Long shell commands start collapsed; `ctrl+o` shows the complete command. Review and execution always use the unchanged original. Additional read mounts do not expand existing write permissions. Hardlinks between writable and read-only mounts are rejected. Active approval code, configuration, known credential directories and the entire home remain protected. No request can disable the executor or independent review.
 
+Successful Bash output duplicated by the SDK in both text content and structured output is transported once, alongside the structured exit status and timing metadata. This avoids charging the same payload twice against `maxOutputBytes`; the bounded transport, timeout and process cleanup are unchanged. Different or truncated structured output is preserved.
+
 ## Provider availability
 
 The [Provider Recovery extension](../provider-recovery/README.md) manages retries and cooldowns for working models. Reviewers and compressors share the same availability service; valid denials remain final.
@@ -249,9 +251,13 @@ The first reviewer request eagerly includes at least the latest ten available ac
 
 Each prompt has an `isSteering` flag: `true` for authenticated steering input, `false` for authenticated ordinary input or captured operator commands, and `null` for legacy prompts without reliable delivery metadata. Compression leaves this flag intact. Labels inside quoted text, assistant messages and peer claims cannot establish it.
 
+When an operator goal is active, the envelope begins with `operatorGoal` and `taskContext`, before the recent prompts and proposed action. Selection retains the captured goal and all subsequent user instructions even beyond ten inputs; legacy checkpoints without a captured goal conservatively retain the available user history. Compression uses that same selection. Each action snapshots the active goal once and records it in its audit so its actual review scope can be inspected later.
+
 Input delivery does not determine semantic priority. Ordinary non-steering prompts and steering prompts can both add refinements or subtasks to an earlier goal. The reviewer considers all applicable user instructions to identify the broader authorized objective; a recorded task anchor is delivery metadata and does not select the only semantic goal. Completing an additive refinement leaves the remaining original work authorized without another user prompt. Actions implementing another requested feature, test, documentation change or code-quality improvement can advance that goal even when they have no connection to the latest refinement.
 
 Finite corrections and continuing constraints have different lifetimes. Finishing "make this field optional" does not end the broader migration or discharge "preserve API contracts". The reviewer does not impose implementation ordering unless the user explicitly requests it. Audited results may supply completion evidence; assistant claims cannot create authorization or override a restriction. Explicit stops, task replacements, file boundaries and withdrawn permissions remain binding. The latest prompt's prose selects the verdict language, not its exclusive task scope.
+
+Review applies restrictions to the exact operation: reading a manifest does not execute Pub, and reading a test does not format it. A restriction on formatting-only hunks does not prohibit functional fixes elsewhere in the same file. Quoted reviewer scope opinions do not cancel the operator's broader task; explicit user-adopted restrictions still apply.
 
 Up to six earlier denials retain reason, request ID, fingerprint, tool, technical failure stage and the number of actual operator contributions received afterward. This count describes chronology, not automatic invalidation. Prior reviewer opinions do not create user prohibitions; still-applicable material concerns must be assessed for the exact present action. Old action bodies, configuration and sandbox plans are marked omitted and remain in the local audit. An earlier large command therefore cannot block a later small read. Additional reviewed tool evidence has its own 95,000 UTF-8 byte budget and is considered even with large user contributions.
 
@@ -399,6 +405,8 @@ Multiplex tests check random English word names, within-team uniqueness, FIFO me
 The advertised `approved_action` schema has an object root, a tool-name enum and an arguments object. Providers that encode the inner object as a JSON string are also supported. The gate takes an immutable snapshot, decodes that string once and applies the original selected tool's strict schema before any review or execution. Strings containing bare shell commands, arrays, null, malformed JSON or objects missing the selected tool's required fields remain invalid. Encoded objects are limited to 1 MiB. No command, permission or other field is inferred or repaired.
 
 The independent reviewer, audit and executor all receive the same decoded object. Reviewer denials still prevent execution. Native command previews and shared-feed paths use the decoded object for display, with no host file reads. In Multiplex, repeated malformed calls have a bounded failure path described in the Multiplex extension documentation.
+
+`bun run eval:steering --active-goal-only` checks eight synthetic active-goal scope cases against the configured reviewer without running any proposed action. Controls retain explicit stops, formatting boundaries and source-upload prohibitions.
 
 `bun run eval:steering` checks continuation of a broader migration after a nullable-field refinement is finished, with both steering and ordinary input. An independently audited model edit supplies completion evidence while the refinement remains the latest user prompt; the proposed remaining feature has no readability or nullable-field purpose. Controls cover implicit sequencing, explicit task replacement and preservation of earlier source-upload restrictions. Additional cases cover the three bounded Dart readability edits and explicit stops, formatting and file restrictions, missing edit authorization and credential access. All sixteen fixtures are synthetic and no proposed action runs.
 

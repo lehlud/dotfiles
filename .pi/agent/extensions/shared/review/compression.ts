@@ -174,7 +174,7 @@ export async function preparePromptContext(
   signal?: AbortSignal,
   operatorGoal?: string,
 ): Promise<PreparedPrompts> {
-  const prompts = operatorPrompts(entries, config.recentUserPrompts);
+  const prompts = operatorPrompts(entries, config.recentUserPrompts, operatorGoal);
 
   if (!prompts.length && operatorGoal) prompts.push(operatorGoal);
 

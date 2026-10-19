@@ -16,6 +16,7 @@ import { multiplexReviewFixtures } from "./multiplex-review-fixtures.ts";
 import { Check } from "typebox/value";
 import { MAX_REVIEW_CONTEXT_BYTES, reviewLanguageReference } from "../../shared/review/context.ts";
 import { steeringReviewFixtures } from "./steering-review-fixtures.ts";
+import { activeGoalReviewFixtures } from "./active-goal-review-fixtures.ts";
 
 const portable: PortableConfig = {
   reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }],
@@ -852,4 +853,62 @@ test("local coordination failures stay out of review without hiding actual denia
     customType: "auto-approval-review",
     data: coordination,
   });
+});
+
+test("active goals retain their earlier constraints across more than ten ordinary refinements", () => {
+  const goal = "Implement full Flutter/Webapp parity";
+  const constraint = "Do not run Pub/clean in the operator tree or upload source.";
+  const entries = [
+    { type: "custom", customType: "auto-approval-operator-prompt", data: { text: goal } },
+    { type: "message", message: { role: "user", content: constraint } },
+    ...Array.from({ length: 12 }, (_, index) => ({
+      id: `input-${index}`,
+      type: "message",
+      message: { role: "user", content: `Refinement ${index}` },
+    })),
+  ];
+  const envelope = buildReview(request, entries, config, "/project", [], undefined, goal);
+  const data = JSON.parse(envelope.text);
+
+  expect(data.operatorGoal).toBe(goal);
+  expect(data.userPrompts).toHaveLength(14);
+  expect(data.userPrompts).toContain(constraint);
+  expect(data.taskContext.source).toBe("operator-goal");
+  expect(Object.keys(data).slice(0, 2)).toEqual(["operatorGoal", "taskContext"]);
+  expect(envelope.cachePrefix).toContain(JSON.stringify(goal));
+});
+
+test("legacy active goals without a captured command conservatively retain older user constraints", () => {
+  const entries = Array.from({ length: 13 }, (_, index) => ({
+    type: "message",
+    message: { role: "user", content: `Instruction ${index}` },
+  }));
+  const data = JSON.parse(
+    buildReview(request, entries, config, "/project", [], undefined, "Legacy operator goal").text,
+  );
+
+  expect(data.userPrompts).toHaveLength(13);
+  expect(data.userPrompts[0]).toBe("Instruction 0");
+});
+
+test("active-goal semantic cases eagerly include the objective, steering and exact action", () => {
+  for (const fixture of activeGoalReviewFixtures) {
+    const data = JSON.parse(
+      buildReview(
+        fixture.action,
+        fixture.entries,
+        config,
+        "/project",
+        [],
+        undefined,
+        fixture.operatorGoal,
+      ).text,
+    );
+
+    expect(data.operatorGoal).toBe(fixture.operatorGoal);
+    expect(data.taskContext.source).toBe("operator-goal");
+    expect(data.userPromptInfo.at(-1).isSteering).toBe(true);
+    expect(data.action).toEqual(fixture.action);
+    expect(data.userPrompts[0]).toContain("Do not run Pub/clean");
+  }
 });

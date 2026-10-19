@@ -1614,3 +1614,27 @@ test("relocated gate infrastructure stays protected with an alternate agent dire
     await rm(alias);
   }
 });
+
+test("action reviews capture the active operator goal once and retain it in the audit", async () => {
+  const services = sessionServices(ctx);
+  const previous = services.operatorGoal;
+  let reads = 0;
+
+  services.operatorGoal = () => {
+    reads++;
+
+    return "Complete Flutter/Webapp UI and workflow parity";
+  };
+
+  try {
+    const result = await call(bash("printf harmless"));
+
+    expect(result.isError).not.toBe(true);
+    expect(reads).toBe(1);
+    expect(requested[0].data.operatorGoal).toBe("Complete Flutter/Webapp UI and workflow parity");
+    expect(requested[0].data.taskContext.source).toBe("operator-goal");
+    expect(result.details.approval.operatorGoal).toBe(requested[0].data.operatorGoal);
+  } finally {
+    services.operatorGoal = previous;
+  }
+});
