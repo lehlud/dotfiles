@@ -6,6 +6,7 @@ import type {
   InputEvent,
 } from "@earendil-works/pi-coding-agent";
 import { availableGoalTools } from "../shared/contracts/goal.ts";
+import { availableSubagentTools } from "../shared/contracts/subagents.ts";
 import { sessionServices } from "../shared/session/services.ts";
 import { assertSandboxReady, loadConfig } from "../shared/configuration/load.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -98,8 +99,12 @@ export class TeamController {
       "approved_action",
       ...availableGoalTools(this.pi),
       ...availableQuestionTools(this.pi),
+      ...availableSubagentTools(this.pi),
     ]);
-    this.closing = Promise.allSettled(previous.peers.map((peer) => peer.close())).then((closed) => {
+    this.closing = Promise.allSettled([
+      sessionServices(ctx).stopSubagents?.(),
+      ...previous.peers.map((peer) => peer.close()),
+    ]).then((closed) => {
       if (closed.some((result) => result.status === "rejected"))
         throw new Error(
           "Peer cleanup failed; inspect the operator runtime before re-enabling multiplex",
@@ -367,6 +372,7 @@ export class TeamController {
         "mailbox",
         ...availableGoalTools(this.pi),
         ...availableQuestionTools(this.pi),
+        ...availableSubagentTools(this.pi),
       ]);
       this.display(ctx);
 

@@ -57,6 +57,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
     "web-research": ["web-research", "shared"],
     "code-quality": ["code-quality"],
     "fast-mode": ["fast-mode", "shared"],
+    subagents: ["subagents", "shared"],
   };
 
   return edges
@@ -66,11 +67,26 @@ function boundaryViolations(edges: Dependency[]): string[] {
         return false;
 
       if (
+        source === "subagents/child.ts" &&
+        [
+          "auto-approval/index.ts",
+          "public-writing/index.ts",
+          "code-quality/index.ts",
+          "conversations/questions/tools.ts",
+          "conversations/operator-input.ts",
+          "conversations/steering.ts",
+          "conversations/progress.ts",
+        ].includes(target)
+      )
+        return false;
+
+      if (
         source === "multiplex/peer.ts" &&
         [
           "auto-approval/index.ts",
           "public-writing/index.ts",
           "code-quality/index.ts",
+          "subagents/index.ts",
           "conversations/progress.ts",
           "conversations/goal-tool.ts",
           "conversations/questions/tools.ts",

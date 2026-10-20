@@ -3,6 +3,7 @@ import type { OperatorInputKind } from "../contracts/operator-input.ts";
 
 import type { QuestionClient } from "../contracts/questions.ts";
 import type { Goal } from "../contracts/goal.ts";
+import type { SubagentMode, SubagentActivity } from "../contracts/subagents.ts";
 
 export type ActionLease = {
   scope?: { planId?: string; name: string; task: string; resources: string[]; waiting?: boolean };
@@ -12,6 +13,13 @@ export type ActionLease = {
 
 /** Trusted session capabilities; models cannot inspect or mutate this registry. */
 export type SessionServices = {
+  delegationMode?: SubagentMode;
+  acquireActionLease?: () => ActionLease;
+  subagentsBusy?: () => boolean;
+  subagentRevision?: () => number;
+  stopSubagents?: () => Promise<void>;
+  subagentOperatorInput?: (text: string) => Promise<void>;
+  publishSubagentActivity?: (record: SubagentActivity) => void;
   questions?: (owner: string) => QuestionClient;
   recordOperatorInput?: (text: string, kind: OperatorInputKind) => void;
   broadcastConversationMessage?: (customType: string, text: string) => void;

@@ -53,7 +53,9 @@ class ActionRun {
     try {
       this.signal?.throwIfAborted();
       this.phase = "team coordination";
-      this.assignment = sessionServices(this.ctx).mailbox?.beginAction?.();
+      this.assignment =
+        sessionServices(this.ctx).mailbox?.beginAction?.() ??
+        sessionServices(this.ctx).acquireActionLease?.();
       this.phase = "request validation";
 
       const prepared = await prepareAction(

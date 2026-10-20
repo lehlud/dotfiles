@@ -147,6 +147,9 @@ export class QuestionController {
         services.recordOperatorInput?.(text, "steering");
         this.pi.sendUserMessage(text, { deliverAs: "steer", expandPromptTemplates: false });
         services.broadcastOperatorInput?.(text, "steering");
+        void services
+          .subagentOperatorInput?.(text)
+          .catch(() => this.ctx?.ui.notify("Subagent answer delivery failed.", "error"));
       }
     } catch (error) {
       this.ctx.ui.notify(

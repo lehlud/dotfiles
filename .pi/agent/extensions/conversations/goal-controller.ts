@@ -172,6 +172,7 @@ export class GoalController {
         this.goal = stopped;
         ctx.abort();
         await sessionServices(ctx).stopTeam?.();
+        await sessionServices(ctx).stopSubagents?.();
         this.record(stopped, ctx);
       }
 
@@ -339,7 +340,7 @@ export class GoalController {
       return;
 
     // A team result can be reviewed only after peer actions have settled.
-    if (sessionServices(ctx).peersBusy?.()) return;
+    if (sessionServices(ctx).peersBusy?.() || sessionServices(ctx).subagentsBusy?.()) return;
 
     const controller = new AbortController();
 
@@ -350,9 +351,11 @@ export class GoalController {
       : controller.signal;
     let envelope: ReturnType<typeof buildGoalReview> | undefined;
     let peerRevision: number | undefined;
+    let subagentRevision: number | undefined;
 
     try {
       peerRevision = sessionServices(ctx).peerRevision?.();
+      subagentRevision = sessionServices(ctx).subagentRevision?.();
 
       const checked = await verifyGoal(
         this.pi,
@@ -371,8 +374,12 @@ export class GoalController {
 
       if (this.goal !== current) return;
 
-      const peerChanged = sessionServices(ctx).peerRevision?.() !== peerRevision;
-      const peersBusy = sessionServices(ctx).peersBusy?.() ?? false;
+      const peerChanged =
+        sessionServices(ctx).peerRevision?.() !== peerRevision ||
+        sessionServices(ctx).subagentRevision?.() !== subagentRevision;
+      const peersBusy =
+        (sessionServices(ctx).peersBusy?.() ?? false) ||
+        (sessionServices(ctx).subagentsBusy?.() ?? false);
       const superseded =
         ctx.hasPendingMessages() || peerChanged || peersBusy || this.pendingOperator !== undefined;
 

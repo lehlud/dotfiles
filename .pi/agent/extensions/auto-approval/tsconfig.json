@@ -19,6 +19,7 @@
     "../multiplex/**/*.ts",
     "../provider-recovery/*.ts",
     "../code-quality/*.ts",
-    "../fast-mode/*.ts"
+    "../fast-mode/*.ts",
+    "../subagents/**/*.ts"
   ]
 }

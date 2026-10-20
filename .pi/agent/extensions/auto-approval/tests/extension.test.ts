@@ -340,6 +340,33 @@ const bash = (command: string) => ({
   goal: "Smoke test",
   justification: "Harmless isolated test",
 });
+
+test("review-mode delegation rejects mutation before review and advertises only read-only project mounts", async () => {
+  await writeFile(join(root, "sample.txt"), "Read-only review fixture\n");
+  sessionServices(ctx).delegationMode = "review";
+
+  try {
+    const denied = await call(bash("touch forbidden"));
+
+    expect(JSON.stringify(denied)).toContain("Read-only review");
+    expect(executedRequests).toHaveLength(0);
+
+    const read = await call({
+      tool: "read",
+      arguments: { path: "sample.txt" },
+      goal: "Inspect authorized source",
+      justification: "Independent review",
+    });
+
+    expect(read.isError).not.toBe(true);
+    expect(executedRequests).toHaveLength(1);
+    expect(requested).toHaveLength(1);
+    expect(requested[0].data.sandboxPlan.readOnlyBindings).toContain(root);
+  } finally {
+    sessionServices(ctx).delegationMode = undefined;
+  }
+});
+
 const exists = async (path: string) => {
   try {
     await access(path);

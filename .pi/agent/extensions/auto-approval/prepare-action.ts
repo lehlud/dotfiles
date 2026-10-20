@@ -17,6 +17,8 @@ import { credentialProtectedPaths, resolveCredentialPlan } from "./credential-ac
 import { isWebTool } from "../web-research/index.ts";
 import { resolveWebRuntime, reviewedWebRequest } from "../web-research/runtime.ts";
 import { describeSandbox } from "./sandbox-plan.ts";
+import { sessionServices } from "../shared/session/services.ts";
+import { assertDelegatedAction } from "../shared/contracts/subagents.ts";
 
 export async function prepareAction(
   raw: unknown,
@@ -32,6 +34,8 @@ export async function prepareAction(
     throw new Error("Invalid action, goal, or justification");
 
   const request = reviewedWebRequest(normalizeNetworkFlag(snapshot));
+
+  assertDelegatedAction(sessionServices(ctx).delegationMode, request);
 
   checkActionSize(request);
   stage("sandbox configuration");
@@ -76,6 +80,11 @@ export async function prepareAction(
     privateTmp,
     mode,
   );
+
+  if (sessionServices(ctx).delegationMode === "review")
+    workspace.readOnlyBindings = [
+      ...new Set([...(workspace.readOnlyBindings ?? []), ...workspace.bindings]),
+    ];
 
   if (isWebTool(name) && config.sandbox.backend === "bwrap") {
     stage("web runtime preparation");
