@@ -4,6 +4,7 @@ import type { OperatorInputKind } from "../contracts/operator-input.ts";
 import type { QuestionClient } from "../contracts/questions.ts";
 import type { Goal } from "../contracts/goal.ts";
 import type { SubagentMode, SubagentActivity } from "../contracts/subagents.ts";
+import type { CacheLineage } from "../providers/cache-affinity.ts";
 
 export type ActionLease = {
   scope?: { planId?: string; name: string; task: string; resources: string[]; waiting?: boolean };
@@ -13,6 +14,8 @@ export type ActionLease = {
 
 /** Trusted session capabilities; models cannot inspect or mutate this registry. */
 export type SessionServices = {
+  cacheLineage?: () => CacheLineage | undefined;
+  parentCacheLineage?: () => CacheLineage | undefined;
   delegationMode?: SubagentMode;
   acquireActionLease?: () => ActionLease;
   subagentsBusy?: () => boolean;

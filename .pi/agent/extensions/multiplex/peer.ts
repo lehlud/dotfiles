@@ -84,6 +84,7 @@ export async function createPeer(
         registerQuestionTools(pi);
         registerFastRequests(pi);
         pi.on("session_start", (_event, child) => {
+          sessionServices(child).parentCacheLineage = () => sessionServices(ctx).cacheLineage?.();
           sessionServices(child).publishSubagentActivity = (record) =>
             sessionServices(ctx).publishSubagentActivity?.({
               ...record,

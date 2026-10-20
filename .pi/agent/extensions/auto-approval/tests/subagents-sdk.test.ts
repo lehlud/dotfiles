@@ -14,6 +14,7 @@ import {
   createAssistantMessageEventStream,
   getCurrentSystemPrompt,
   getCurrentTools,
+  getSystemMessageText,
 } from "@earendil-works/pi-ai";
 import { Check } from "typebox/value";
 import autoApproval from "../index.ts";
@@ -42,7 +43,7 @@ async function until(check: () => boolean | Promise<boolean>) {
   throw new Error("Subagent fixture did not settle");
 }
 
-async function fixture() {
+async function fixture(route: { provider?: string; api?: string } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "pi-subagents-sdk-"));
   const agentDir = join(directory, "agent"),
     project = join(directory, "project"),
@@ -91,13 +92,19 @@ async function fixture() {
     allowModelNetwork: false,
   });
   const contexts: any[] = [],
+    requests: any[] = [],
     reviews: any[] = [],
     actions = new Map<string, number>();
 
-  runtime.registerProvider("subagent-sdk-fixture", {
-    api: "subagent-sdk-fixture",
+  const definition: Parameters<typeof runtime.registerProvider>[1] = {
+    api: route.api ?? "subagent-sdk-fixture",
     apiKey: "synthetic",
-    baseUrl: "https://example.invalid",
+    baseUrl:
+      route.provider === "openai"
+        ? "https://api.openai.com/v1"
+        : route.provider === "openai-codex"
+          ? "https://chatgpt.com/backend-api/codex"
+          : "https://example.invalid",
     models: ["working", "review"].map((id) => ({
       id,
       name: id,
@@ -140,6 +147,16 @@ async function fixture() {
               },
             ];
           } else {
+            const body = {
+              model: model.id,
+              prompt_cache_key: options?.sessionId,
+              input: structuredClone(context.messages),
+              tools: getCurrentTools(context.messages),
+            };
+            const payload = (await options?.onPayload?.(body, model)) ?? body;
+
+            requests.push({ sessionId: options?.sessionId, payload });
+
             const name = getCurrentSystemPrompt(context.messages).match(
               /You are subagent ([a-z]+)/u,
             )?.[1];
@@ -150,6 +167,7 @@ async function fixture() {
                 context: structuredClone(context),
                 sessionId: options?.sessionId,
                 tools: getCurrentTools(context.messages),
+                payload,
               });
 
               const serialized = JSON.stringify(context.messages),
@@ -252,9 +270,23 @@ async function fixture() {
 
       return stream;
     },
-  });
+  };
 
-  return createParent({ directory, agentDir, project, previous, runtime, contexts, reviews });
+  runtime.registerProvider("subagent-sdk-fixture", definition);
+
+  if (route.provider) runtime.registerProvider(route.provider, definition);
+
+  return createParent({
+    directory,
+    agentDir,
+    project,
+    previous,
+    runtime,
+    contexts,
+    reviews,
+    requests,
+    workerProvider: route.provider ?? "subagent-sdk-fixture",
+  });
 }
 
 async function createParent(state: any) {
@@ -296,7 +328,7 @@ async function createParent(state: any) {
     cwd: state.project,
     agentDir: state.agentDir,
     modelRuntime: state.runtime,
-    model: new ModelRegistry(state.runtime).find("subagent-sdk-fixture", "working")!,
+    model: new ModelRegistry(state.runtime).find(state.workerProvider, "working")!,
     thinkingLevel: "off",
     sessionManager: SessionManager.inMemory(state.project),
     settingsManager: settings,
@@ -344,6 +376,59 @@ async function createParent(state: any) {
     },
   };
 }
+
+native.each([
+  ["openai", "openai-responses"],
+  ["openai-codex", "openai-codex-responses"],
+])(
+  "%s parent and subagent requests share a cache key without sharing session identity, including reload/resurrection",
+  async (provider, api) => {
+    const state = await fixture({ provider, api });
+
+    try {
+      const parentId = state.session.sessionId;
+      const rootRequest = state.requests[0];
+      const job = (await state.invoke({ operation: "spawn", task: "CACHE-REVIEW" })).details;
+
+      await until(
+        async () =>
+          (await state.invoke({ operation: "status", id: job.id })).details.state === "idle",
+      );
+      await until(() => !state.session.isStreaming);
+
+      const child = state.contexts.find((item: any) => item.name === job.name);
+
+      expect(rootRequest.payload.prompt_cache_key).toBe(parentId);
+      expect(child.payload.prompt_cache_key).toBe(parentId);
+      expect(child.sessionId).not.toBe(parentId);
+      // Instructions survive the fork; capability declarations deliberately differ.
+      expect(getSystemMessageText(child.payload.input[0])).toBe(
+        getSystemMessageText(rootRequest.payload.input[0]),
+      );
+      expect(child.payload.tools).not.toEqual(rootRequest.payload.tools);
+      expect(child.payload.tools.find((tool: any) => tool.name === "approved_action")).toEqual(
+        rootRequest.payload.tools.find((tool: any) => tool.name === "approved_action"),
+      );
+      expect(child.tools.some((tool: any) => ["subagent", "mailbox"].includes(tool.name))).toBe(
+        false,
+      );
+      expect(state.reviews.length).toBeGreaterThan(0);
+      await state.session.reload();
+      await state.invoke({ operation: "resurrect", id: job.id, text: "CONTINUE-CACHE-REVIEW" });
+      await until(
+        async () =>
+          (await state.invoke({ operation: "status", id: job.id })).details.state === "idle",
+      );
+
+      const reopened = state.contexts.filter((item: any) => item.name === job.name).at(-1);
+
+      expect(reopened.sessionId).toBe(child.sessionId);
+      expect(reopened.payload.prompt_cache_key).toBe(parentId);
+    } finally {
+      await state.close();
+    }
+  },
+);
 
 native(
   "work writes need their own approval; review mutations fail before paid review",
@@ -627,6 +712,11 @@ native(
       expect(JSON.stringify(state.session.sessionManager.getBranch())).toContain(
         "ACTIONABLE-FINDING",
       );
+      await until(() => !state.session.isStreaming);
+      await state.session.prompt(`/subagents log ${one.details.name}`);
+      expect(state.notifications.at(-1)).toContain("ACTIONABLE-FINDING");
+      expect(state.notifications.at(-1)).toContain("review evidence");
+      expect(state.notifications.at(-1)).not.toContain(two.details.name);
 
       const params = state.tools.get("subagent").parameters;
 

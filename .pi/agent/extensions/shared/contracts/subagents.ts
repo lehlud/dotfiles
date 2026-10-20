@@ -17,6 +17,9 @@ export type SubagentResult = {
 };
 
 export type SubagentActivity = {
+  agentId?: string;
+  kind?: "message" | "report" | "tool";
+  isError?: boolean;
   name: string;
   title: string;
   body?: string;

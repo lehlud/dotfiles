@@ -11,11 +11,16 @@ import { randomNames, AGENT_WORDS } from "../shared/session/agent-names.ts";
 import { sessionServices } from "../shared/session/services.ts";
 import { watchInterrupt } from "../shared/session/interrupt.ts";
 import { textContent } from "../shared/review/protocol.ts";
-import type { SubagentMode, SubagentResult, SubagentState } from "../shared/contracts/subagents.ts";
+import type {
+  SubagentMode,
+  SubagentResult,
+  SubagentState,
+  SubagentActivity,
+} from "../shared/contracts/subagents.ts";
 import { forkContext, synchronizeOperator } from "./context.ts";
 import { createChild } from "./child.ts";
 import { Checkpoints } from "./store.ts";
-import { ACTIVITY, display, observeTool } from "./presentation.ts";
+import { ACTIVITY, display, observeTool, cleanActivity } from "./presentation.ts";
 import { ChildSession } from "../shared/session/child-session.ts";
 
 const STATE = "subagent-state";
@@ -279,6 +284,8 @@ export class Subagents {
 
     this.deliver(job, text);
     sessionServices(this.ctx!).publishSubagentActivity?.({
+      agentId: job.id,
+      kind: "message",
       name: "parent",
       color: job.color,
       title: `Message → ${job.name}`,
@@ -298,9 +305,11 @@ export class Subagents {
       { triggerTurn: wake, deliverAs: wake ? "followUp" : "steer" },
     );
     sessionServices(this.ctx!).publishSubagentActivity?.({
+      agentId: job.id,
+      kind: wake ? "report" : "message",
       name: job.name,
       color: job.color,
-      title: `${job.state} · Message → parent`,
+      title: wake ? "Report" : "Note",
       body: text.slice(0, 24000),
     });
   }
@@ -465,5 +474,25 @@ export class Subagents {
   detachInterrupt() {
     this.detach();
     this.detach = () => {};
+  }
+
+  activity(id: string) {
+    const job = this.jobs.get(id);
+
+    return cleanActivity(
+      this.ctx!.sessionManager.getBranch()
+        .flatMap((entry) => {
+          if (entry.type !== "custom" || entry.customType !== ACTIVITY) return [];
+
+          const record = entry.data as SubagentActivity;
+
+          return record?.agentId === id ||
+            record?.name === id ||
+            (!record?.agentId && record?.name === job?.name)
+            ? [`${record.title}\n${record.diff ?? record.body ?? ""}`]
+            : [];
+        })
+        .join("\n\n") || "No recorded activity for this subagent.",
+    );
   }
 }

@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SUBAGENT_TOOL } from "../shared/contracts/subagents.ts";
 import { Subagents } from "./controller.ts";
 import { registerPresentation } from "./presentation.ts";
+import { registerCacheAffinity } from "../shared/providers/cache-affinity.ts";
 
 const id = Type.String({ minLength: 36, maxLength: 36 });
 const text = Type.String({ minLength: 1, maxLength: 8000 });
@@ -40,6 +41,7 @@ export default function subagents(pi: ExtensionAPI) {
   const controller = new Subagents(pi);
 
   registerPresentation(pi);
+  registerCacheAffinity(pi);
   pi.on("session_start", (_event, ctx) => controller.bind(ctx));
   pi.on("session_tree", (_event, ctx) => controller.bind(ctx));
 
@@ -66,13 +68,20 @@ export default function subagents(pi: ExtensionAPI) {
       return controller.forward(event.text, ctx);
   });
   pi.registerCommand("subagents", {
-    description: "Show subagent status and IDs; /subagents kill <id> stops one child",
+    description:
+      "Show subagent status; /subagents kill <id> stops one child; /subagents log <id|name> shows recorded activity",
     async handler(args, ctx) {
       const [operation, id] = args.trim().split(/\s+/u);
 
+      if (operation === "log" && id) {
+        ctx.ui.notify(controller.activity(id), "info");
+
+        return;
+      }
+
       if (operation === "kill" && id) await controller.kill(id);
       else if (operation && operation !== "list")
-        throw new Error("Use /subagents [list|kill <id>]");
+        throw new Error("Use /subagents [list|kill <id>|log <id|name>]");
 
       ctx.ui.notify(
         controller
@@ -92,17 +101,33 @@ export default function subagents(pi: ExtensionAPI) {
       "Spawn parallel session-scoped subagents (maximum four live). Default mode review permits inspected data only; work supports independently approved execution. Give bounded tasks and explicit file ownership; work agents share your workspace. Each child has its own sandbox/private tmp. Parent↔child messages bypass action review but never grant operator authorization. list/status query state; send wakes an idle agent or steers running work; wait blocks at most 30 seconds. Replies arrive automatically, so do not poll repeatedly. kill aborts work and discards private tmp. resurrect explicitly reopens a killed ID with saved history and stable session identity; no automatic restart after interrupt. Child agents cannot spawn or message peers. An independent-model report is advisory, not action approval or a completion verdict. Never delegate a denial to evade its security concern.",
     parameters,
     renderCall(args, theme) {
+      const name =
+        "id" in args
+          ? (controller.list().find((job) => job.id === args.id)?.name ?? args.id.slice(0, 8))
+          : "";
+
       return new Text(
-        theme.fg("toolTitle", `Subagent · ${args.operation}${"id" in args ? ` · ${args.id}` : ""}`),
+        theme.fg("toolTitle", `Subagent · ${args.operation}${name ? ` · ${name}` : ""}`),
         0,
         0,
       );
     },
-    renderResult(result, _options, theme) {
+    renderResult(result, options, theme) {
+      const data = Array.isArray(result.details)
+        ? result.details
+        : result.details
+          ? [result.details]
+          : [];
+      const summary = data.map((job) => `${job.name} · ${job.state}`).join("\n");
+
       return new Text(
         theme.fg(
           "toolOutput",
-          result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n"),
+          !options.expanded && summary
+            ? `${summary}\n[ctrl+o for task, ID and report]`
+            : result.content
+                .flatMap((block) => (block.type === "text" ? [block.text] : []))
+                .join("\n"),
         ),
         0,
         0,

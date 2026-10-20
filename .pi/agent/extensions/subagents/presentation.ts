@@ -1,40 +1,62 @@
-import { Text, parseColor, stripTerminalSequences } from "@earendil-works/pi-tui";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  Container,
+  Markdown,
+  Text,
+  parseColor,
+  stripTerminalSequences,
+  truncateToWidth,
+} from "@earendil-works/pi-tui";
+import {
+  getMarkdownTheme,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { renderFileDiff } from "../shared/presentation/file-diff.ts";
 import { writtenDiff } from "../shared/contracts/written-diff.ts";
 import { textContent } from "../shared/review/protocol.ts";
 import type { SubagentResult, SubagentActivity } from "../shared/contracts/subagents.ts";
 
 export const ACTIVITY = "subagent-activity";
-const clean = (text: string) =>
+export const cleanActivity = (text: string) =>
   stripTerminalSequences(text).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
 
 export function registerPresentation(pi: ExtensionAPI) {
   pi.registerEntryRenderer<SubagentActivity>(ACTIVITY, (entry, options, theme) => {
     const value = entry.data;
 
-    if (!value) return;
+    if (!value || (value.kind === "tool" && value.diff === undefined && !value.isError)) return;
 
     const colors = ["#63b3ed", "#f6ad55", "#b794f4", "#68d391"];
-    const header = new Text(
-      theme.style(`Subagent · ${value.name} · ${clean(value.title)}`, {
+    const title = theme.style(
+      `Subagent · ${cleanActivity(value.name)} · ${cleanActivity(value.title)}`,
+      {
         fg: parseColor(colors[value.color % colors.length]!),
-      }),
-      0,
-      0,
+      },
     );
+    const header = new Text(title, 0, 0);
 
     if (value.diff !== undefined) return renderFileDiff(header, value.diff, options, theme);
 
-    const body = clean(value.body ?? "");
-    const lines = body.split("\n");
-    const shown = options.expanded ? body : lines.slice(0, 10).join("\n");
+    const body = cleanActivity(value.body ?? "").trim();
 
-    return new Text(
-      `${header.render(1000).join("\n")}${shown ? `\n${shown}` : ""}${!options.expanded && lines.length > 10 ? "\n[ctrl+o to expand]" : ""}`,
-      0,
-      0,
-    );
+    if (!options.expanded)
+      return {
+        render(width) {
+          return [
+            truncateToWidth(`${title}${body ? theme.fg("muted", " · ctrl+o") : ""}`, width),
+            ...(body ? [truncateToWidth(body.replace(/\s+/gu, " "), width)] : []),
+          ];
+        },
+        invalidate() {},
+      };
+
+    const component = new Container();
+
+    component.addChild(header);
+
+    if (body) component.addChild(new Markdown(body, 0, 0, getMarkdownTheme()));
+
+    return component;
   });
 }
 
@@ -59,6 +81,9 @@ export function observeTool(
     : undefined;
 
   publish({
+    agentId: job.id,
+    kind: "tool",
+    isError: !!event.isError,
     name: job.name,
     color,
     title: `${action?.tool ?? "action"}${action?.arguments?.path ? ` ${action.arguments.path}` : ""} · ${event.isError ? "Failed" : "Finished"}`,
@@ -74,13 +99,18 @@ export function display(ctx: ExtensionContext, jobs: SubagentResult[]) {
   ctx.ui.setWidget(
     "subagents",
     live.length
-      ? [
-          "Subagent      State       Task",
-          ...live.map(
-            (job) =>
-              `${job.name.padEnd(12)}  ${job.state.padEnd(10)}  ${clean(job.task).replace(/\s+/g, " ").slice(0, 72)}`,
-          ),
-        ]
+      ? () => ({
+          render(width: number) {
+            return [
+              "Subagent      State       Task",
+              ...live.map(
+                (job) =>
+                  `${job.name.padEnd(12)}  ${job.state.padEnd(10)}  ${cleanActivity(job.task).replace(/\s+/g, " ")}`,
+              ),
+            ].map((line) => truncateToWidth(line, width));
+          },
+          invalidate() {},
+        })
       : undefined,
   );
 }

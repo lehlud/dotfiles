@@ -45,9 +45,15 @@ inherits conversation context, including earlier conclusions; it is not a blind
 review. Reports neither authorize actions nor replace completion verification.
 
 The parent can use `/subagents` to see status and `/subagents kill <id>` to stop
-one child. The compact activity table shows `starting`, `running` and `idle`;
-completed tool results and confirmed file diffs appear in the feed. An answered
-child remains idle until sent more work or killed. Up to four children can be
+one child. The compact activity table shows `starting`, `running` and `idle`.
+Notes and final reports occupy a header and one preview line by default;
+Ctrl+O expands the recorded text as Markdown. Routine successful actions stay
+out of the feed. Failures remain visible and confirmed edits/writes retain
+their regular file diffs. `/subagents log <id|name>` shows recorded activity,
+including hidden action results, on the current branch. Reports and action
+output are bounded to 24,000 characters per record; diffs to 48,000 characters.
+The model still receives actionable notes and final reports immediately.
+An answered child remains idle until sent more work or killed. Up to four children can be
 live per parent, including idle sessions. A parent retains at most 32 IDs.
 Lifetime is ten minutes by default, including idle time, configurable from
 10 seconds to 30 minutes. Expiry stops the child, without automatic respawn.
@@ -66,8 +72,41 @@ delegated task text is never converted into a user message. Checkpoints contain
 conversation state, not private `/tmp` data. Killing a child deletes its private
 temporary files; resurrection starts fresh storage and must recheck artifacts.
 Cancellation does not roll back project files already written before the abort.
-Stable history and session IDs preserve cache affinity where providers support
-it; cache hits and provider retention remain provider-dependent.
+
+## Context and cache reuse
+
+Children inherit the parent's conversation and shared instructions. Their role
+is added as a later system section rather than changing the shared instructions.
+Their executable capabilities remain restricted: a child has `parent_mailbox`
+instead of `subagent`. These different tool declarations limit exact prefix
+reuse, even when the instructions match.
+
+`shared/providers/cache-affinity.ts` passes the parent's existing
+`prompt_cache_key` hint to children using the same OpenAI provider, API and
+model on a verified official endpoint. Multiplex members inherit the same
+hint. Explicit custom keys and disabled caching are preserved; unsupported
+routes receive no new parameters. The hint is persisted outside the model
+transcript and survives checkpoint reload. Independent action reviews retain
+their separate request path and policy.
+
+Every child keeps its own SDK session ID, transport headers, WebSocket state,
+response chain, cancellation and private storage. In particular, Codex's
+ChatGPT gateway can derive affinity from the session header; sharing a body
+hint alone does not reproduce that routing. Cache retention and service-tier
+settings are unchanged. This is a best-effort hint, not a shared GPU cache,
+a guaranteed cache hit or a measured usage saving.
+
+OpenAI's [harness explanation](https://openai.com/index/gpt-5-6-frontier-intelligence-efficiency/)
+describes append-only history and deterministic tool definitions. Its
+[prompt caching documentation](https://developers.openai.com/api/docs/guides/prompt-caching)
+explains exact prefix requirements and provider-controlled routing/retention.
+[Codex's client implementation](https://github.com/openai/codex/blob/main/codex-rs/core/src/client.rs)
+separates cache keys from lifecycle identity and gateway session headers.
+The [Day 12 announcement](https://x.com/thsottiaux/status/2111244596131111253)
+also describes server-side retention and routing improvements; this extension
+cannot reproduce those by changing a cache key. Local SDK tests use synthetic
+provider responses and verify request hints, retained instructions, distinct
+capabilities/identities and resurrection. They do not measure live cache hits.
 
 The child composition root is `child.ts`; `controller.ts` owns lifecycle, mailbox
 routing and state transitions. `store.ts` owns private checkpoints, `context.ts`

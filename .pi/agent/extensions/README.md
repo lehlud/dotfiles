@@ -32,6 +32,10 @@ review infrastructure never import a feature entry point.
   session has its own action gate, and Multiplex includes this feature in its members.
   Shared child-session transport, provider setup, names and interrupt observation serve both
   features without a reverse dependency from `shared/` into either feature.
+  The shared cache-affinity hook passes compatible OpenAI cache hints across
+  family sessions without sharing transport identity or changing retention.
+  Subagent presentation collapses reports and hides routine successful actions;
+  the append-only activity log retains bounded results for operator inspection.
 - Context management owns the active conversation projection and session-memory
   tools. Main, Multiplex and delegated sessions get separate instances. Original
   user evidence and action receipts remain in the append-only log; the extension
