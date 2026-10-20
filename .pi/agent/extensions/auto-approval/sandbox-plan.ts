@@ -16,6 +16,7 @@ export function describeSandbox(
   const credential = name === "credential_exec";
 
   return {
+    source: "executor-preflight",
     workspace: workspace.path,
     bindings: workspace.bindings,
     readOnlyBindings: workspace.readOnlyBindings ?? [],
@@ -61,6 +62,14 @@ export function describeSandbox(
           backend: "cgroup-v2",
           scope: "one action and all descendants",
           controls: workspace.cgroup.controls,
+          preflight: "kernel delegation, ownership and requested controllers validated",
+          beforePayload: [
+            "revalidate delegation identity and controllers",
+            "create a fresh action cgroup",
+            "write requested controls and verify kernel readback",
+            "attach the process before executing the sandbox payload",
+          ],
+          onFailure: "block execution without dropping limits or using an unrestricted fallback",
           cgroupFilesystemExposed: false,
         }
       : undefined,

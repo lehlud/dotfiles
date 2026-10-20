@@ -34,6 +34,29 @@ variables cannot select the root.
 Persistent session `/tmp` still does not support a `tmpBytes` cap; disk quotas are
 not implemented by this extension.
 
+## Independent action review
+
+`sandboxPlan.source=executor-preflight` identifies technical metadata generated
+by the gate after current workspace/delegation validation. Its
+`resourceEnforcement` lists exact kernel controls, the validated preflight, and
+the mandatory checks before the payload starts. This is a conditional execution
+plan, not evidence that an action has already run. Failure during revalidation,
+control readback or attachment prevents execution without dropping limits.
+
+Reviewers must use these current facts instead of a historical claim that bwrap
+requires Docker for aggregate controls. Earlier denials remain visible and get
+fresh review; the gate neither deletes them nor automatically turns them into
+approvals. This addresses only the obsolete capability objection. Explicit user
+backend restrictions, unrelated unsafe effects and unimplemented guarantees such
+as a persistent temporary-storage cap still apply.
+
+`bun run eval:cgroups` submits six synthetic cases to the configured reviewer:
+obsolete Docker-only claims, a repaired delegation, actual Docker-only user
+restrictions, missing storage-cap enforcement, unsupported agent assertions and
+unauthorized uploads. This is review-only; no proposed command or synthetic
+delegation is executed. Unit tests separately verify the metadata and preservation
+of original denials and actual user constraints.
+
 ## Prepare a new Lubox environment
 
 The Lubox integration currently supports Podman with cgroup v2 and delegated
