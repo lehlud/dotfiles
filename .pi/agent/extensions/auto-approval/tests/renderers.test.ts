@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, beforeEach, afterEach } from "bun:test";
 import {
   createReadToolDefinition,
   createEditToolDefinition,
@@ -9,13 +9,30 @@ import {
   ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import {
+  getKeybindings,
+  setKeybindings,
+  stripTerminalSequences,
+  visibleWidth,
+  type TUI,
+} from "@earendil-works/pi-tui";
+import { KeybindingsManager } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
 import { theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { createApprovalRenderers } from "../renderers.ts";
 import { webTools } from "../../web-research/index.ts";
 import { gitTool } from "../git-command.ts";
+import { credentialCommandTool } from "../credential-command.ts";
+import contextManagement from "../../context-management/index.ts";
 
 initTheme("dark", false);
+
+let previousKeys = getKeybindings();
+
+beforeEach(() => {
+  previousKeys = getKeybindings();
+  setKeybindings(new KeybindingsManager());
+});
+afterEach(() => setKeybindings(previousKeys));
 
 const cwd = "/tmp/approval-renderer-fixture";
 const tools = {
@@ -459,4 +476,131 @@ test("writes and native edits share the padded success block with approval outsi
     expect(rows[approval]).not.toContain(background);
     expect(plain.filter((line) => line.includes("+1 const after = 1;"))).toHaveLength(1);
   }
+});
+
+test.each([
+  ["credential_exec", credentialCommandTool, { profile: "github", argv: ["api", "graphql"] }],
+  ["git", gitTool, { argv: ["status"] }],
+])(
+  "%s fallback output bounds wrapped JSON and expands unchanged persisted content",
+  (name, tool, args) => {
+    const rendering = createApprovalRenderers({ [name]: tool });
+    const output = JSON.stringify({ data: "value ".repeat(800), tail: "LAST-JSON-EVIDENCE" });
+    const result = approved({
+      content: [{ type: "text", text: output }],
+      details: { exitCode: 0 },
+    });
+    const component = row(name, args, rendering);
+
+    component.updateResult(result);
+
+    for (const width of [30, 80, 120]) {
+      const lines = component.render(width).map(stripTerminalSequences);
+
+      expect(lines.length).toBeLessThan(16);
+      expect(lines.join("\n")).toContain("ctrl+o");
+      expect(lines.join("\n")).not.toContain("LAST-JSON-EVIDENCE");
+      expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+    }
+
+    component.setExpanded(true);
+    component.invalidate();
+    expect(display(component)).toContain("LAST-JSON-EVIDENCE");
+    component.setExpanded(false);
+    expect(display(component)).not.toContain("LAST-JSON-EVIDENCE");
+
+    const restored = row(name, args, rendering);
+
+    restored.updateResult(JSON.parse(JSON.stringify(result)));
+    expect(display(restored)).not.toContain("LAST-JSON-EVIDENCE");
+    restored.setExpanded(true);
+    expect(display(restored)).toContain("LAST-JSON-EVIDENCE");
+    expect(result.content[1].text).toBe(output);
+  },
+);
+
+test.each(["notes", "history"])(
+  "%s uses an expandable screen-bounded result without changing model data",
+  (name) => {
+    const definitions = new Map<string, ToolDefinition<any, any>>();
+
+    contextManagement({
+      on() {},
+      registerCommand() {},
+      registerTool(tool: ToolDefinition<any, any>) {
+        definitions.set(tool.name, tool);
+      },
+    } as any);
+
+    const component = new ToolExecutionComponent(
+      name,
+      "memory-result",
+      name === "notes" ? { operation: "set", key: "progress" } : { query: "progress" },
+      undefined,
+      definitions.get(name),
+      ui,
+      cwd,
+    );
+    const output =
+      "Working memory (DATA):\n" +
+      "Long retained instruction ".repeat(400) +
+      "\nLAST-MEMORY-EVIDENCE";
+    const result = { content: [{ type: "text" as const, text: output }], isError: false };
+
+    component.updateResult(result);
+
+    for (const width of [30, 80, 120]) {
+      const lines = component.render(width).map(stripTerminalSequences);
+
+      expect(lines.length).toBeLessThan(12);
+      expect(lines.join("\n")).toContain("ctrl+o");
+      expect(lines.join("\n")).not.toContain("LAST-MEMORY-EVIDENCE");
+    }
+
+    component.setExpanded(true);
+    component.invalidate();
+    expect(display(component)).toContain("LAST-MEMORY-EVIDENCE");
+    component.setExpanded(false);
+    expect(display(component)).not.toContain("LAST-MEMORY-EVIDENCE");
+    expect(result.content[0].text).toBe(output);
+  },
+);
+
+test("fallback failures retain a visible reason and expand all stored diagnostics", () => {
+  const component = row("credential_exec", { profile: "github", argv: ["api", "graphql"] });
+  const output =
+    "Request failed: service unavailable.\n" + "Diagnostic\n".repeat(40) + "LAST-ERROR";
+
+  component.updateResult({
+    content: [{ type: "text", text: output }],
+    details: { executionError: "service unavailable" },
+    isError: true,
+  });
+  expect(display(component)).toContain("Request failed: service unavailable.");
+  expect(display(component)).toContain("ctrl+o");
+  expect(display(component)).not.toContain("LAST-ERROR");
+  component.setExpanded(true);
+  expect(display(component)).toContain("LAST-ERROR");
+});
+
+test("collapsed fallback hints follow the configured expansion key", () => {
+  setKeybindings(new KeybindingsManager({ "app.tools.expand": "ctrl+e" }));
+
+  const component = row("git", { argv: ["log"] }, createApprovalRenderers({ git: gitTool }));
+
+  component.updateResult(approved({ content: [{ type: "text", text: "Commit\n".repeat(30) }] }));
+  expect(display(component)).toContain("ctrl+e to expand");
+  expect(display(component)).not.toContain("ctrl+o");
+});
+
+test("empty command output adds neither a body spacer nor an expansion hint", () => {
+  const component = row(
+    "git",
+    { argv: ["add", "sample.txt"] },
+    createApprovalRenderers({ git: gitTool }),
+  );
+
+  component.updateResult(approved({ content: [{ type: "text", text: "" }] }));
+  expect(component.render(120)).toHaveLength(4); // Transcript spacer, call and two approval lines.
+  expect(display(component)).not.toContain("to expand");
 });

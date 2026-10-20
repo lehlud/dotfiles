@@ -3,6 +3,7 @@ import { Box, Container, Text, type Component } from "@earendil-works/pi-tui";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { renderFileDiff } from "../shared/presentation/file-diff.ts";
 import { writtenDiff } from "../shared/contracts/written-diff.ts";
+import { renderTextResult } from "../shared/presentation/text-result.ts";
 
 type NativeTool = ToolDefinition<any, any>;
 
@@ -181,25 +182,12 @@ export function createApprovalRenderers(
             options,
             theme,
             nativeContext(context, state, state.result),
-          ) ??
-          new Text(
-            output.content
-              .filter((item) => item.type === "text")
-              .map((item) => item.text)
-              .join("\n"),
-            0,
-            0,
-          );
+          ) ?? renderTextResult(output, options, theme, nativeContext(context, state));
         state.wrapper.addChild(state.result);
       } else {
         // Reviews, denials and technical failures have no underlying result.
         // In particular, never present a denied edit as a successful diff.
-        const text = result.content
-          .filter((item) => item.type === "text")
-          .map((item) => item.text)
-          .join("\n");
-
-        state.wrapper.addChild(new Text(theme.fg(context.isError ? "error" : "muted", text), 0, 0));
+        state.wrapper.addChild(renderTextResult(result, options, theme, context));
       }
 
       return state.wrapper;

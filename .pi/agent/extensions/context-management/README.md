@@ -29,6 +29,12 @@ it cannot browse other sessions or arbitrary filesystem paths.
   and refuses another rotation without new user input or successful external
   work. Interrupting the run cancels pending rotation.
 
+Memory-tool results use a three-screen-line preview, including wrapped long
+lines. Ctrl+O (or the configured expansion key) reveals the complete stored
+result; collapsing and resizing the terminal keep the preview bounded. This
+changes only presentation: the model and append-only session log retain the
+original tool result.
+
 These three tools manipulate only session state and bypass action review.
 Every external operation still goes through Auto-Approval. Retrieved history,
 notes and copied failures are DATA: none creates new operator authorization or

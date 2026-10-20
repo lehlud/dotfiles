@@ -6,6 +6,7 @@ import { historyPage, readNotes, noteText, NOTE, MAX_NOTES, originals } from "./
 import { budget } from "./budget.ts";
 import { prune, rotate } from "./projection.ts";
 import { nativePayload, nativeToolClearing, nativeHeaders } from "./providers.ts";
+import { renderTextResult } from "../shared/presentation/text-result.ts";
 
 const SETTINGS = "context-memory-settings";
 const ROTATION = "context-memory-rotation-state";
@@ -119,6 +120,7 @@ export default function contextManagement(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "history",
+    renderResult: renderTextResult,
     label: "Session history",
     exposure: "model-only",
     executionMode: "parallel",
@@ -150,6 +152,7 @@ export default function contextManagement(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "notes",
+    renderResult: renderTextResult,
     label: "Working notes",
     exposure: "model-only",
     executionMode: "sequential",
@@ -195,6 +198,7 @@ export default function contextManagement(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "new_context",
+    renderResult: renderTextResult,
     label: "Rotate context",
     exposure: "model-only",
     executionMode: "sequential",

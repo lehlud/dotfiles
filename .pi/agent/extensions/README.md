@@ -36,6 +36,8 @@ review infrastructure never import a feature entry point.
   family sessions without sharing transport identity or changing retention.
   Subagent presentation collapses reports and hides routine successful actions;
   the append-only activity log retains bounded results for operator inspection.
+  `shared/presentation/text-result.ts` supplies screen-line-bounded, expandable
+  output for memory tools and tools without a native result renderer.
 - Context management owns the active conversation projection and session-memory
   tools. Main, Multiplex and delegated sessions get separate instances. Original
   user evidence and action receipts remain in the append-only log; the extension

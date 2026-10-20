@@ -44,6 +44,13 @@ Workspaces inside the active Pi installation, approval configuration or known cr
 
 `approved_action` uses the selected tool's original Pi renderer. Reads retain expandable output, syntax highlighting and truncation notices. Edits show the standard diff with line numbers from the actual sandbox result. Writes, Bash and other tools keep their normal presentation. Approval decisions appear as separate entries in the activity log; no approval widget remains above the input prompt.
 
+Tools without a native result renderer, including authenticated commands and
+local Git commands, use a shared three-screen-line preview. Long single-line
+JSON is bounded by terminal width, not just newline count. The configured
+expansion key (normally Ctrl+O) reveals the complete stored output. The same
+preview covers generic error diagnostics; their initial reason remains visible.
+Original results, receipts and model-visible evidence are unchanged.
+
 Edit previews read no host files before approval. The diff appears after approved execution and survives expansion and session restoration. Denials and execution failures are displayed as such.
 
 ## Request additional sandbox access

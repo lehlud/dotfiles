@@ -12,6 +12,7 @@ import type { ExtensionAPI, Theme, ToolRenderers } from "@earendil-works/pi-codi
 import { createHash } from "node:crypto";
 import { TranscriptSpacing } from "./transcript-spacing.ts";
 import type { ActivityRecord } from "./activity.ts";
+import { renderTextResult } from "../shared/presentation/text-result.ts";
 
 export const AGENT_COLORS = [
   "#63b3ed",
@@ -241,14 +242,7 @@ export function suppressNativeFeed(pi: ExtensionAPI, view: FeedView, active: () 
         hidden(context)
           ? empty()
           : (original?.renderResult?.(result, options, theme, context) ??
-            new Text(
-              result.content
-                .filter((part) => part.type === "text")
-                .map((part) => part.text)
-                .join("\n"),
-              0,
-              0,
-            )),
+            renderTextResult(result, options, theme, context)),
     };
   });
 
