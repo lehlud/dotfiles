@@ -20,6 +20,7 @@
     "../provider-recovery/*.ts",
     "../code-quality/*.ts",
     "../fast-mode/*.ts",
-    "../subagents/**/*.ts"
+    "../subagents/**/*.ts",
+    "../context-management/**/*.ts"
   ]
 }

@@ -81,6 +81,7 @@ binaryTest(
       "code-quality",
       "fast-mode",
       "subagents",
+      "context-management",
     ].flatMap((name) => ["--extension", resolve(import.meta.dir, "../..", name, "index.ts")]);
     const child = Bun.spawn(
       [
@@ -97,7 +98,7 @@ binaryTest(
         fixture,
         "--no-approve",
         "--tools",
-        "approved_action,mailbox,set_goal,ask_user,user_questions,subagent",
+        "approved_action,mailbox,set_goal,ask_user,user_questions,subagent,history,notes,new_context",
         "--provider",
         "mailbox-binary-fixture",
         "--model",
@@ -326,6 +327,7 @@ binaryTest(
       "code-quality",
       "fast-mode",
       "subagents",
+      "context-management",
     ].flatMap((name) => ["--extension", resolve(import.meta.dir, "../..", name, "index.ts")]);
     const child = Bun.spawn(
       [
@@ -342,7 +344,7 @@ binaryTest(
         fixture,
         "--no-approve",
         "--tools",
-        "approved_action,mailbox,set_goal,ask_user,user_questions,subagent",
+        "approved_action,mailbox,set_goal,ask_user,user_questions,subagent,history,notes,new_context",
         "--provider",
         "mailbox-binary-fixture",
         "--model",

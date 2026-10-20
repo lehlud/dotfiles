@@ -16,6 +16,7 @@ import { ACTION_DESCRIPTION, ACTION_POLICY, LOCK_MESSAGE } from "./instructions.
 import { ActionSession } from "./action-session.ts";
 import { actionHandler } from "./action-handler.ts";
 import { availableSubagentTools } from "../shared/contracts/subagents.ts";
+import { availableContextTools } from "../shared/contracts/context.ts";
 
 const configPath = join(getAgentDir(), "auto-approval.json");
 const localConfigPath = join(getAgentDir(), "auto-approval.device.json");
@@ -31,6 +32,7 @@ export default function autoApproval(pi: ExtensionAPI) {
       ...availableGoalTools(pi),
       ...availableQuestionTools(pi),
       ...availableSubagentTools(pi),
+      ...availableContextTools(pi),
       ...(sessionServices(ctx).mailbox?.active() ? ["mailbox"] : []),
     ]);
     // Clear a widget left by an older version after /reload.
@@ -70,6 +72,7 @@ export default function autoApproval(pi: ExtensionAPI) {
       event.toolName === "mailbox" ||
       event.toolName === GOAL_TOOL ||
       availableSubagentTools(pi).includes(event.toolName) ||
+      availableContextTools(pi).includes(event.toolName) ||
       QUESTION_TOOLS.some((name) => name === event.toolName)
     )
       return;

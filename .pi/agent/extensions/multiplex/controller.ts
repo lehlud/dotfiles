@@ -7,6 +7,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { availableGoalTools } from "../shared/contracts/goal.ts";
 import { availableSubagentTools } from "../shared/contracts/subagents.ts";
+import { availableContextTools } from "../shared/contracts/context.ts";
 import { sessionServices } from "../shared/session/services.ts";
 import { assertSandboxReady, loadConfig } from "../shared/configuration/load.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -100,6 +101,7 @@ export class TeamController {
       ...availableGoalTools(this.pi),
       ...availableQuestionTools(this.pi),
       ...availableSubagentTools(this.pi),
+      ...availableContextTools(this.pi),
     ]);
     this.closing = Promise.allSettled([
       sessionServices(ctx).stopSubagents?.(),
@@ -373,6 +375,7 @@ export class TeamController {
         ...availableGoalTools(this.pi),
         ...availableQuestionTools(this.pi),
         ...availableSubagentTools(this.pi),
+        ...availableContextTools(this.pi),
       ]);
       this.display(ctx);
 

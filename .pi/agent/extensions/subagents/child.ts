@@ -11,6 +11,7 @@ import { Type } from "typebox";
 import autoApproval from "../auto-approval/index.ts";
 import publicWriting from "../public-writing/index.ts";
 import codeQuality from "../code-quality/index.ts";
+import contextManagement from "../context-management/index.ts";
 import { registerOperatorInputs } from "../conversations/operator-input.ts";
 import { registerSteering } from "../conversations/steering.ts";
 import { registerProgress } from "../conversations/progress.ts";
@@ -97,7 +98,13 @@ export async function createChild(
     noContextFiles: true,
     noPromptTemplates: true,
     systemPrompt: `${parent.getSystemPrompt()}\n${policy(job)}`,
-    extensionFactories: [autoApproval, publicWriting, codeQuality, bindings(parent, job, hooks)],
+    extensionFactories: [
+      autoApproval,
+      publicWriting,
+      codeQuality,
+      contextManagement,
+      bindings(parent, job, hooks),
+    ],
   });
 
   await loader.reload();
@@ -111,7 +118,7 @@ export async function createChild(
     sessionManager: manager,
     settingsManager: settings,
     resourceLoader: loader,
-    tools: ["approved_action", PARENT_MAILBOX],
+    tools: ["approved_action", PARENT_MAILBOX, "history", "notes", "new_context"],
   });
 
   try {

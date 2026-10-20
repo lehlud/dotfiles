@@ -58,6 +58,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
     "code-quality": ["code-quality"],
     "fast-mode": ["fast-mode", "shared"],
     subagents: ["subagents", "shared"],
+    "context-management": ["context-management", "shared"],
   };
 
   return edges
@@ -72,6 +73,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
           "auto-approval/index.ts",
           "public-writing/index.ts",
           "code-quality/index.ts",
+          "context-management/index.ts",
           "conversations/questions/tools.ts",
           "conversations/operator-input.ts",
           "conversations/steering.ts",
@@ -87,6 +89,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
           "public-writing/index.ts",
           "code-quality/index.ts",
           "subagents/index.ts",
+          "context-management/index.ts",
           "conversations/progress.ts",
           "conversations/goal-tool.ts",
           "conversations/questions/tools.ts",

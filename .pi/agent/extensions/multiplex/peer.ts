@@ -13,6 +13,7 @@ import autoApproval from "../auto-approval/index.ts";
 import publicWriting from "../public-writing/index.ts";
 import codeQuality from "../code-quality/index.ts";
 import subagents from "../subagents/index.ts";
+import contextManagement from "../context-management/index.ts";
 import { registerQuestionTools, bindPeerQuestions } from "../conversations/questions/tools.ts";
 import { registerGoalTool } from "../conversations/goal-tool.ts";
 import { registerProgress } from "../conversations/progress.ts";
@@ -76,6 +77,7 @@ export async function createPeer(
       publicWriting,
       codeQuality,
       subagents,
+      contextManagement,
       (pi) => {
         registerOperatorInputs(pi);
         registerGoalTool(pi);
@@ -145,7 +147,17 @@ export async function createPeer(
     sessionManager: manager,
     settingsManager: settings,
     resourceLoader: loader,
-    tools: ["approved_action", "mailbox", "set_goal", "ask_user", "user_questions", "subagent"],
+    tools: [
+      "approved_action",
+      "mailbox",
+      "set_goal",
+      "ask_user",
+      "user_questions",
+      "subagent",
+      "history",
+      "notes",
+      "new_context",
+    ],
   });
 
   try {

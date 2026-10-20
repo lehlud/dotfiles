@@ -745,6 +745,9 @@ test("every direct, unknown, nested, MCP, and codemode route is blocked", async 
     "tool_search",
     "mcp_exec",
     "subagent",
+    "history",
+    "notes",
+    "new_context",
     "arbitrary",
   ]) {
     expect((await hooks.tool_call({ toolName }, ctx)).block).toBe(true);
