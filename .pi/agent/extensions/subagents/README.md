@@ -5,6 +5,12 @@ in its own Pi session, uses the parent's selected model/provider and has its own
 Auto-Approval gate, sandbox and private temporary directory. The workspace is
 shared. Assign explicit file ownership for implementation work.
 
+Use subagents rarely. Handle routine work directly. Delegate a bounded independent
+review or separable task only when its expected benefit outweighs the additional
+context, latency and coordination costs. Use the fewest agents needed; avoid
+duplicate work and spawning merely because capacity is available. This guidance
+leads the model-visible tool description in main and Multiplex sessions.
+
 Start a new Pi process through `~/.local/bin/pi` to load this extension for the
 first time. Existing processes started without it need a restart, not `/reload`.
 
