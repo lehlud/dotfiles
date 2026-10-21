@@ -20,6 +20,7 @@ import { childRuntime } from "../shared/providers/child-runtime.ts";
 import { registerCacheAffinity } from "../shared/providers/cache-affinity.ts";
 import { PARENT_MAILBOX, type SubagentResult } from "../shared/contracts/subagents.ts";
 import { sessionServices } from "../shared/session/services.ts";
+import { registerGoalContext } from "../shared/session/goal-context.ts";
 
 type Hooks = {
   message(text: string): void;
@@ -36,6 +37,7 @@ function policy(job: SubagentResult) {
 function bindings(parent: ExtensionContext, job: SubagentResult, hooks: Hooks) {
   return (pi: Parameters<typeof autoApproval>[0]) => {
     registerCacheAffinity(pi);
+    registerGoalContext(pi);
     pi.on("context", (event) => ({
       messages: [
         ...event.messages,
@@ -52,6 +54,7 @@ function bindings(parent: ExtensionContext, job: SubagentResult, hooks: Hooks) {
       services.delegationMode = job.mode;
       services.parentCacheLineage = () => sessionServices(parent).cacheLineage?.();
       services.operatorGoal = () => sessionServices(parent).operatorGoal?.();
+      services.goalInstruction = () => sessionServices(parent).goalInstruction?.();
       services.fastMode = () => sessionServices(parent).fastMode?.() ?? false;
       services.acquireActionLease = () => {
         const lease = sessionServices(parent).mailbox?.beginAction?.();

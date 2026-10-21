@@ -430,6 +430,50 @@ native.each([
   },
 );
 
+native("subagents replace inherited goal controls with the parent's current state", async () => {
+  const state = await fixture();
+  let current: string | undefined = "GOAL-ONLY-WHILE-ACTIVE";
+
+  try {
+    sessionServices(state.ctx()).goalInstruction = () => current;
+    state.session.sessionManager.appendCustomMessageEntry(
+      "auto-approval-goal-instruction",
+      current,
+      false,
+    );
+
+    const job = (await state.invoke({ operation: "spawn", task: "REVIEW-GOAL-CONTEXT" })).details;
+
+    await until(
+      async () =>
+        (await state.invoke({ operation: "status", id: job.id })).details.state === "idle",
+    );
+    await until(() => !state.session.isStreaming);
+
+    const first = state.contexts.filter((item: any) => item.name === job.name);
+
+    expect(JSON.stringify(first.at(-1).context)).toContain(current);
+
+    current = undefined;
+    await state.invoke({ operation: "send", id: job.id, text: "FOLLOWUP-WITHOUT-GOAL" });
+    await until(
+      () => state.contexts.filter((item: any) => item.name === job.name).length > first.length,
+    );
+    await until(
+      async () =>
+        (await state.invoke({ operation: "status", id: job.id })).details.state === "idle",
+    );
+
+    const last = state.contexts.filter((item: any) => item.name === job.name).at(-1);
+
+    expect(JSON.stringify(last.context)).not.toContain("GOAL-ONLY-WHILE-ACTIVE");
+    expect(JSON.stringify(last.context)).toContain("ACTUAL-OPERATOR");
+    expect(JSON.stringify(last.context)).toContain("FOLLOWUP-WITHOUT-GOAL");
+  } finally {
+    await state.close();
+  }
+});
+
 native(
   "work writes need their own approval; review mutations fail before paid review",
   async () => {

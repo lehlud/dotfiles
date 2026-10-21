@@ -315,6 +315,16 @@ for (const command of ["/goal resume", "/continue"]) {
           .getBranch()
           .some((entry) => entry.type === "message" && entry.message.role === "user"),
       ).toBe(false);
+      await session.reload();
+      await session.prompt("/goal status");
+      expect(notices.at(-1)).toContain("No goal.");
+      await session.prompt("Unrelated follow-up after completion");
+
+      const followUp = contexts.filter((entry) => entry.model === "working").at(-1);
+
+      expect(JSON.stringify(followUp.messages)).not.toContain("Operator goal:");
+      expect(JSON.stringify(followUp.messages)).toContain("KEEP-UNRELATED-CONTEXT");
+      expect(contexts.filter((entry) => entry.model === "reviewer")).toHaveLength(1);
     } finally {
       session.dispose();
 
@@ -443,6 +453,64 @@ test("real Pi accepts repeated goal changes during a live run without raw comman
     release();
     await session.abort();
     await running?.catch(() => {});
+    session.dispose();
+
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("real Pi drops a goal during streaming without stopping work or restoring the goal", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-goal-drop-sdk-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+
+  process.env.PI_CODING_AGENT_DIR = directory;
+
+  const { session, contexts, release } = await fixture(directory, true);
+  const notices: string[] = [];
+  const statuses = new Map<string, string>();
+
+  try {
+    await session.bindExtensions({
+      mode: "tui",
+      uiContext: {
+        notify: (text: string) => notices.push(text),
+        setStatus: (key: string, text?: string) =>
+          text === undefined ? statuses.delete(key) : statuses.set(key, text),
+      } as any,
+    });
+    await session.prompt("/goal resume");
+
+    for (let i = 0; i < 1000 && !contexts.length; i++) await Bun.sleep(1);
+
+    expect(session.isStreaming).toBe(true);
+    await session.prompt("/goal drop");
+    expect(session.isStreaming).toBe(true);
+    expect(statuses.has("01-goal")).toBe(false);
+    release();
+
+    for (let i = 0; i < 1000 && session.isStreaming; i++) await Bun.sleep(1);
+
+    expect(session.isStreaming).toBe(false);
+    expect(contexts.filter((entry) => entry.model === "working")).toHaveLength(1);
+    expect(contexts.filter((entry) => entry.model === "reviewer")).toHaveLength(0);
+    await session.reload();
+    await session.prompt("/goal status");
+    expect(notices.at(-1)).toContain("No goal.");
+    await session.prompt("/goal resume");
+    expect(notices.at(-1)).toContain("No paused goal");
+    await session.prompt("Continue the ordinary task without goal tracking");
+
+    const followUp = contexts.filter((entry) => entry.model === "working").at(-1);
+
+    expect(JSON.stringify(followUp.messages)).not.toContain("Operator goal:");
+    expect(JSON.stringify(followUp.messages)).not.toContain("/goal drop");
+    expect(contexts.filter((entry) => entry.model === "reviewer")).toHaveLength(0);
+  } finally {
+    release();
+    await session.abort();
     session.dispose();
 
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;

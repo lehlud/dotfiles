@@ -35,9 +35,9 @@ export class GoalController {
       STATUS_KEY,
       this.goal ? `goal: ${goalTitle(this.goal.text)} · ${status ?? this.goal.status}` : undefined,
     );
-  record(next: Goal, ctx: ExtensionContext) {
+  record(next: Goal | null, ctx: ExtensionContext) {
     this.pi.appendEntry(STATE_ENTRY, next);
-    this.goal = next;
+    this.goal = next?.status === "complete" ? undefined : (next ?? undefined);
     this.bindServices(ctx);
     this.display(ctx);
   }
@@ -104,7 +104,7 @@ export class GoalController {
       typeof saved.id === "string" &&
       Number.isInteger(saved.checks) &&
       (saved.source === undefined || saved.source === "operator" || saved.source === "agent") &&
-      ["running", "paused", "complete", "stopped"].includes(saved.status)
+      ["running", "paused", "stopped"].includes(saved.status)
         ? { ...saved }
         : undefined;
 
@@ -153,6 +153,16 @@ export class GoalController {
           : "No goal. Use /goal <target>.",
         "info",
       );
+
+      return;
+    }
+
+    if (text === "drop") {
+      this.revision++;
+      this.pendingOperator = undefined;
+      this.reviewController?.abort();
+      this.record(null, ctx);
+      ctx.ui.notify("Goal dropped; work can continue without automatic goal checks.", "info");
 
       return;
     }

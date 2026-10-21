@@ -1052,9 +1052,9 @@ nativeTest(
       expect(completion).toHaveLength(1);
       expect(completion[0].reviewedContext).toHaveLength(2);
       expect(completion[0].operatorGoal).toContain("TEAM-GOAL");
-      expect(statuses.get("01-goal")).toContain("complete");
+      expect(statuses.has("01-goal")).toBe(false);
       await state.session.prompt("/multiplex off");
-      expect(statuses.get("01-goal")).toStartWith("goal:");
+      expect(statuses.has("01-goal")).toBe(false);
     } finally {
       state?.releases.forEach((release) => release());
       await state?.session.prompt("/goal stop").catch(() => {});

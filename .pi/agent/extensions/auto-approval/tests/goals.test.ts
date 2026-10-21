@@ -122,9 +122,16 @@ test("the real narrow footer keeps the target visible during approval and goal c
   await settle();
   expect(statuses.get("01-goal")).toBe("goal: Repair the build · running");
   await settle();
-  expect(statuses.get("01-goal")).toBe("goal: Repair the build · complete");
+  expect(statuses.has("01-goal")).toBe(false);
   await command("status", ctx);
-  expect(notices.at(-1)).toContain("Checks: 2");
+  expect(notices.at(-1)).toContain("No goal.");
+  expect(state().checks).toBe(2); // The completed review remains historical evidence.
+  expect(sessionServices(ctx).operatorGoalId?.()).toBeUndefined();
+  expect(sessionServices(ctx).goalInstruction?.()).toBeUndefined();
+  await hooks.session_start({}, ctx);
+  await command("status", ctx);
+  expect(notices.at(-1)).toContain("No goal.");
+  expect(statuses.has("01-goal")).toBe(false);
 });
 
 test("footer summaries preserve Unicode, bound long input and clear across sessions", async () => {
@@ -672,7 +679,8 @@ test("active context replaces only owned goal instructions without changing stor
   expect(context.messages[1]).toEqual(messages[2]);
   expect(messages).toEqual(original);
   await command("stop", ctx);
-  expect(await hooks.context({ messages }, ctx)).toBeUndefined();
+  expect((await hooks.context({ messages }, ctx)).messages).toEqual([messages[1], messages[2]]);
+  expect(messages).toEqual(original);
 });
 
 test("operator goals can start and replace targets during active work without interrupting it", async () => {
@@ -873,6 +881,84 @@ test("stop invalidates a goal update that is still preparing", async () => {
 
   await command("stop", ctx);
   await change;
+  expect(operatorGoal()).toBeUndefined();
+  expect(sent).toHaveLength(0);
+});
+
+test.each(["running", "paused", "stopped", "none"])(
+  "drop removes a %s goal durably without interrupting work or starting a turn",
+  async (status) => {
+    if (status !== "none") await command("Track this task", ctx);
+
+    if (status === "paused") await hooks.turn_end({ ...boundary(), outcome: "aborted" }, ctx);
+
+    if (status === "stopped") await command("stop", ctx);
+
+    let interrupted = false;
+
+    ctx.isIdle = () => false;
+    ctx.abort = () => {
+      interrupted = true;
+    };
+    sessionServices(ctx).stopTeam = async () => {
+      interrupted = true;
+    };
+    sessionServices(ctx).stopSubagents = async () => {
+      interrupted = true;
+    };
+
+    const count = sent.length;
+
+    await command("drop", ctx);
+    expect(state()).toBeNull();
+    expect(statuses.has("01-goal")).toBe(false);
+    expect(operatorGoal()).toBeUndefined();
+    expect(sessionServices(ctx).operatorGoalId?.()).toBeUndefined();
+    expect(sessionServices(ctx).goalInstruction?.()).toBeUndefined();
+    expect(await sessionServices(ctx).resumeGoal?.(ctx)).toBe(false);
+    expect(interrupted).toBe(false);
+    expect(sent).toHaveLength(count);
+    await hooks.session_start({}, ctx);
+    await command("status", ctx);
+    expect(notices.at(-1)).toContain("No goal.");
+    await command("resume", ctx);
+    expect(notices.at(-1)).toContain("No paused goal");
+    expect(sent).toHaveLength(count);
+
+    const messages = [
+      { role: "custom", customType: "auto-approval-goal-instruction", content: "Old target" },
+      { role: "custom", customType: "multiplex-operator-goal", content: "Inherited target" },
+      { role: "user", content: "Keep my actual request" },
+    ];
+
+    expect((await hooks.context({ messages }, ctx)).messages).toEqual([messages[2]]);
+    await command("New target", ctx);
+    expect(state().text).toBe("New target");
+    expect(state().status).toBe("running");
+  },
+);
+
+test("drop during verification rejects a late approval and removes the goal", async () => {
+  await command("Original target", ctx);
+  duringReview = () => {
+    void command("drop", ctx);
+  };
+
+  expect(await settle()).toBeUndefined();
+  expect(requests[0].options.signal.aborted).toBe(true);
+  expect(state()).toBeNull();
+  expect(statuses.has("01-goal")).toBe(false);
+  expect(notices.some((notice) => notice.startsWith("Goal confirmed:"))).toBe(false);
+  expect(await settle()).toBeUndefined();
+  expect(requests).toHaveLength(1);
+});
+
+test("drop invalidates a goal that is still preparing", async () => {
+  const change = command("Queued target", ctx);
+
+  await command("drop", ctx);
+  await change;
+  expect(state()).toBeNull();
   expect(operatorGoal()).toBeUndefined();
   expect(sent).toHaveLength(0);
 });

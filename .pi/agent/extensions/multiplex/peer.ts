@@ -24,6 +24,7 @@ export { childRuntime as peerRuntime } from "../shared/providers/child-runtime.t
 
 import { registerFastRequests } from "../shared/providers/fast.ts";
 import { sessionServices } from "../shared/session/services.ts";
+import { registerGoalContext } from "../shared/session/goal-context.ts";
 import { registerEndpoint, type Endpoint } from "./endpoint.ts";
 import { letterMessage, PEER_RESULT, type Letter } from "./mailboxes.ts";
 import type { ActivityEvent } from "./activity.ts";
@@ -81,6 +82,7 @@ export async function createPeer(
       (pi) => {
         registerOperatorInputs(pi);
         registerGoalTool(pi);
+        registerGoalContext(pi);
         registerQuestionTools(pi);
         registerFastRequests(pi);
         pi.on("session_start", (_event, child) => {
@@ -91,6 +93,7 @@ export async function createPeer(
               title: `${endpoint.name} / ${record.title}`,
             });
           sessionServices(child).operatorGoal = endpoint.operatorGoal;
+          sessionServices(child).goalInstruction = () => sessionServices(ctx).goalInstruction?.();
 
           bindPeerQuestions(ctx, child, endpoint.name);
           sessionServices(child).setAgentGoal = (text, signal) => {

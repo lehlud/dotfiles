@@ -40,7 +40,7 @@ An empty conversation needs a task before it can continue.
 
 `/goal <objective>` sets or replaces the session objective, including while the model or its tools are active. It updates the footer immediately after validation and steers the existing run at its next safe boundary; it does not abort work or start a second run. Superseded completion checks cannot settle the replacement goal. When the model finishes its response, the configured reviewer checks completion using the answer and recorded results of approved actions. A claim by the working model alone is insufficient for code changes or runtime checks.
 
-The goal and its current state appear in the bottom status bar, including during completion review and while paused. Team size, when present, appears once before the goal; approval status follows it only during action review. Long or multiline goals are shortened to one display line. Review counts and the full objective remain available through `/goal status`; they are omitted from the compact footer. Exit and session replacement clear the status, which can then be restored from the selected session.
+The goal and its current state appear in the bottom status bar, including during completion review and while paused. Team size, when present, appears once before the goal; approval status follows it only during action review. Long or multiline goals are shortened to one display line. Review counts and the full objective remain available through `/goal status`; they are omitted from the compact footer. Confirmed completion removes the tracked goal, its footer and current context instruction. Its review evidence remains in history. Exit and session replacement clear the status; only unfinished or explicitly stopped goals can be restored from the selected session.
 
 When work remains and is still actionable, the working model receives the reviewer's reason and continues automatically. An external blocker pauses the goal instead. Only a positive review marks the goal complete. A negative goal verdict does not try another reviewer; fallbacks apply only to technical unavailability. Every external action still requires its own approval and sandbox execution.
 
@@ -48,6 +48,12 @@ When work remains and is still actionable, the working model receives the review
 - `/goal <objective>` replaces the tracked target without requiring a prior stop.
 - `/goal resume` continues a paused goal, including during ongoing work.
 - `/goal stop` is an explicit operator cancellation and never claims completion. Escape, Ctrl+C and exit remain available.
+- `/goal drop` removes the tracked goal without interrupting ongoing model, team or
+  subagent work. It cancels pending goal verification and disables automatic
+  goal-driven continuation. The removal survives reload; `/goal resume` cannot
+  resurrect it. Dropping an absent goal is harmless. Previous instructions and
+  reviews remain historical evidence, while obsolete runtime goal controls are
+  removed from the active main, peer and subagent contexts on their next request.
 
 On resume, the model receives the saved objective and latest valid independent completion feedback. Pause reasons and interface hints such as `/goal resume` remain operator status information. Each model request during an active goal contains exactly one current goal control message; older control messages are removed only from that request context. The saved transcript, actual user text and other extensions' messages remain intact. This also applies to existing sessions.
 

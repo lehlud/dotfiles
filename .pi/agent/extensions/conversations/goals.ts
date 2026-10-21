@@ -1,12 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerGoalTool } from "./goal-tool.ts";
 import { GoalController } from "./goal-controller.ts";
-import { INSTRUCTION_TYPE, instruction, message } from "./goal-state.ts";
+import { registerGoalContext } from "../shared/session/goal-context.ts";
 
 export function registerGoals(pi: ExtensionAPI) {
   const controller = new GoalController(pi);
 
   registerGoalTool(pi);
+  registerGoalContext(pi);
 
   pi.on("session_start", (event, ctx) => controller.restore(event, ctx));
   pi.on("session_tree", (event, ctx) => controller.restore(event, ctx));
@@ -15,25 +16,10 @@ export function registerGoals(pi: ExtensionAPI) {
   });
 
   pi.on("turn_end", (event, ctx) => controller.check(event, ctx));
-  pi.on("context", (event) => {
-    if (controller.goal?.status !== "running") return;
-
-    // Replace obsolete control hints only in the request, never in the saved
-    // transcript. One current instruction also avoids repeating the target.
-    const messages = event.messages.filter(
-      (entry) => entry.role !== "custom" || entry.customType !== INSTRUCTION_TYPE,
-    );
-
-    return {
-      messages: [
-        ...messages,
-        { role: "custom", ...message(instruction(controller.goal)), timestamp: Date.now() },
-      ],
-    };
-  });
 
   pi.registerCommand("goal", {
-    description: "Run until independent goal verification: /goal <target>, status, resume, stop",
+    description:
+      "Run until independent goal verification: /goal <target>, status, resume, stop; drop removes the goal without interrupting work",
     handler: (args, ctx) => controller.command(args, ctx),
   });
 
