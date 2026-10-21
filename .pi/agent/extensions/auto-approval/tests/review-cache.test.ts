@@ -242,6 +242,54 @@ test("ChatGPT login keeps the SDK's unsupported cache fields omitted", async () 
   expect(JSON.stringify(wire.requests[0].body.input)).not.toContain("prompt_cache_breakpoint");
 });
 
+test.each(["openai", "openrouter"])(
+  "real %s reviewer requests apply fast on/off while preserving cache and schema",
+  async (provider) => {
+    const wire = wireRegistry(provider);
+    const settings = { ...config, reviewers: [{ ...config.reviewers[0], provider }] };
+    let enabled = false;
+
+    for (const fast of [false, true, false]) {
+      enabled = fast;
+
+      const checked = await reviewWithFallback(
+        settings,
+        wire.registry,
+        review(),
+        observer,
+        undefined,
+        undefined,
+        undefined,
+        { fastMode: () => enabled },
+      );
+
+      expect(checked.verdict.decision).toBe("approve");
+      expect(checked.selectedReviewer).toEqual(settings.reviewers[0]);
+    }
+
+    const [off, on, restored] = wire.requests.map((request) => request.body);
+
+    expect(on.model).toBe(off.model);
+    expect(restored.model).toBe(off.model);
+    expect(on.text?.format).toEqual(off.text?.format);
+    expect(on.prompt_cache_options).toEqual(off.prompt_cache_options);
+    expect(on.prompt_cache_key).toBe(off.prompt_cache_key);
+    expect(restored.prompt_cache_key).toBe(off.prompt_cache_key);
+
+    if (provider === "openai") {
+      expect(on.service_tier).toBe("priority");
+      expect(restored.service_tier).toBe(off.service_tier);
+      expect(on.text.format.strict).toBe(true);
+    } else {
+      expect(on.provider.sort).toBe("throughput");
+      expect(restored.provider?.sort).toBe(off.provider?.sort);
+      expect(wire.requests[1].headers.get("x-session-id")).toBe(
+        wire.requests[0].headers.get("x-session-id"),
+      );
+    }
+  },
+);
+
 test("routing keys separate workspaces and policies without depending on prompt refinements", () => {
   const context = { systemPrompt: REVIEW_SYSTEM, messages: [] };
   const first = reviewCacheKey(review(), context);

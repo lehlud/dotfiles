@@ -188,6 +188,66 @@ const registry: any = {
 const run = (settings = config, signal?: AbortSignal, callbacks = observer) =>
   reviewWithFallback(settings, registry, envelope, callbacks, signal, undefined, availability);
 
+test("fast processing never retries a denial with another reviewer", async () => {
+  modes.openai = "deny";
+
+  const checked = await reviewWithFallback(
+    config,
+    registry,
+    envelope,
+    observer,
+    undefined,
+    undefined,
+    availability,
+    { fastMode: () => true },
+  );
+
+  expect(checked.verdict.decision).toBe("deny");
+  expect(calls).toHaveLength(1);
+  expect(checked.selectedReviewer.provider).toBe("openai");
+});
+
+test("fast processing uses the unavailable-primary fallback's route without loosening routing pins", async () => {
+  modes.openai = "auth";
+
+  const gate = {
+    ...registry,
+    find(provider: string, id: string) {
+      const model = registry.find(provider, id);
+
+      return (
+        model && { ...model, api: provider === "openrouter" ? "openai-completions" : model.api }
+      );
+    },
+  };
+  const checked = await reviewWithFallback(
+    config,
+    gate,
+    envelope,
+    observer,
+    undefined,
+    undefined,
+    availability,
+    { fastMode: () => true },
+  );
+  const payload = calls[0].options.onPayload(
+    {
+      model: calls[0].model.id,
+      provider: { only: ["trusted"], allow_fallbacks: false, data_collection: "deny" },
+    },
+    calls[0].model,
+  );
+
+  expect(checked.selectedReviewer.provider).toBe("openrouter");
+  expect(calls).toHaveLength(1);
+  expect(payload.provider).toEqual({
+    only: ["trusted"],
+    allow_fallbacks: false,
+    data_collection: "deny",
+    sort: "throughput",
+  });
+});
+
 test("editorial rules apply to writing_check only, never ordinary file mutations", async () => {
   const actions = [
     { tool: "write", arguments: { path: "page.txt", content: "Not a tool. A revolution." } },

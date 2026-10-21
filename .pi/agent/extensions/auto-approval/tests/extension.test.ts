@@ -341,6 +341,50 @@ const bash = (command: string) => ({
   justification: "Harmless isolated test",
 });
 
+test("action reviews, prompt compression and original lookups inherit the session fast preference", async () => {
+  let fast = true;
+
+  sessionServices(ctx).fastMode = () => fast;
+  entries[0].message.content += "\nFAST-APPROVAL-FIXTURE\n" + "Bounded diagnostic.\n".repeat(1500);
+
+  const result = await call(bash("printf fast-approval"));
+
+  expect(result.isError).not.toBe(true);
+  expect(requested.some((request) => request.data.originalPromptChunk)).toBe(true);
+  expect(
+    requested.some((request) =>
+      request.context.messages.some((entry: any) => entry.role === "toolResult"),
+    ),
+  ).toBe(true);
+
+  for (const request of requested) {
+    const payload = request.options.onPayload(
+      { model: request.model.id, service_tier: "auto" },
+      request.model,
+    );
+
+    expect(payload.service_tier).toBe("priority");
+  }
+
+  const before = requested.length;
+
+  fast = false;
+  expect(
+    requested[0].options.onPayload({ model: requested[0].model.id }, requested[0].model)
+      .service_tier,
+  ).toBe("priority");
+  await call(bash("printf normal-approval"));
+
+  for (const request of requested.slice(before)) {
+    const payload = request.options.onPayload(
+      { model: request.model.id, service_tier: "auto" },
+      request.model,
+    );
+
+    expect(payload.service_tier).toBe("auto");
+  }
+});
+
 test("review-mode delegation rejects mutation before review and advertises only read-only project mounts", async () => {
   await writeFile(join(root, "sample.txt"), "Read-only review fixture\n");
   sessionServices(ctx).delegationMode = "review";

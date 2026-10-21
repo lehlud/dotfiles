@@ -11,7 +11,7 @@ review infrastructure never import a feature entry point.
 | Multiplex          | Equal peer sessions, coordination, authenticated mailboxes, shared activity                          | `multiplex/index.ts`          |
 | Subagents          | Bounded delegated sessions, parent-only mailboxes, read-only reviews, kill and explicit resurrection | `subagents/index.ts`          |
 | Context management | Request budgets, original-history retrieval, working notes, append-only eviction and rotation        | `context-management/index.ts` |
-| Fast mode          | Session speed preference for OpenAI/Codex and OpenRouter; shared by peers and side conversations     | `fast-mode/index.ts`          |
+| Fast mode          | Session speed preference for working and review models on OpenAI/Codex and OpenRouter                | `fast-mode/index.ts`          |
 | Provider recovery  | Attach bounded transport recovery to the working model                                               | `provider-recovery/index.ts`  |
 | Code quality       | Standing multilingual code readability rules on every working-model request                          | `code-quality/index.ts`       |
 | Public writing     | Frozen editorial policy and an independently reviewed prose receipt                                  | `public-writing/index.ts`     |
@@ -42,7 +42,7 @@ review infrastructure never import a feature entry point.
   tools. Main, Multiplex and delegated sessions get separate instances. Original
   user evidence and action receipts remain in the append-only log; the extension
   cannot authorize actions. Native provider features are route-scoped and opt-in.
-- Fast mode owns its operator toggle and status; shared request hooks apply it to the working model, peers and side conversations. It does not change reviewer policy, model selection or sandbox access.
+- Fast mode owns its operator toggle and status; shared request hooks apply it to the working model, peers, subagents and side conversations. The review client applies the same preference to approval, completion, editorial and compression requests. Reviewer policy, model selection and sandbox access remain independent.
 - Code quality has no feature dependencies, tools or reviewer. Its transient context instruction
   reaches every working-model request without changing the saved transcript or authorization.
 - Auto-Approval consumes public writing and web tool definitions. It owns action policy, preflight,

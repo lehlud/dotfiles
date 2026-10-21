@@ -17,6 +17,7 @@ export function reviewWithFallback(
   signal?: AbortSignal,
   systemPrompt?: string,
   availability?: VerdictArguments[6],
+  processing?: VerdictArguments[7],
 ) {
   const policy =
     systemPrompt ??
@@ -24,7 +25,16 @@ export function reviewWithFallback(
       ? WRITING_REVIEW_SYSTEM
       : REVIEW_SYSTEM);
 
-  return requestVerdict(config, registry, envelope, observer, signal, policy, availability);
+  return requestVerdict(
+    config,
+    registry,
+    envelope,
+    observer,
+    signal,
+    policy,
+    availability,
+    processing,
+  );
 }
 
 export function buildReview(

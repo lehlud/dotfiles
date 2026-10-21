@@ -330,6 +330,33 @@ test("incomplete verdict continues with missing work; only a later independent a
   expect(requests[0].context.tools).toBeUndefined();
 });
 
+test("goal verification inherits fast mode and preserves strict completion verdicts", async () => {
+  let fast = true;
+
+  sessionServices(ctx).fastMode = () => fast;
+  await command("Verify the result", ctx);
+  verdicts = ["deny", "approve"];
+
+  await settle();
+
+  const first = requests[0];
+  const accelerated = first.options.onPayload({ model: first.model.id }, first.model);
+
+  expect(accelerated.service_tier).toBe("priority");
+  expect(accelerated.text.format.schema.required).toContain("blocked");
+  expect(state().status).toBe("running");
+
+  fast = false;
+  await settle();
+
+  const last = requests.at(-1);
+  const ordinary = last.options.onPayload({ model: last.model.id }, last.model);
+
+  expect(ordinary.service_tier).toBeUndefined();
+  expect(ordinary.text.format).toEqual(accelerated.text.format);
+  expect(state().status).toBe("complete");
+});
+
 test("an independently identified external blocker waits once without repeating work or review", async () => {
   await command("Finish the validation", ctx);
   verdicts = ["deny"];

@@ -10,7 +10,7 @@ export default function fastMode(pi: ExtensionAPI) {
   const draw = (ctx: ExtensionContext) => {
     ctx.ui.setStatus(
       "fast-mode",
-      enabled ? (fastRoute(ctx.model) ? "fast" : "fast (unavailable)") : undefined,
+      enabled ? (fastRoute(ctx.model) ? "fast" : "fast (main unsupported)") : undefined,
     );
   };
   const restore = (_event: unknown, ctx: ExtensionContext) => {
@@ -40,7 +40,7 @@ export default function fastMode(pi: ExtensionAPI) {
   });
   pi.registerCommand("fast", {
     description:
-      "Toggle faster processing for the selected model: /fast [on|off|status]. May increase cost or usage.",
+      "Toggle faster processing for working and review models: /fast [on|off|status]. May increase cost or usage.",
     handler: async (args, ctx) => {
       const mode = args.trim().toLowerCase();
 
@@ -68,10 +68,12 @@ export default function fastMode(pi: ExtensionAPI) {
           ? "OpenAI priority processing"
           : route === "throughput"
             ? "OpenRouter highest-throughput eligible provider"
-            : "no speed override available for this model/provider";
+            : "no speed override for the working model; reviewers use their supported routes";
 
       ctx.ui.notify(
-        enabled ? `Fast mode on · ${detail}. May increase cost or usage.` : "Fast mode off.",
+        enabled
+          ? `Fast mode on · ${detail}. Applies to working and review requests; may increase cost or usage.`
+          : "Fast mode off.",
         "info",
       );
     },

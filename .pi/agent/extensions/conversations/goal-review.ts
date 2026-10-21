@@ -15,6 +15,7 @@ import type { ReviewSettings } from "../shared/review/protocol.ts";
 import { type Entry } from "../shared/review/evidence.ts";
 import { checkReviewSize } from "../shared/review/context.ts";
 import type { PreparedPrompts } from "../shared/review/compression.ts";
+import { sessionServices } from "../shared/session/services.ts";
 
 export const GOAL_REVIEW_SYSTEM = `You independently verify whether the session goal is fully achieved.
 ${REVIEW_LANGUAGE}
@@ -121,6 +122,7 @@ export async function verifyGoal(
   onPrepared: (review: ReturnType<typeof buildGoalReview>) => void,
 ) {
   const config = await loadConfig(getAgentDir());
+  const processing = { fastMode: () => sessionServices(ctx).fastMode?.() ?? false };
   const branch = ctx.sessionManager.getBranch();
   const prepared = await preparePromptContext(
     branch,
@@ -147,6 +149,7 @@ export async function verifyGoal(
     },
     signal,
     current.source === "agent" ? undefined : current.text,
+    processing,
   );
   const envelope = buildGoalReview(
     current.text,
@@ -186,5 +189,7 @@ export async function verifyGoal(
     },
     signal,
     GOAL_REVIEW_SYSTEM,
+    undefined,
+    processing,
   );
 }

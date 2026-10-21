@@ -103,6 +103,7 @@ class ActionRun {
 
     const branch = this.ctx.sessionManager.getBranch();
     const operatorGoal = sessionServices(this.ctx).operatorGoal?.();
+    const processing = { fastMode: () => sessionServices(this.ctx).fastMode?.() ?? false };
     const prepared = await preparePromptContext(
       branch,
       config,
@@ -133,6 +134,7 @@ class ActionRun {
       },
       this.signal,
       operatorGoal,
+      processing,
     );
 
     this.phase = "review context preparation";
@@ -174,6 +176,9 @@ class ActionRun {
       review,
       this.display.observers(review, request.tool),
       this.signal,
+      undefined,
+      undefined,
+      processing,
     );
 
     this.usage = checked.usage;

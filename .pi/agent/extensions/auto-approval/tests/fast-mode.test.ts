@@ -105,7 +105,7 @@ test("branch restore and session switching restore their own state and model cha
   expect(state.status()).toBe("fast");
   state.ctx.model = { provider: "anthropic", api: "anthropic-messages" };
   state.hooks.model_select({}, state.ctx);
-  expect(state.status()).toBe("fast (unavailable)");
+  expect(state.status()).toBe("fast (main unsupported)");
   state.entries.push({
     type: "custom_message",
     customType: FAST_MODE_ENTRY,

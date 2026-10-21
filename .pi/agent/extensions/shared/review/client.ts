@@ -24,8 +24,11 @@ import {
 } from "../providers/availability.ts";
 import { installProviderStreams, unavailableResponse } from "../providers/stream.ts";
 import { cacheReviewPayload, reviewCacheKey, reviewCacheRetention } from "./cache.ts";
+import { fastPayload } from "../providers/fast.ts";
 
 export type ReviewRegistry = Pick<ModelRegistry, "find" | "hasConfiguredAuth" | "streamSimple">;
+
+export type ReviewProcessing = { fastMode?: () => boolean };
 
 type Usage = AssistantMessage["usage"];
 
@@ -171,6 +174,7 @@ async function requestReview(
   return await withWatchdog(
     async (reviewSignal) => {
       const work = async () => {
+        const fast = state.processing.fastMode?.() ?? false;
         const response = await registry
           .streamSimple(model, structuredClone(context), {
             reasoning: candidate.thinking === "off" ? undefined : candidate.thinking,
@@ -178,12 +182,15 @@ async function requestReview(
             maxTokens: REVIEW_OUTPUT_TOKENS,
             cacheRetention: reviewCacheRetention(model),
             sessionId: reviewCacheKey(envelope, context),
-            onPayload: (payload, providerModel) =>
-              cacheReviewPayload(
+            onPayload: (payload, providerModel) => {
+              const cached = cacheReviewPayload(
                 constrainReviewPayload(payload, providerModel, envelope.goalCheck) ?? payload,
                 providerModel,
                 envelope,
-              ),
+              );
+
+              return fastPayload(cached, providerModel, fast) ?? cached;
+            },
           })
           .result();
 
@@ -208,7 +215,12 @@ async function requestReview(
   );
 }
 
-type ReviewState = { usage?: Usage; promptLookups: PromptLookup[]; consulted: Set<string> };
+type ReviewState = {
+  usage?: Usage;
+  promptLookups: PromptLookup[];
+  consulted: Set<string>;
+  processing: ReviewProcessing;
+};
 
 async function requestCandidate(
   registry: ReviewRegistry,
@@ -290,6 +302,7 @@ export async function requestVerdict(
   signal: AbortSignal | undefined,
   systemPrompt: string,
   availability = providerAvailability,
+  processing: ReviewProcessing = {},
 ) {
   const source = JSON.parse(envelope.text).latestUserPrompt;
 
@@ -305,6 +318,7 @@ export async function requestVerdict(
     usage: envelope.compressionUsage,
     promptLookups: [],
     consulted: new Set(),
+    processing,
   };
 
   for (const candidate of config.reviewers) {

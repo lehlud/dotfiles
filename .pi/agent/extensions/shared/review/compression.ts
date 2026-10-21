@@ -5,7 +5,12 @@ import { join } from "node:path";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { operatorPrompts, type Entry } from "./evidence.ts";
 import type { ReviewSettings } from "./protocol.ts";
-import { requestVerdict, ReviewChainError, type ReviewAttempt } from "./client.ts";
+import {
+  requestVerdict,
+  ReviewChainError,
+  type ReviewAttempt,
+  type ReviewProcessing,
+} from "./client.ts";
 import { sumUsage } from "../providers/usage.ts";
 import { reviewLanguageReference } from "./context.ts";
 
@@ -86,6 +91,7 @@ async function compressText(
   registry: ModelRegistry,
   observer: CompressionObserver,
   signal?: AbortSignal,
+  processing: ReviewProcessing = {},
 ) {
   const count = Math.ceil(original.length / CHUNK_CHARS);
 
@@ -129,6 +135,8 @@ async function compressText(
         },
         signal,
         COMPRESSION_SYSTEM,
+        undefined,
+        processing,
       );
 
       if (result.usage) usage = usage ? sumUsage(usage, result.usage) : result.usage;
@@ -173,6 +181,7 @@ export async function preparePromptContext(
   observer: CompressionObserver = {},
   signal?: AbortSignal,
   operatorGoal?: string,
+  processing: ReviewProcessing = {},
 ): Promise<PreparedPrompts> {
   const prompts = operatorPrompts(entries, config.recentUserPrompts, operatorGoal);
 
@@ -261,7 +270,7 @@ export async function preparePromptContext(
         let compressed;
 
         try {
-          compressed = await compressText(original, config, registry, observer, signal);
+          compressed = await compressText(original, config, registry, observer, signal, processing);
         } catch (error) {
           if (error instanceof ReviewChainError && usage)
             error.usage = error.usage ? sumUsage(usage, error.usage) : usage;

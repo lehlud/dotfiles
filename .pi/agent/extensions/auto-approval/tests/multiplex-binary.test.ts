@@ -153,7 +153,7 @@ binaryTest(
             event.type === "extension_ui_request" &&
             event.method === "setStatus" &&
             event.statusKey === "fast-mode" &&
-            event.statusText === "fast (unavailable)",
+            event.statusText === "fast (main unsupported)",
         ),
       ).toBe(true);
       child.stdin.write(
