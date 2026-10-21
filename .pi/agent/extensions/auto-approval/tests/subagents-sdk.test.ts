@@ -388,6 +388,17 @@ native.each([
     try {
       const parentId = state.session.sessionId;
       const rootRequest = state.requests[0];
+
+      const userContext = JSON.stringify(
+        rootRequest.payload.input.filter((entry: any) => entry.role === "user"),
+      );
+
+      expect(userContext.split("Work alone by default.").length - 1).toBe(1);
+      expect(userContext).toContain("explicitly requests subagents");
+      expect(JSON.stringify(state.session.sessionManager.getBranch())).not.toContain(
+        "subagent-usage-instruction",
+      );
+
       const job = (await state.invoke({ operation: "spawn", task: "CACHE-REVIEW" })).details;
 
       await until(

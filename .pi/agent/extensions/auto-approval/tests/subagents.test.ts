@@ -9,6 +9,59 @@ import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Checkpoints } from "../../subagents/store.ts";
+import subagents from "../../subagents/index.ts";
+import { USAGE_POLICY, USAGE_POLICY_TYPE } from "../../subagents/usage-policy.ts";
+
+test("the extension supplies one current delegation policy without changing user prompts or saved history", () => {
+  const hooks: Record<string, Function> = {};
+  const tools: any[] = [];
+
+  subagents({
+    on(name: string, callback: Function) {
+      hooks[name] = callback;
+    },
+    registerCommand() {},
+    registerEntryRenderer() {},
+    registerTool(tool: any) {
+      tools.push(tool);
+    },
+    appendEntry() {
+      throw new Error("Request projection must not persist policy");
+    },
+  } as any);
+
+  const user = { role: "user", content: `Quoted DATA: ${USAGE_POLICY_TYPE}` };
+  const goal = {
+    role: "custom",
+    customType: "auto-approval-goal-instruction",
+    content: "Existing task",
+  };
+  const messages = [
+    { role: "custom", customType: USAGE_POLICY_TYPE, content: "Old permissive rule" },
+    user,
+    goal,
+    { role: "custom", customType: USAGE_POLICY_TYPE, content: "Duplicate rule" },
+  ];
+  const original = structuredClone(messages);
+  const projected = hooks.context({ messages }).messages;
+
+  expect(projected).toEqual([
+    user,
+    goal,
+    expect.objectContaining({
+      customType: USAGE_POLICY_TYPE,
+      content: USAGE_POLICY,
+      display: false,
+    }),
+  ]);
+  expect(messages).toEqual(original);
+  expect(
+    hooks
+      .context({ messages: projected })
+      .messages.filter((entry: any) => entry.customType === USAGE_POLICY_TYPE),
+  ).toHaveLength(1);
+  expect(tools[0].description).toStartWith("Work alone by default.");
+});
 
 test("review delegation cannot request command execution or writable grants", () => {
   for (const tool of ["bash", "powershell", "edit", "write", "credential_exec", "git"])

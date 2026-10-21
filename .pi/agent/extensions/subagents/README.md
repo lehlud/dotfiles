@@ -5,11 +5,20 @@ in its own Pi session, uses the parent's selected model/provider and has its own
 Auto-Approval gate, sandbox and private temporary directory. The workspace is
 shared. Assign explicit file ownership for implementation work.
 
-Use subagents rarely. Handle routine work directly. Delegate a bounded independent
-review or separable task only when its expected benefit outweighs the additional
-context, latency and coordination costs. Use the fewest agents needed; avoid
-duplicate work and spawning merely because capacity is available. This guidance
-leads the model-visible tool description in main and Multiplex sessions.
+Work alone by default. Spawning or resurrection requires an explicit operator
+request for subagents, additional parallel agents or an independent second
+opinion. A normal review request, task complexity, generic continuation or
+Multiplex membership does not request more agents. Scope the work directly
+first, then state the specific independent question and expected benefit before
+an allowed spawn. Start one agent and reuse it; multiple agents require an
+explicit request for multiple agents. Routine exploration, implementation,
+tests and self-review stay with the working model. When uncertain, continue
+alone rather than asking for delegation permission.
+
+`usage-policy.ts` supplies this standing instruction on every main/member model
+request, replacing obsolete copies without writing to the transcript. The tool
+description also leads with the same restriction. This is model guidance, not
+an automatic interpretation of user intent or a new runtime approval gate.
 
 Start a new Pi process through `~/.local/bin/pi` to load this extension for the
 first time. Existing processes started without it need a restart, not `/reload`.
