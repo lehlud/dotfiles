@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { streamSimple as responses } from "@earendil-works/pi-ai/api/openai-responses";
+import { cacheStream } from "../../shared/providers/cache-stream.ts";
 import contextManagement from "../../context-management/index.ts";
 import codeQuality from "../../code-quality/index.ts";
 import subagents from "../../subagents/index.ts";
@@ -68,6 +69,7 @@ async function fixture(
     pressure?: boolean;
     wire?: boolean;
     login?: boolean;
+    id?: string;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "pi-context-sdk-"));
@@ -89,14 +91,16 @@ async function fixture(
     api: api as any,
     apiKey: "synthetic",
     baseUrl:
-      provider === "anthropic"
-        ? "https://api.anthropic.com"
-        : setup.wire
-          ? "https://api.openai.com/v1"
-          : "https://example.invalid",
+      provider === "openrouter"
+        ? "https://openrouter.ai/api/v1"
+        : provider === "anthropic"
+          ? "https://api.anthropic.com"
+          : setup.wire
+            ? "https://api.openai.com/v1"
+            : "https://example.invalid",
     models: [
       {
-        id: "working",
+        id: setup.id ?? "working",
         name: "working",
         reasoning: false,
         input: ["text"],
@@ -111,7 +115,7 @@ async function fixture(
       const turn = contexts.push(structuredClone(context.messages));
 
       if (setup.wire) {
-        return responses(model as any, context, {
+        return cacheStream(responses)(model as any, context, {
           ...options,
           apiKey: setup.login ? "synthetic-login-token" : "sk-synthetic",
           fetch: (async (_url: unknown, init: any) => {
@@ -174,7 +178,7 @@ async function fixture(
     cwd: directory,
     agentDir: directory,
     modelRuntime: runtime,
-    model: new ModelRegistry(runtime).find(provider, "working")!,
+    model: new ModelRegistry(runtime).find(provider, setup.id ?? "working")!,
     thinkingLevel: "off",
     sessionManager: manager,
     settingsManager: settings,
@@ -246,6 +250,33 @@ test.each([false, true])(
     }
   },
 );
+
+test("OpenRouter Responses requests cache history before custom hints", async () => {
+  const state = await fixture(() => [], {
+    provider: "openrouter",
+    api: "openai-responses",
+    id: "openai/gpt-6.1-sol",
+    wire: true,
+  });
+
+  try {
+    await state.session.prompt("Original task");
+    await state.session.prompt("Continue");
+
+    expect(state.errors).toEqual([]);
+    expect(state.requests).toHaveLength(2);
+
+    for (const body of state.requests) {
+      expect(body.prompt_cache_options.mode).toBe("explicit");
+      expect(
+        body.input.find((item: any) => item.role === "user").content[0].prompt_cache_breakpoint,
+      ).toEqual({ mode: "explicit" });
+      expect(body.input.at(-1).content[0].prompt_cache_breakpoint).toBeUndefined();
+    }
+  } finally {
+    await state.close();
+  }
+});
 
 test("SDK rotation preserves user identity and notes, removes complete tool history and retrieves the exact archived output", async () => {
   let evidence = "";

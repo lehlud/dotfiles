@@ -20,6 +20,7 @@ import {
   type AvailabilityNotice,
 } from "./availability.ts";
 import { sumUsage } from "./usage.ts";
+import { cacheStream } from "./cache-stream.ts";
 
 const wrappedKey = Symbol.for("pi.auto-approval.provider-stream.v1");
 const zeroUsage = () => ({
@@ -69,6 +70,8 @@ export function resilientStream(
   notice?: (event: AvailabilityNotice) => void,
   finish?: (model: Model<any>) => void,
 ): Stream {
+  const cached = cacheStream(original);
+
   return (model, context, options) => {
     const stream = createAssistantMessageEventStream();
     let started = false,
@@ -76,7 +79,7 @@ export function resilientStream(
       last: AssistantMessage | undefined;
     const immutable = structuredClone(context);
     const work = async () => {
-      const source = original(model, structuredClone(immutable), options);
+      const source = cached(model, structuredClone(immutable), options);
       let partial: AssistantMessage | undefined;
 
       try {

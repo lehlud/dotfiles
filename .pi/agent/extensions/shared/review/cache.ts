@@ -1,8 +1,16 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/pi-ai";
 import type { ReviewEnvelope } from "./contracts.ts";
+import { cacheConversationReview } from "../providers/cache-conversation.ts";
+import { conversationCache, isOpenRouter } from "../providers/cache-routes.ts";
 
-type CacheModel = { provider: string; api?: string; compat?: unknown };
+type CacheModel = {
+  provider: string;
+  api?: string;
+  id?: string;
+  baseUrl?: string;
+  compat?: unknown;
+};
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -20,6 +28,13 @@ export function reviewCacheKey(envelope: ReviewEnvelope, context: Context): stri
 }
 
 export function reviewCacheRetention(model: CacheModel): "short" | "long" {
+  if (
+    model.api === "openai-responses" &&
+    isOpenRouter(model) &&
+    conversationCache(model) === "openai"
+  )
+    return "long";
+
   const explicit =
     model.provider === "openai" &&
     model.api === "openai-responses" &&
@@ -71,6 +86,10 @@ export function cacheReviewPayload(
   model: CacheModel,
   envelope: ReviewEnvelope,
 ): unknown {
+  const routed = cacheConversationReview(payload, model, envelope.text, envelope.cachePrefix);
+
+  if (routed) return routed;
+
   if (
     reviewCacheRetention(model) !== "long" ||
     !object(payload) ||

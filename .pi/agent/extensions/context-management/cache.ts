@@ -1,4 +1,6 @@
 import { sanitizeSurrogates } from "@earendil-works/pi-ai/utils/sanitize-unicode";
+import { cacheConversationPayload } from "../shared/providers/cache-conversation.ts";
+import { conversationCache, isOpenRouter } from "../shared/providers/cache-routes.ts";
 
 type CacheModel = {
   id: string;
@@ -28,11 +30,14 @@ export function cacheTail(messages: readonly { role: string; content?: unknown }
 }
 
 function supported(model: CacheModel | undefined, body: RecordValue) {
+  const router = model && isOpenRouter(model) && conversationCache(model) === "openai";
+
   if (
-    model?.provider !== "openai" ||
-    model.api !== "openai-responses" ||
-    !record(model.compat) ||
-    model.compat.supportsExplicitPromptCacheMode !== true
+    model?.api !== "openai-responses" ||
+    (!router &&
+      (model.provider !== "openai" ||
+        !record(model.compat) ||
+        model.compat.supportsExplicitPromptCacheMode !== true))
   )
     return false;
 
@@ -41,7 +46,7 @@ function supported(model: CacheModel | undefined, body: RecordValue) {
 
     // The SDK omits the output cap for ChatGPT login. Never restore its rejected fields.
     return (
-      url.origin === "https://api.openai.com" &&
+      (router || url.origin === "https://api.openai.com") &&
       body.model === model.id &&
       typeof body.max_output_tokens === "number" &&
       body.max_output_tokens > 0 &&
@@ -127,6 +132,10 @@ export function cacheContextPayload(
   model: CacheModel | undefined,
   tail: readonly string[],
 ) {
+  const routed = cacheConversationPayload(payload, model, tail);
+
+  if (routed) return routed;
+
   if (!record(payload) || !supported(model, payload) || !Array.isArray(payload.input)) return;
 
   const options = payload.prompt_cache_options;

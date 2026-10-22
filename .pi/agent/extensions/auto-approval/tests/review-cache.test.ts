@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { streamSimple as responses } from "@earendil-works/pi-ai/api/openai-responses";
 import { streamSimple as completions } from "@earendil-works/pi-ai/api/openai-completions";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
+import { cacheStream } from "../../shared/providers/cache-stream.ts";
 import { buildReview, reviewWithFallback } from "../review.ts";
 import { buildGoalReview, GOAL_REVIEW_SYSTEM } from "../../conversations/goal-review.ts";
 import { reviewCacheKey, cacheReviewPayload } from "../../shared/review/cache.ts";
@@ -76,12 +77,17 @@ function completionEvents(verdict: string) {
 }
 
 /** Real SDK serialization with an in-memory HTTP transport; no provider is contacted. */
-function wireRegistry(provider = "openai", apiKey = "sk-synthetic") {
+function wireRegistry(
+  provider = "openai",
+  apiKey = "sk-synthetic",
+  id = "cache-fixture",
+  api = provider === "openai" ? "openai-responses" : "openai-completions",
+) {
   const requests: { body: any; headers: Headers }[] = [];
   const model: any = {
     provider,
-    id: "cache-fixture",
-    api: provider === "openai" ? "openai-responses" : "openai-completions",
+    id,
+    api,
     baseUrl: provider === "openai" ? "https://api.openai.com/v1" : "https://openrouter.ai/api/v1",
     reasoning: false,
     input: ["text"],
@@ -102,10 +108,11 @@ function wireRegistry(provider = "openai", apiKey = "sk-synthetic") {
         reason: "Synthetic independent verdict.",
         ...(data.goal ? { blocked: false } : {}),
       });
-      const events = provider === "openai" ? responseEvents(verdict) : completionEvents(verdict);
-      const sdk = provider === "openai" ? responses : completions;
+      const events =
+        api === "openai-responses" ? responseEvents(verdict) : completionEvents(verdict);
+      const sdk = api === "openai-responses" ? responses : completions;
 
-      return sdk(selected, normalizeContext(context), {
+      return cacheStream(sdk)(selected, normalizeContext(context), {
         ...options,
         apiKey,
         fetch: async (_url: unknown, init: any) => {
@@ -231,6 +238,60 @@ test("real OpenRouter requests keep session affinity without unsupported cache f
     expect(request.body.prompt_cache_options).toBeUndefined();
     expect(request.body.messages[1].content).toBeString();
   }
+});
+
+test.each(["anthropic/claude-sonnet-4.6", "qwen/qwen3-coder-plus", "openai/gpt-6.1-sol"])(
+  "router reviewers cache shared context without caching unique decisions: %s",
+  async (id) => {
+    const wire = wireRegistry("openrouter", "sk-synthetic", id);
+    const routerConfig = {
+      ...config,
+      reviewers: [{ provider: "openrouter", model: id, thinking: "off" as const }],
+    };
+    const envelopes = [review(), review("printf next")];
+
+    for (const envelope of envelopes)
+      await reviewWithFallback(routerConfig, wire.registry, envelope, observer);
+
+    const prefixBlocks = wire.requests.map(({ body, headers }, index) => {
+      const content = body.messages.find((message: any) => message.role === "user").content;
+
+      expect(content.map((part: any) => part.text).join("")).toBe(envelopes[index].text);
+      expect(content[0].text).toBe(envelopes[index].cachePrefix);
+      expect(content.at(-1).cache_control).toBeUndefined();
+      expect(content.at(-1).prompt_cache_breakpoint).toBeUndefined();
+      expect(headers.get("x-session-id")).toMatch(/^[a-f0-9]{64}$/);
+
+      if (id.startsWith("openai/")) expect(body.prompt_cache_options.mode).toBe("explicit");
+      else expect(content[0].cache_control).toEqual({ type: "ephemeral" });
+
+      return content[0];
+    });
+
+    expect(prefixBlocks[0]).toEqual(prefixBlocks[1]);
+  },
+);
+
+test("OpenRouter Responses reviewers retain exact JSON and reusable prefix markers", async () => {
+  const id = "openai/gpt-6.1-sol";
+  const wire = wireRegistry("openrouter", "sk-synthetic", id, "openai-responses");
+  const envelope = review();
+
+  await reviewWithFallback(
+    { ...config, reviewers: [{ provider: "openrouter", model: id, thinking: "off" }] },
+    wire.registry,
+    envelope,
+    observer,
+  );
+
+  const body = wire.requests[0].body;
+  const content = body.input.find((item: any) => item.role === "user").content;
+
+  expect(content.map((part: any) => part.text).join("")).toBe(envelope.text);
+  expect(content[0].text).toBe(envelope.cachePrefix);
+  expect(content[0].prompt_cache_breakpoint).toEqual({ mode: "explicit" });
+  expect(content.at(-1).prompt_cache_breakpoint).toBeUndefined();
+  expect(body.prompt_cache_options.mode).toBe("explicit");
 });
 
 test("ChatGPT login keeps the SDK's unsupported cache fields omitted", async () => {

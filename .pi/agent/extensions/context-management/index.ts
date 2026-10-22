@@ -100,12 +100,11 @@ export default function contextManagement(pi: ExtensionAPI) {
     return { entries: prune(event.context.contextEntries, target, state.profile !== "responses") };
   });
 
-  pi.on(
-    "before_provider_request",
-    (event, ctx) =>
-      cacheContextPayload(event.payload, ctx.model, transientTail) ??
-      nativePayload(event.payload, ctx.model, native),
-  );
+  pi.on("before_provider_request", (event, ctx) => {
+    const cached = cacheContextPayload(event.payload, ctx.model, transientTail);
+
+    return nativePayload(cached ?? event.payload, ctx.model, native) ?? cached;
+  });
   pi.on("before_provider_headers", (event, ctx) => nativeHeaders(event.headers, ctx.model, native));
 
   pi.registerCommand("context", {

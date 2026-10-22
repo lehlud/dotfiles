@@ -48,19 +48,31 @@ an explicit output reserve. Cached input still occupies the context window.
 Unknown usage stays unknown. Budget/notes are added at the request tail; the
 extension does not rewrite the leading system prompt each turn.
 
-For official OpenAI Responses models advertising explicit cache support, the
-request adapter marks reusable user/developer messages and tool outputs before
-the trailing custom instructions, budget and notes. Earlier history markers
-remain present as the conversation grows, so later requests can look up prior
-cache boundaries. Explicit-only mode avoids writing the changing suffix.
-Text tool outputs use equivalent structured text blocks; reasoning, tool-call
-identities, images, tool definitions and saved session entries remain intact.
+Cache handling follows the selected provider protocol, for both working and
+review models. Stable history stays before changing instructions, budget and
+notes. Review requests cache the shared snapshot before action-specific data;
+the complete reviewed JSON and unique request ID are still sent every time.
 
-The adapter requires the SDK's API output-cap and enabled session-cache fields;
-it leaves ChatGPT login, Codex Responses, OpenRouter and unsupported models alone.
-Existing explicit cache policies, breakpoints, routing and lifetime settings are
-preserved. Missing or mismatched custom suffixes disable this optimization for
-that request. This verifies request construction, not live cache hits or savings.
+| Route                                                                                             | Cache handling                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenRouter automatic-cache models, including current Gemini, DeepSeek, Moonshot and Z.AI families | Preserve the stable prefix and SDK session-affinity header; keep provider-managed caching without extra cache fields. Unknown models use this conservative path.  |
+| Claude through OpenRouter Chat Completions or Anthropic Messages; direct Anthropic Messages       | Relocate the SDK's enabled message cache marker before the transient suffix. Keep system/tool markers, TTLs and signed content.                                   |
+| Documented Alibaba explicit-cache endpoints                                                       | Enable the SDK's five-minute cache convention for supported canonical model IDs, including listed Qwen endpoints. Dated snapshots do not inherit this capability. |
+| OpenAI GPT-5.6+ through OpenRouter Chat Completions or Responses                                  | Mark reusable history with the router's documented explicit-cache fields. Keep prior boundaries for later lookups; exclude the changing suffix from writes.       |
+| Official OpenAI Responses with explicit-cache capability                                          | Mark reusable history after checking SDK-negotiated API/cache fields. ChatGPT login omissions and Codex Responses remain intact.                                  |
+| Other native APIs                                                                                 | Retain SDK/provider cache behavior without guessing protocol fields.                                                                                              |
+
+Model selection, privacy/routing restrictions, Fast Mode and explicit cache-off
+preferences remain authoritative. No upstream provider is pinned by this code.
+Gemini's implicit cache path is retained rather than introducing paid explicit
+storage. Existing explicit policies and breakpoints are preserved; a missing or
+mismatched suffix skips boundary relocation. Cache metadata never edits saved
+history or approval receipts. Text blocks may use an equivalent structured wire
+representation; opaque reasoning, call IDs and image data remain unchanged.
+
+Tests inspect real SDK serialization with synthetic HTTP transports. They verify
+request construction and prefix stability, not live cache availability, hits or
+savings. A model/provider without caching cannot acquire it through client hints.
 
 At 76.8% of the full context window, portable eviction considers successful text
 tool results older than the latest six (208,896 tokens for a 272,000-token window).
@@ -116,6 +128,8 @@ Verified protocol references:
 
 - [OpenAI Compaction](https://developers.openai.com/api/docs/guides/compaction)
 - [OpenAI Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
+- [OpenRouter Prompt caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching)
+- [Anthropic Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 - [Anthropic Context editing](https://platform.claude.com/docs/en/build-with-claude/context-editing)
 - [Pi compaction](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)
 - [Pi extension lifecycle](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)
@@ -130,6 +144,8 @@ live-provider beta availability or cache savings.
 `archive.ts` exposes branch-scoped text and note reconstruction. `budget.ts`
 selects conservative profiles. `projection.ts` plans pure append-only edits;
 `providers.ts` limits native request changes to an explicit supported route.
-`cache.ts` places compatible OpenAI cache boundaries before transient context.
+`cache.ts` composes context boundaries with shared provider cache adapters.
+Shared `cache-routes.ts`, `cache-stream.ts` and `cache-conversation.ts` own
+capability selection, SDK negotiation and conversation/review wire markers.
 `index.ts` registers the tools and lifecycle hooks. Shared contracts expose
 tool names without pulling this extension into the approval policy.

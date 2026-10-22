@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { cacheContextPayload, cacheTail } from "../../context-management/cache.ts";
+import contextManagement from "../../context-management/index.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 const model = {
   id: "working",
@@ -25,6 +27,58 @@ const body = () => ({
     { type: "function_call_output", call_id: "call", output: "Exact evidence" },
     ...policy.map(user),
   ],
+});
+
+test("native tool clearing composes with relocated cache markers", () => {
+  const hooks: Record<string, Function> = {};
+  const manager = SessionManager.inMemory("/fixture");
+
+  manager.appendCustomEntry("context-memory-settings", { native: true });
+  contextManagement({
+    on(name: string, callback: Function) {
+      hooks[name] = callback;
+    },
+    registerCommand() {},
+    registerTool() {},
+  } as any);
+
+  const ctx: any = {
+    sessionManager: manager,
+    model: {
+      id: "claude-fixture",
+      provider: "anthropic",
+      api: "anthropic-messages",
+      baseUrl: "https://api.anthropic.com",
+      contextWindow: 200000,
+      maxTokens: 4096,
+    },
+    getContextUsage: () => ({ tokens: 100 }),
+  };
+
+  hooks.session_start({}, ctx);
+
+  const projection = hooks.context({ messages: [{ role: "user", content: "Task" }] }, ctx);
+  const content = projection.messages.map((message: any) => ({
+    type: "text",
+    text: message.content,
+  }));
+
+  content.at(-1).cache_control = { type: "ephemeral" };
+
+  const changed = hooks.before_provider_request(
+    {
+      payload: {
+        model: "claude-fixture",
+        tools: [{ name: "history" }],
+        messages: [{ role: "user", content }],
+      },
+    },
+    ctx,
+  );
+
+  expect(changed.context_management.edits[0].type).toBe("clear_tool_uses_20250919");
+  expect(changed.messages[0].content[0].cache_control).toEqual({ type: "ephemeral" });
+  expect(changed.messages[0].content.at(-1).cache_control).toBeUndefined();
 });
 
 test("cache tail comes from custom suffix metadata, including Unicode normalization", () => {
