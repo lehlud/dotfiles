@@ -114,7 +114,10 @@ async function fixture(hold = false) {
     },
   });
 
-  async function create(resume = false) {
+  async function create(
+    resume = false,
+    select?: (title: string, options: string[]) => Promise<string | undefined>,
+  ) {
     const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false } });
     const manager = SessionManager.inMemory(directory);
 
@@ -169,11 +172,12 @@ async function fixture(hold = false) {
 
     resource.sessions.push(session);
     await session.bindExtensions({
-      mode: "tui",
+      mode: select ? "rpc" : "tui",
       uiContext: {
         setFooter() {},
         setStatus() {},
         notify: (text: string) => notices.push(text),
+        select,
       } as any,
       onError: (error) => notices.push(error.error),
     });
@@ -198,7 +202,11 @@ async function fixture(hold = false) {
 
 test("real Pi switches main model, thinking, reviewers and speed at the next steering boundary", async () => {
   const app = await fixture(true);
-  const session = await app.create();
+  const session = await app.create(false, async (title, options) =>
+    options.find((item) =>
+      item.includes(title.startsWith("Approval model") ? "/vendor/review-next" : "high"),
+    ),
+  );
   const running = session.prompt("Complete the synthetic checkpoint.");
 
   await app.firstRequest.promise;
@@ -218,7 +226,7 @@ test("real Pi switches main model, thinking, reviewers and speed at the next ste
   app.finishResponse.resolve();
   await app.toolStarted.promise;
   expect(app.toolReviewers()).toEqual([previous]);
-  await session.prompt("/reviewer set openrouter/vendor/review-next high");
+  await session.prompt("/reviewer");
   expect(app.state.reviewers()).toEqual([next]);
   expect(sessionServices(session).activeReviewers?.()).toEqual([previous]);
   app.finishTool.resolve();
@@ -237,6 +245,46 @@ test("real Pi switches main model, thinking, reviewers and speed at the next ste
 
   expect(JSON.stringify(users)).not.toContain("/reviewer");
   expect(JSON.stringify(users)).not.toContain("/fast");
+});
+
+test("real Pi /reviewer asks for known models and thinking without a working-model request", async () => {
+  const app = await fixture();
+  const prompts: { title: string; options: string[] }[] = [];
+  const modelChoice = Promise.withResolvers<string | undefined>();
+  const thinkingChoice = Promise.withResolvers<string | undefined>();
+  const modelShown = Promise.withResolvers<void>();
+  const thinkingShown = Promise.withResolvers<void>();
+  const session = await app.create(false, async (title, options) => {
+    prompts.push({ title, options });
+
+    if (prompts.length === 1) {
+      modelShown.resolve();
+
+      return modelChoice.promise;
+    }
+
+    thinkingShown.resolve();
+
+    return thinkingChoice.promise;
+  });
+  const command = session.prompt("/reviewer");
+
+  await modelShown.promise;
+  expect(prompts[0].options).toContain("openrouter/vendor/review-next");
+  expect(app.state.reviewers()).toEqual([previous]);
+  modelChoice.resolve("openrouter/vendor/review-next");
+  await thinkingShown.promise;
+  expect(prompts[1].options).toEqual(["✓ low", "high"]);
+  expect(app.state.reviewers()).toEqual([previous]);
+  thinkingChoice.resolve("high");
+  await command;
+  expect(app.state.reviewers()).toEqual([next]);
+  expect(session.model?.id).toBe("working-old");
+  expect(session.thinkingLevel).toBe("low");
+  expect(app.requests).toHaveLength(0);
+  expect(
+    session.sessionManager.getBranch().filter((entry: any) => entry.type === "message"),
+  ).toHaveLength(0);
 });
 
 test("new Pi sessions restore the last pair and reviewer chain while resume keeps its own pair", async () => {

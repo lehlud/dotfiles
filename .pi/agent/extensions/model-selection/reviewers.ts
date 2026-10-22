@@ -2,9 +2,10 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parseReviewers, parseSelection } from "../shared/configuration/model-state.ts";
 import { reviewerLabel } from "../shared/review/client.ts";
 import type { Reviewer } from "../shared/review/protocol.ts";
+import { reviewerThinkingLevels } from "./capabilities.ts";
 
 export const REVIEWER_USAGE =
-  "/reviewer [list | set <provider/model> [thinking] | add <provider/model> [thinking] | remove <index> | move <from> <to> | thinking <level> [index]]";
+  "/reviewer [list | set [<provider/model> [thinking]] | add [<provider/model> [thinking]] | edit <index> | remove <index> | move <from> <to> | thinking <level> [index]]";
 
 function index(value: string | undefined, length: number): number {
   if (!value || !/^[1-8]$/.test(value) || Number(value) > length) {
@@ -14,7 +15,11 @@ function index(value: string | undefined, length: number): number {
   return Number(value) - 1;
 }
 
-function selection(reference: string, thinking: string, ctx: ExtensionContext): Reviewer {
+export function reviewerSelection(
+  reference: string,
+  thinking: string,
+  ctx: ExtensionContext,
+): Reviewer {
   const separator = reference.indexOf("/");
   const candidate = parseSelection({
     provider: reference.slice(0, separator),
@@ -27,11 +32,7 @@ function selection(reference: string, thinking: string, ctx: ExtensionContext): 
     throw new Error(`Model not found: ${reference}. Use a provider/model identifier from /model.`);
   }
 
-  if (
-    candidate.thinking !== "off" &&
-    (!model.reasoning ||
-      (model.thinkingLevelMap && model.thinkingLevelMap[candidate.thinking] === undefined))
-  ) {
+  if (!reviewerThinkingLevels(model).includes(candidate.thinking)) {
     throw new Error(`Thinking level ${thinking} is unsupported by ${reference}`);
   }
 
@@ -49,7 +50,7 @@ export function updateReviewers(args: string, previous: Reviewer[], ctx: Extensi
     case "add": {
       if (words.length < 1 || words.length > 2) throw new Error(REVIEWER_USAGE);
 
-      const candidate = selection(words[0], words[1] ?? next[0]?.thinking ?? "off", ctx);
+      const candidate = reviewerSelection(words[0], words[1] ?? next[0]?.thinking ?? "off", ctx);
 
       if (operation === "add") next.push(candidate);
       else next.splice(0, 1, candidate);
@@ -83,7 +84,7 @@ export function updateReviewers(args: string, previous: Reviewer[], ctx: Extensi
       const position = index(words[1] ?? "1", next.length);
       const candidate = next[position];
 
-      next[position] = selection(`${candidate.provider}/${candidate.model}`, words[0], ctx);
+      next[position] = reviewerSelection(`${candidate.provider}/${candidate.model}`, words[0], ctx);
 
       break;
     }

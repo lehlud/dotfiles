@@ -6,10 +6,24 @@ Resuming, forking or reloading a conversation preserves its own selection; resto
 conversation does not silently replace the default for new sessions.
 Once that conversation actually runs again, its working pair becomes the last used preference.
 
-Use `/reviewer` to inspect or change independent approval models:
+`/reviewer` opens a searchable model selector for the primary reviewer, followed by its supported
+thinking levels. Search by provider, model ID or display name; use arrows and Enter to select.
+The current choices are preselected. Escape at either step cancels without saving anything.
+Browsing does not change the working model, start a provider request or interrupt ongoing work.
+Once both choices are confirmed, the preference is saved and follows the existing turn-boundary rules.
+
+The selector uses the loaded model catalog for providers with configured authentication, like
+the working-model selector. Use `/login` to add providers. RPC clients receive equivalent native
+selection requests; headless invocations can use the explicit commands below.
+
+`/reviewer add` opens the same flow for a new fallback; `/reviewer edit 2` edits the second entry.
+`/reviewer set` also opens the primary selector. `/reviewer list` prints the current chain.
+Explicit model IDs and thinking levels remain supported:
 
 ```text
 /reviewer list
+/reviewer add
+/reviewer edit 2
 /reviewer set openai/gpt-6-luna medium
 /reviewer add openrouter/deepseek/deepseek-v4.1-flash-1017 medium
 /reviewer thinking high
