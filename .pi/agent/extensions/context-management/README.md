@@ -48,8 +48,10 @@ an explicit output reserve. Cached input still occupies the context window.
 Unknown usage stays unknown. Budget/notes are added at the request tail; the
 extension does not rewrite the leading system prompt each turn.
 
-Above 75% of the usable budget, portable eviction considers successful text
-tool results older than the latest six. It keeps calls, failures, images,
+At 76.8% of the full context window, portable eviction considers successful text
+tool results older than the latest six (208,896 tokens for a 272,000-token window).
+This trigger is independent of the output reserve and does not change Pi's
+automatic compaction threshold. It keeps calls, failures, images,
 memory-tool results and small outputs. A batch must save at least 16,000
 characters before any edits are committed. References replace output content
 in the active projection; raw messages, receipts and IDs remain unchanged.

@@ -217,6 +217,25 @@ test("budgets account for the selected model, cached input, unknown usage and ou
   expect(profile({ ...model, api: "google-generative-ai" })).toBe("signed-history");
 });
 
+test.each([
+  [272000, 128000, 208896],
+  [200000, 8192, 153600],
+  [200000, 16384, 153600],
+])(
+  "archiving starts at 76.8%% of window %i with output limit %i",
+  (window, maxTokens, threshold) => {
+    let tokens = threshold - 1;
+    const ctx: any = {
+      model: { ...model, contextWindow: window, maxTokens },
+      getContextUsage: () => ({ tokens, contextWindow: window }),
+    };
+
+    expect(budget(ctx).pressure).toBe(false);
+    tokens = threshold;
+    expect(budget(ctx).pressure).toBe(true);
+  },
+);
+
 test("native Anthropic tool clearing is opt-in, route-scoped and preserves existing request controls", () => {
   const headers = {
     "Anthropic-Beta": " operator-beta ,context-management-2025-06-27",
