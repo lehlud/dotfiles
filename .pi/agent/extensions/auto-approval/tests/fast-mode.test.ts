@@ -97,7 +97,7 @@ test("toggle, explicit on/off, status and invalid arguments never enter model co
   ).toBe(true);
 });
 
-test("branch restore and session switching restore their own state and model changes report unsupported routes", async () => {
+test("branch restore and session switching restore their own state; status shows only the active flag", async () => {
   const state = fixture();
 
   await state.run("on");
@@ -105,7 +105,7 @@ test("branch restore and session switching restore their own state and model cha
   expect(state.status()).toBe("fast");
   state.ctx.model = { provider: "anthropic", api: "anthropic-messages" };
   state.hooks.model_select({}, state.ctx);
-  expect(state.status()).toBe("fast (main unsupported)");
+  expect(state.status()).toBe("fast");
   state.entries.push({
     type: "custom_message",
     customType: FAST_MODE_ENTRY,

@@ -1,3 +1,4 @@
+import { writeConfigFixture } from "./config-fixture.ts";
 import { expect, test } from "bun:test";
 import {
   mkdtemp,
@@ -98,7 +99,7 @@ async function fixture(
 
   if (build.exitCode) throw new Error(build.stderr.toString());
 
-  await writeFile(
+  await writeConfigFixture(
     join(agentDir, "auto-approval.json"),
     JSON.stringify({
       reviewers: [{ provider: "multiplex-fixture", model: "review", thinking: "off" }],

@@ -19,15 +19,16 @@ import { steeringReviewFixtures } from "./steering-review-fixtures.ts";
 import { activeGoalReviewFixtures } from "./active-goal-review-fixtures.ts";
 import { denialReviewFixtures } from "./denial-review-fixtures.ts";
 import { promptDigest } from "../../shared/review/prompts.ts";
+import { parseReviewers } from "../../shared/configuration/model-state.ts";
 
 const portable: PortableConfig = {
-  reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }],
   recentUserPrompts: 2,
   requestTimeoutMs: 120000,
   sandbox: { backend: "bwrap" },
 };
 const config: Config = {
   ...portable,
+  reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }],
   sandbox: { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/executor/runner" },
 };
 const request = {
@@ -269,18 +270,13 @@ describe("review policy", () => {
     expect(data.sandboxPlan).toEqual(plan);
   });
 
-  test("strict config and easily replaceable model", () => {
+  test("strict portable config excludes model selections", () => {
     expect(
-      parseConfig(
-        JSON.stringify({
-          ...portable,
-          reviewers: [{ provider: "other", model: "replacement", thinking: "low" }],
-        }),
-      ).reviewers[0].model,
+      parseReviewers([{ provider: "other", model: "replacement", thinking: "low" }])[0].model,
     ).toBe("replacement");
 
     for (const bad of [
-      { ...portable, reviewers: [{ ...portable.reviewers[0], thinking: "banana" }] },
+      { ...portable, reviewers: config.reviewers },
       { ...portable, recentUserPrompts: 0 },
       { ...portable, enabled: false },
       { ...portable, requestTimeoutMs: -1 },
@@ -309,11 +305,9 @@ describe("review policy", () => {
   test("reviewer priority requires a nonempty bounded list of explicit complete entries", () => {
     const secondary = { provider: "openrouter", model: "openai/gpt-6-luna", thinking: "medium" };
 
-    expect(
-      parseConfig(
-        JSON.stringify({ ...portable, reviewers: [...portable.reviewers, secondary] }),
-      ).reviewers.map((entry) => entry.provider),
-    ).toEqual(["openai", "openrouter"]);
+    expect(parseReviewers([...config.reviewers, secondary]).map((entry) => entry.provider)).toEqual(
+      ["openai", "openrouter"],
+    );
 
     for (const reviewers of [
       [],
@@ -322,7 +316,7 @@ describe("review policy", () => {
       [{ model: "gpt-6-luna", thinking: "medium" }],
       [{ ...secondary, token: "secret" }],
     ]) {
-      expect(() => parseConfig(JSON.stringify({ ...portable, reviewers }))).toThrow();
+      expect(() => parseReviewers(reviewers)).toThrow();
     }
 
     expect(() => parseConfig(JSON.stringify({ ...portable, provider: "openai" }))).toThrow();

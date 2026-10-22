@@ -5,7 +5,8 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { loadConfig, assertSandboxReady } from "../shared/configuration/load.ts";
+import { assertSandboxReady } from "../shared/configuration/load.ts";
+import { loadSessionConfig } from "../shared/session/config.ts";
 import { sessionServices } from "../shared/session/services.ts";
 import { reviewerLabel } from "../shared/review/client.ts";
 import { detectWorkspace } from "./isolation.ts";
@@ -45,9 +46,16 @@ export default function autoApproval(pi: ExtensionAPI) {
     lock(ctx);
 
     try {
-      const config = await loadConfig(getAgentDir());
+      const config = await loadSessionConfig(ctx);
 
       await assertSandboxReady(config);
+
+      if (!config.reviewers.length) {
+        ctx.ui.notify(
+          "Auto-Approval needs a reviewer. Use /reviewer set <provider/model> <thinking>.",
+          "warning",
+        );
+      }
     } catch (error) {
       ctx.ui.setStatus("auto-approval", "approval: LOCKED");
       ctx.ui.notify(`Auto-Approval LOCKED: ${String(error)}`, "error");
@@ -91,15 +99,14 @@ export default function autoApproval(pi: ExtensionAPI) {
     },
   }));
   pi.registerCommand("auto-approval", {
-    description:
-      "Show mandatory approval configuration (edit auto-approval.json to change the reviewer)",
+    description: "Show mandatory approval configuration; use /reviewer to select approval models",
     handler: async (_args, ctx) => {
       try {
-        const config = await loadConfig(getAgentDir());
+        const config = await loadSessionConfig(ctx);
 
         await assertSandboxReady(config);
         ctx.ui.notify(
-          `Auto-Approval ON\nReviewers (priority order):\n${config.reviewers.map((item, i) => `${i + 1}. ${reviewerLabel(item)}`).join("\n")}\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nDevice paths/views/credential profiles (optional): ${localConfigPath}\nChanges take effect on the next action. No bypass/off command.`,
+          `Auto-Approval ON\nActive reviewers (priority order):\n${config.reviewers.map((item, i) => `${i + 1}. ${reviewerLabel(item)}`).join("\n") || "None. Use /reviewer set <provider/model> <thinking>."}\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nDevice paths/views/credential profiles (optional): ${localConfigPath}\nUse /reviewer for persistent model choices. Changes apply at the next turn; in-flight reviews keep their selection. No bypass/off command.`,
           "info",
         );
       } catch (error) {

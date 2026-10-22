@@ -16,6 +16,7 @@ import { registerOperatorInputs } from "../conversations/operator-input.ts";
 import { registerSteering } from "../conversations/steering.ts";
 import { registerProgress } from "../conversations/progress.ts";
 import { registerFastRequests } from "../shared/providers/fast.ts";
+import { registerInheritedSelection } from "../shared/session/model-selection.ts";
 import { childRuntime } from "../shared/providers/child-runtime.ts";
 import { registerCacheAffinity } from "../shared/providers/cache-affinity.ts";
 import { PARENT_MAILBOX, type SubagentResult } from "../shared/contracts/subagents.ts";
@@ -46,6 +47,7 @@ function bindings(parent: ExtensionContext, job: SubagentResult, hooks: Hooks) {
     }));
     registerOperatorInputs(pi);
     registerFastRequests(pi);
+    registerInheritedSelection(pi, parent);
     registerSteering(pi, () => sessionServices(parent).operatorGoal?.());
     registerProgress(pi, (_ctx, text) => hooks.failed(text));
     pi.on("session_start", (_event, child) => {

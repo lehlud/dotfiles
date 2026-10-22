@@ -12,6 +12,7 @@ review infrastructure never import a feature entry point.
 | Subagents          | Bounded delegated sessions, parent-only mailboxes, read-only reviews, kill and explicit resurrection | `subagents/index.ts`          |
 | Context management | Request budgets, original-history retrieval, working notes, append-only eviction and rotation        | `context-management/index.ts` |
 | Fast mode          | Session speed preference for working and review models on OpenAI/Codex and OpenRouter                | `fast-mode/index.ts`          |
+| Model selection    | Persistent model/thinking pairs, ordered reviewer commands and live request-boundary changes         | `model-selection/index.ts`    |
 | Provider recovery  | Attach bounded transport recovery to the working model                                               | `provider-recovery/index.ts`  |
 | Code quality       | Standing multilingual code readability rules on every working-model request                          | `code-quality/index.ts`       |
 | Public writing     | Frozen editorial policy and an independently reviewed prose receipt                                  | `public-writing/index.ts`     |
@@ -43,6 +44,10 @@ review infrastructure never import a feature entry point.
   user evidence and action receipts remain in the append-only log; the extension
   cannot authorize actions. Native provider features are route-scoped and opt-in.
 - Fast mode owns its operator toggle and status; shared request hooks apply it to the working model, peers, subagents and side conversations. The review client applies the same preference to approval, completion, editorial and compression requests. Reviewer policy, model selection and sandbox access remain independent.
+- Model selection owns operator preferences and the footer. Native working-model commands persist
+  one model/thinking pair; `/reviewer` persists an ordered chain outside the security configuration.
+  Shared session bindings snapshot reviewer choices at turn boundaries and pass parent selections
+  to peers without sharing write authority. An active review retains its own configuration.
 - Code quality has no feature dependencies, tools or reviewer. Its transient context instruction
   reaches every working-model request without changing the saved transcript or authorization.
 - Auto-Approval consumes public writing and web tool definitions. It owns action policy, preflight,

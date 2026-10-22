@@ -3,6 +3,8 @@ import { constants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { Check } from "typebox/value";
+import type { Reviewer } from "../review/protocol.ts";
+import { ModelState } from "./model-state.ts";
 import {
   parseConfig,
   parseLocalConfig,
@@ -12,7 +14,7 @@ import {
   type PortableConfig,
 } from "./schemas.ts";
 
-type RuntimePaths = { home?: string; searchPath?: string };
+type RuntimeOptions = { home?: string; searchPath?: string; reviewers?: Reviewer[] };
 
 export async function assertSandboxReady(config: Config): Promise<void> {
   if (config.sandbox.backend !== "bwrap") return;
@@ -55,7 +57,7 @@ async function findProgram(name: string, searchPath: string): Promise<string> {
 export async function resolveConfig(
   portable: PortableConfig,
   local: LocalConfig = {},
-  runtime: RuntimePaths = {},
+  runtime: RuntimeOptions = {},
 ): Promise<Config> {
   const paths = local.sandbox ?? {};
   const searchPath = runtime.searchPath ?? process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
@@ -96,6 +98,7 @@ export async function resolveConfig(
 
   const resolved = {
     ...portable,
+    reviewers: runtime.reviewers ?? [],
     sandbox,
     ...(local.credentialProfiles ? { credentialProfiles: local.credentialProfiles } : {}),
   };
@@ -131,7 +134,7 @@ async function readDeviceConfig(localPath: string): Promise<LocalConfig | undefi
 
 export async function loadConfig(
   agentDirectory: string,
-  runtime: RuntimePaths = {},
+  runtime: RuntimeOptions = {},
 ): Promise<Config> {
   const portable = parseConfig(await readFile(join(agentDirectory, "auto-approval.json"), "utf8"));
   // Preserve restrictions on devices that still have the previous filename.
@@ -140,5 +143,8 @@ export async function loadConfig(
     (await readDeviceConfig(join(agentDirectory, "auto-approval.local.json"))) ??
     {};
 
-  return await resolveConfig(portable, local, runtime);
+  return await resolveConfig(portable, local, {
+    ...runtime,
+    reviewers: runtime.reviewers ?? new ModelState(agentDirectory).reviewers(),
+  });
 }

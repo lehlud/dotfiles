@@ -60,6 +60,7 @@ export async function prepareCompanionDependencies(directory: string): Promise<v
     "provider-recovery",
     "code-quality",
     "fast-mode",
+    "model-selection",
     "subagents",
     "context-management",
   ]) {

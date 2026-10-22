@@ -14,9 +14,9 @@ The footer shows only the reviewer currently handling an action, with a spinner,
 
 Technical failures before independent review identify the failing preflight stage. The model display remains `—` because no reviewer was called. Web search and page fetch use an empty, read-only sandbox workspace without project mounts or project validation. They need no legacy skill files; private session `/tmp`, resource validation and independent network approval remain active.
 
-`~/.pi/agent/auto-approval.json` is synchronized through the public dotfiles repository. It contains model and review settings and the sandbox backend, but no device paths or workspace permissions. Optional local paths and permissions belong in `auto-approval.device.json`, which Git excludes. With another `PI_CODING_AGENT_DIR`, both files live there. Configuration is reloaded for every action.
+`~/.pi/agent/auto-approval.json` is synchronized through the public dotfiles repository. It contains review-context settings and the sandbox backend, but no model selections, device paths or workspace permissions. Optional local paths and permissions belong in `auto-approval.device.json`, which Git excludes. With another `PI_CODING_AGENT_DIR`, both files live there. Sandbox configuration is reloaded for every action.
 
-`reviewers` lists models in priority order: first `openai` with model ID `gpt-6-luna`, then the explicitly configured `openrouter` fallback `openai/gpt-6-luna`. Only listed reviewers are tried, independently of the working model. Missing authentication or models, unsupported thinking levels, transport errors and timeouts permit fallback. A valid denial ends review. Safety refusals and truncated or aborted model answers also block the action without trying another model. A complete request-bound `deny` remains binding even if the provider subsequently reports a transport failure. Fixed diagnostic categories replace raw provider errors that could contain credentials or prompt text. Invalid verdicts or verdicts belonging to another request block execution without fallback. Credentials remain private; `/login` configures each provider on each machine.
+[`/reviewer`](../model-selection/README.md) selects and saves models in priority order, independently of the working model. Use `/reviewer set <provider/model> <thinking>` for the primary and `/reviewer add <provider/model> <thinking>` for a fallback. Choices persist for new sessions and take effect at the next turn, without replacing a reviewer during an active check. The list lives in operator-owned runtime state, not `auto-approval.json`. Only listed reviewers are tried. Missing authentication or models, unsupported thinking levels, transport errors and timeouts permit fallback. A valid denial ends review. Safety refusals and truncated or aborted model answers also block the action without trying another model. A complete request-bound `deny` remains binding even if the provider subsequently reports a transport failure. Fixed diagnostic categories replace raw provider errors that could contain credentials or prompt text. Invalid verdicts or verdicts belonging to another request block execution without fallback. Credentials remain private; `/login` configures each provider on each machine.
 
 ## Conversation features
 
@@ -343,10 +343,6 @@ A portable `auto-approval.json`:
 
 ```json
 {
-  "reviewers": [
-    { "provider": "openai", "model": "gpt-6-luna", "thinking": "medium" },
-    { "provider": "openrouter", "model": "openai/gpt-6-luna", "thinking": "medium" }
-  ],
   "recentUserPrompts": 10,
   "requestTimeoutMs": 120000,
   "sandbox": {
@@ -365,7 +361,7 @@ On exit, extension reload or replacement with a new, resumed or forked session, 
 
 Cancellation terminates the sandbox process; descendants cannot outlive the action. Output and runtime are bounded. Native bwrap uses one cgroup per limited action; Docker uses container resource controls. Missing controllers or delegation never silently remove requested limits.
 
-After `runner.ts` or dependency changes, restart Pi through the launcher or run `bun bootstrap.ts` outside Pi. Custom executor paths remain manually managed. Reviewer selection is configured through `auto-approval.json`. Extension code changes require a Pi restart.
+After `runner.ts` or dependency changes, restart Pi through the launcher or run `bun bootstrap.ts` outside Pi. Custom executor paths remain manually managed. Reviewer selection uses `/reviewer`; model and thinking changes are live at the next turn. Extension code changes require a Pi restart.
 
 ## Docker compatibility
 

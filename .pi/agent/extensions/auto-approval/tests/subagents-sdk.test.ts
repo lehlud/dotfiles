@@ -1,3 +1,4 @@
+import { writeConfigFixture } from "./config-fixture.ts";
 import { expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -67,7 +68,7 @@ async function fixture(route: { provider?: string; api?: string } = {}) {
 
   if (build.exitCode) throw new Error(build.stderr.toString());
 
-  await writeFile(
+  await writeConfigFixture(
     join(agentDir, "auto-approval.json"),
     JSON.stringify({
       reviewers: [{ provider: "subagent-sdk-fixture", model: "review", thinking: "off" }],

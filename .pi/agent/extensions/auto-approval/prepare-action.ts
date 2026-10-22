@@ -1,14 +1,11 @@
 import { Check } from "typebox/value";
-import {
-  getAgentDir,
-  type ExtensionContext,
-  type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import { type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { actionSnapshot } from "../shared/contracts/action-snapshot.ts";
 import { factories, strictParameters, type ToolName } from "./tool-catalog.ts";
 import { normalizeNetworkFlag, type Request } from "../shared/contracts/action.ts";
 import { checkActionSize } from "../shared/review/context.ts";
-import { loadConfig, assertSandboxReady } from "../shared/configuration/load.ts";
+import { assertSandboxReady } from "../shared/configuration/load.ts";
+import { loadSessionConfig } from "../shared/session/config.ts";
 import { validateWorkspace, sandboxHostPath } from "./isolation.ts";
 import { canonicalPath, type ProtectedPaths } from "./protected-paths.ts";
 import type { ActionSession } from "./action-session.ts";
@@ -40,7 +37,7 @@ export async function prepareAction(
   checkActionSize(request);
   stage("sandbox configuration");
 
-  const config = await loadConfig(getAgentDir());
+  const config = await loadSessionConfig(ctx);
 
   await assertSandboxReady(config);
 

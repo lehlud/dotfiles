@@ -1,3 +1,4 @@
+import { writeConfigFixture } from "./config-fixture.ts";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -25,7 +26,7 @@ async function fixture(
   selfAssigned = false,
   externalBlocker = false,
 ) {
-  await writeFile(
+  await writeConfigFixture(
     join(directory, "auto-approval.json"),
     JSON.stringify({
       reviewers: [{ provider: "goal-sdk-fixture", model: "reviewer", thinking: "off" }],

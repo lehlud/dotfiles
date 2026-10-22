@@ -5,6 +5,7 @@ import type { QuestionClient } from "../contracts/questions.ts";
 import type { Goal } from "../contracts/goal.ts";
 import type { SubagentMode, SubagentActivity } from "../contracts/subagents.ts";
 import type { CacheLineage } from "../providers/cache-affinity.ts";
+import type { Reviewer } from "../review/protocol.ts";
 
 export type ActionLease = {
   scope?: { planId?: string; name: string; task: string; resources: string[]; waiting?: boolean };
@@ -29,6 +30,10 @@ export type SessionServices = {
   broadcastOperatorInput?: (text: string, kind: OperatorInputKind) => void;
   setAgentGoal?: (text: string, signal?: AbortSignal) => Promise<Goal>;
   fastMode?: () => boolean;
+  workingModel?: () => Reviewer | undefined;
+  desiredReviewers?: () => Reviewer[];
+  activeReviewers?: () => Reviewer[];
+  inlineModelStatus?: boolean;
   operatorGoal?: () => string | undefined;
   operatorGoalId?: () => string | undefined;
   goalInstruction?: () => string | undefined;

@@ -1,3 +1,4 @@
+import { writeConfigFixture } from "./config-fixture.ts";
 import { test, expect, beforeEach, afterAll } from "bun:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -171,7 +172,7 @@ test("goal completion stays independent of the public-writing rulebook", () => {
 
 beforeEach(async () => {
   process.env.PI_CODING_AGENT_DIR = root;
-  await writeFile(
+  await writeConfigFixture(
     join(root, "auto-approval.json"),
     JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }),
   );

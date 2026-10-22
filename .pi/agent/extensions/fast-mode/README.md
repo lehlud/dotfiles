@@ -2,8 +2,9 @@
 
 `/fast` toggles faster processing for the current Pi session. `/fast on`, `/fast off` and
 `/fast status` set or inspect it explicitly. The default is off. The status bar shows `fast`
-while enabled, or `fast (main unsupported)` when the working model has no supported speed override.
-Compatible reviewers still receive their own speed preference in that case.
+beside the selected model and thinking level while enabled, and nothing while disabled.
+The toggle also applies while a run is active: its next provider request uses the new preference.
+Unsupported working models receive no speed override; compatible reviewers still receive theirs.
 
 OpenAI Responses, Codex Responses and Chat Completions requests use `service_tier: "priority"`,
 the documented alias for Fast mode. OpenRouter sorts eligible providers by `throughput` for the

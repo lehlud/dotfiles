@@ -3,15 +3,14 @@ import { Check } from "typebox/value";
 import { reviewerSchema } from "../review/protocol.ts";
 import { credentialProfileSchema } from "./credential-profile.ts";
 
-const reviewerProperties = {
-  reviewers: Type.Array(reviewerSchema, { minItems: 1, maxItems: 8, uniqueItems: true }),
+const reviewContextProperties = {
   recentUserPrompts: Type.Integer({ minimum: 1, maximum: 20 }),
   // A transport watchdog, NOT the intended duration of an ordinary review.
   requestTimeoutMs: Type.Integer({ minimum: 1000, maximum: 600000 }),
 };
 export const configSchema = Type.Object(
   {
-    ...reviewerProperties,
+    ...reviewContextProperties,
     sandbox: Type.Union([
       Type.Object({ backend: Type.Literal("bwrap") }, { additionalProperties: false }),
       Type.Object(
@@ -63,7 +62,9 @@ export type LocalConfig = Static<typeof localConfigSchema>;
 
 export const resolvedConfigSchema = Type.Object(
   {
-    ...reviewerProperties,
+    ...reviewContextProperties,
+    // An unconfigured installation can start, but no action can pass independent review.
+    reviewers: Type.Array(reviewerSchema, { maxItems: 8, uniqueItems: true }),
     credentialProfiles: Type.Optional(Type.Array(credentialProfileSchema, { maxItems: 32 })),
     sandbox: Type.Union([
       Type.Object(

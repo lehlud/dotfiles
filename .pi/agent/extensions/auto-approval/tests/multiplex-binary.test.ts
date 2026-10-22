@@ -1,5 +1,6 @@
+import { writeConfigFixture } from "./config-fixture.ts";
 import { expect, test } from "bun:test";
-import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { ACTIVITY_ENTRY } from "../../multiplex/activity.ts";
@@ -54,7 +55,7 @@ binaryTest(
     await mkdir(agentDir);
     await mkdir(project);
     await writeFile(fixture, source);
-    await writeFile(
+    await writeConfigFixture(
       join(agentDir, "auto-approval.json"),
       JSON.stringify({
         reviewers: [{ provider: "unavailable-reviewer", model: "none", thinking: "off" }],
@@ -74,6 +75,7 @@ binaryTest(
     );
 
     const extensions = [
+      "model-selection",
       "auto-approval",
       "conversations",
       "multiplex",
@@ -151,11 +153,24 @@ binaryTest(
         events.some(
           (event) =>
             event.type === "extension_ui_request" &&
-            event.method === "setStatus" &&
-            event.statusKey === "fast-mode" &&
-            event.statusText === "fast (main unsupported)",
+            event.method === "notify" &&
+            event.message?.startsWith("Fast mode on"),
         ),
       ).toBe(true);
+      child.stdin.write(
+        JSON.stringify({
+          id: "reviewer",
+          type: "prompt",
+          message: "/reviewer set mailbox-binary-fixture/working off",
+        }) + "\n",
+      );
+      await until(() =>
+        events.some((event) => event.id === "reviewer" && event.type === "response"),
+      );
+      expect(events.find((event) => event.id === "reviewer").success).toBe(true);
+      expect(
+        JSON.parse(await readFile(join(agentDir, "state/model-selection/reviewers.json"), "utf8")),
+      ).toEqual([{ provider: "mailbox-binary-fixture", model: "working", thinking: "off" }]);
       child.stdin.write(
         JSON.stringify({ id: "team", type: "prompt", message: "/multiplex 2" }) + "\n",
       );
@@ -300,7 +315,7 @@ binaryTest(
     await mkdir(agentDir);
     await mkdir(project);
     await writeFile(fixture, interruptSource);
-    await writeFile(
+    await writeConfigFixture(
       join(agentDir, "auto-approval.json"),
       JSON.stringify({
         reviewers: [{ provider: "unavailable-reviewer", model: "none", thinking: "off" }],
@@ -320,6 +335,7 @@ binaryTest(
     );
 
     const extensions = [
+      "model-selection",
       "auto-approval",
       "conversations",
       "multiplex",

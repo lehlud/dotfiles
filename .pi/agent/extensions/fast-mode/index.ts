@@ -10,7 +10,7 @@ export default function fastMode(pi: ExtensionAPI) {
   const draw = (ctx: ExtensionContext) => {
     ctx.ui.setStatus(
       "fast-mode",
-      enabled ? (fastRoute(ctx.model) ? "fast" : "fast (main unsupported)") : undefined,
+      enabled && !sessionServices(ctx).inlineModelStatus ? "fast" : undefined,
     );
   };
   const restore = (_event: unknown, ctx: ExtensionContext) => {

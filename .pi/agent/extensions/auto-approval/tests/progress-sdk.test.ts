@@ -1,3 +1,4 @@
+import { writeConfigFixture } from "./config-fixture.ts";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -33,7 +34,7 @@ for (const changing of [false, true])
       allowModelNetwork: false,
     });
 
-    await writeFile(
+    await writeConfigFixture(
       join(directory, "auto-approval.json"),
       JSON.stringify({
         reviewers: [{ provider: "progress-fixture", model: "reviewer", thinking: "off" }],

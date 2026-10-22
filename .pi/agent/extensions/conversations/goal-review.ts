@@ -3,7 +3,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { loadConfig } from "../shared/configuration/load.ts";
+import { loadSessionConfig } from "../shared/session/config.ts";
 import { requestVerdict } from "../shared/review/client.ts";
 import { preparePromptContext } from "../shared/review/compression.ts";
 import type { GoalSource } from "../shared/contracts/goal.ts";
@@ -121,7 +121,7 @@ export async function verifyGoal(
   display: (status: string) => void,
   onPrepared: (review: ReturnType<typeof buildGoalReview>) => void,
 ) {
-  const config = await loadConfig(getAgentDir());
+  const config = await loadSessionConfig(ctx);
   const processing = { fastMode: () => sessionServices(ctx).fastMode?.() ?? false };
   const branch = ctx.sessionManager.getBranch();
   const prepared = await preparePromptContext(

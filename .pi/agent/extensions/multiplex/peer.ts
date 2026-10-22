@@ -23,6 +23,7 @@ import { registerOperatorInputs } from "../conversations/operator-input.ts";
 export { childRuntime as peerRuntime } from "../shared/providers/child-runtime.ts";
 
 import { registerFastRequests } from "../shared/providers/fast.ts";
+import { registerInheritedSelection } from "../shared/session/model-selection.ts";
 import { sessionServices } from "../shared/session/services.ts";
 import { registerGoalContext } from "../shared/session/goal-context.ts";
 import { registerEndpoint, type Endpoint } from "./endpoint.ts";
@@ -85,6 +86,7 @@ export async function createPeer(
         registerGoalContext(pi);
         registerQuestionTools(pi);
         registerFastRequests(pi);
+        registerInheritedSelection(pi, ctx);
         pi.on("session_start", (_event, child) => {
           sessionServices(child).parentCacheLineage = () => sessionServices(ctx).cacheLineage?.();
           sessionServices(child).publishSubagentActivity = (record) =>

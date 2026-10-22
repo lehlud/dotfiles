@@ -1,3 +1,4 @@
+import { writeConfigFixture } from "./config-fixture.ts";
 import { test, expect, beforeEach, afterEach } from "bun:test";
 import {
   mkdtemp,
@@ -11,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { ModelState } from "../../shared/configuration/model-state.ts";
 import { assertSandboxReady, loadConfig, resolveConfig } from "../../shared/configuration/load.ts";
 import {
   parseConfig,
@@ -19,7 +21,6 @@ import {
 } from "../../shared/configuration/schemas.ts";
 
 const portable: PortableConfig = {
-  reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }],
   recentUserPrompts: 6,
   requestTimeoutMs: 120000,
   sandbox: { backend: "bwrap" },
@@ -35,7 +36,10 @@ beforeEach(async () => {
   for (const name of ["bwrap", "docker"])
     await writeFile(join(bin, name), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 
-  await writeFile(join(directory, "auto-approval.json"), JSON.stringify(portable));
+  await writeConfigFixture(join(directory, "auto-approval.json"), JSON.stringify(portable));
+  new ModelState(directory).saveReviewers([
+    { provider: "openai", model: "gpt-6-luna", thinking: "medium" },
+  ]);
 });
 
 afterEach(async () => {
@@ -64,7 +68,24 @@ test("normal project configuration loads without a local file or persistent chan
 
   expect(config.reviewers[0].model).toBe("gpt-6-luna");
   expect(await readFile(join(directory, "auto-approval.json"), "utf8")).toBe(before);
-  expect((await readdir(directory)).sort()).toEqual(["auto-approval.json", "bin"]);
+  expect((await readdir(directory)).sort()).toEqual(["auto-approval.json", "bin", "state"]);
+});
+
+test("saved reviewers are independent of portable settings and an active turn keeps its snapshot", async () => {
+  const state = new ModelState(directory);
+  const active = state.reviewers();
+  const next = [{ provider: "openrouter", model: "vendor/review", thinking: "off" as const }];
+
+  state.saveReviewers(next);
+  expect((await loadConfig(directory, { searchPath: bin })).reviewers).toEqual(next);
+  expect((await loadConfig(directory, { searchPath: bin, reviewers: active })).reviewers).toEqual(
+    active,
+  );
+  expect(
+    JSON.parse(await readFile(join(directory, "auto-approval.json"), "utf8")),
+  ).not.toHaveProperty("reviewers");
+  await rm(join(state.directory, "reviewers.json"));
+  expect((await loadConfig(directory, { searchPath: bin })).reviewers).toEqual([]);
 });
 
 test("local paths and restricted views merge without changing shared settings and reload per action", async () => {
@@ -80,7 +101,7 @@ test("local paths and restricted views merge without changing shared settings an
   const config = await loadConfig(directory, { searchPath: "" });
 
   expect(config.sandbox).toEqual({ backend: "bwrap", ...sandbox });
-  expect(config.reviewers[0].model).toBe(portable.reviewers[0].model);
+  expect(config.reviewers[0].model).toBe("gpt-6-luna");
   await writeFile(
     localPath,
     JSON.stringify({ sandbox: { ...sandbox, runnerExecutable: "/new/runner" } }),

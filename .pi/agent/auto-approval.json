@@ -1,8 +1,4 @@
 {
-  "reviewers": [
-    { "provider": "openai", "model": "gpt-6-luna", "thinking": "medium" },
-    { "provider": "openrouter", "model": "deepseek/deepseek-v4.1-flash-1017", "thinking": "medium" }
-  ],
   "recentUserPrompts": 10,
   "requestTimeoutMs": 120000,
   "sandbox": {

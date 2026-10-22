@@ -57,6 +57,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
     "web-research": ["web-research", "shared"],
     "code-quality": ["code-quality"],
     "fast-mode": ["fast-mode", "shared"],
+    "model-selection": ["model-selection", "shared"],
     subagents: ["subagents", "shared"],
     "context-management": ["context-management", "shared"],
   };

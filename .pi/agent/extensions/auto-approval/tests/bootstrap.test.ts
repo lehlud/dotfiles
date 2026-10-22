@@ -1,3 +1,4 @@
+import { writeConfigFixture } from "./config-fixture.ts";
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { copyFile, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -50,7 +51,7 @@ beforeAll(async () => {
     await copyFile(join(import.meta.dir, "..", name), join(source, name));
 
   await writeFile(join(source, "runner.ts"), 'console.log("first executor");\n');
-  await writeFile(join(agent, "auto-approval.json"), JSON.stringify(portable));
+  await writeConfigFixture(join(agent, "auto-approval.json"), JSON.stringify(portable));
   await writeFile(
     join(agent, "auto-approval.device.json"),
     JSON.stringify({ sandbox: { executable: process.execPath } }),
@@ -103,7 +104,7 @@ test("startup validates custom executors without overwriting them", async () => 
 });
 
 test("startup rebuilds compiled web code after an extension update", async () => {
-  await writeFile(join(agent, "auto-approval.json"), JSON.stringify(portable));
+  await writeConfigFixture(join(agent, "auto-approval.json"), JSON.stringify(portable));
   await writeFile(
     join(agent, "auto-approval.device.json"),
     JSON.stringify({ sandbox: { executable: process.execPath } }),
@@ -140,7 +141,7 @@ test("a frozen editorial-rule change rebuilds the native executor", async () => 
 });
 
 test("Docker startup leaves the native executor untouched", async () => {
-  await writeFile(
+  await writeConfigFixture(
     join(agent, "auto-approval.json"),
     JSON.stringify({
       ...portable,

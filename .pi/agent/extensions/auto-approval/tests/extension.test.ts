@@ -1,3 +1,4 @@
+import { writeConfigFixture } from "./config-fixture.ts";
 import { Check } from "typebox/value";
 import { test, expect, beforeEach, afterEach, afterAll, mock } from "bun:test";
 import {
@@ -174,7 +175,7 @@ let currentApprovalStatus: string | undefined;
 let ctx: ExtensionToolContext;
 
 beforeEach(async () => {
-  await writeFile(configPath, JSON.stringify(config));
+  await writeConfigFixture(configPath, JSON.stringify(config));
   await writeFile(
     localConfigPath,
     JSON.stringify({ sandbox: { dockerExecutable: "/usr/bin/docker" } }),
@@ -474,7 +475,10 @@ test("mailbox bypasses approval entirely while external actions still require re
 });
 
 async function configureGitFixture() {
-  await writeFile(configPath, JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }));
+  await writeConfigFixture(
+    configPath,
+    JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }),
+  );
   await writeFile(
     localConfigPath,
     JSON.stringify({
@@ -641,7 +645,10 @@ test("general review-mode credentials and project access are scoped and cannot s
 });
 
 async function configureCredentialFixture(secretPath: string) {
-  await writeFile(configPath, JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }));
+  await writeConfigFixture(
+    configPath,
+    JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }),
+  );
   await writeFile(
     localConfigPath,
     JSON.stringify({
@@ -722,7 +729,10 @@ test("only approved_action is active on session start and before each run", asyn
 });
 
 test("a missing native executor locks startup and blocks before any paid review", async () => {
-  await writeFile(configPath, JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }));
+  await writeConfigFixture(
+    configPath,
+    JSON.stringify({ ...config, sandbox: { backend: "bwrap" } }),
+  );
 
   const missing = join(agentRoot, "missing-executor");
 
@@ -1212,15 +1222,15 @@ test("invalid, errored, or mismatched verdicts fail closed", async () => {
 test("missing and invalid config fail closed without reviewer or execution", async () => {
   await rm(configPath);
   expect((await call(bash("touch missing-config"))).isError).toBe(true);
-  await writeFile(configPath, '{"enabled":false}');
+  await writeConfigFixture(configPath, '{"enabled":false}');
   expect((await call(bash("touch invalid-config"))).isError).toBe(true);
   expect(requested).toHaveLength(0);
   expect(await exists(join(root, "missing-config"))).toBe(false);
   expect(await exists(join(root, "invalid-config"))).toBe(false);
 });
 
-test("config is hot-read; reviewer is replaceable without a restart", async () => {
-  await writeFile(
+test("saved reviewers load independently of the portable security configuration", async () => {
+  await writeConfigFixture(
     configPath,
     JSON.stringify({
       ...config,
@@ -1347,7 +1357,7 @@ const fallback = { provider: "openrouter", model: "openai/gpt-6-luna", thinking:
 const chainConfig = { ...config, reviewers: [...config.reviewers, fallback] };
 
 test("explicit authenticated fallback is executed once and audited with the original request", async () => {
-  await writeFile(configPath, JSON.stringify(chainConfig));
+  await writeConfigFixture(configPath, JSON.stringify(chainConfig));
   ctx.modelRegistry.hasConfiguredAuth = (model) => model.provider === "openrouter";
 
   const result = await call(bash("printf explicit-fallback"));
@@ -1379,7 +1389,7 @@ test("explicit authenticated fallback is executed once and audited with the orig
 });
 
 test("technical fallback keeps an immutable action and includes billed usage from both attempts", async () => {
-  await writeFile(configPath, JSON.stringify(chainConfig));
+  await writeConfigFixture(configPath, JSON.stringify(chainConfig));
 
   const args = bash("printf immutable-fallback-action");
 
@@ -1403,7 +1413,7 @@ test("technical fallback keeps an immutable action and includes billed usage fro
 });
 
 test("valid primary and fallback denials are final and never execute", async () => {
-  await writeFile(configPath, JSON.stringify(chainConfig));
+  await writeConfigFixture(configPath, JSON.stringify(chainConfig));
   mode = "deny";
   expect((await call(bash("touch denied-chain"))).isError).toBe(true);
   expect(requested).toHaveLength(1);
@@ -1422,7 +1432,7 @@ test("valid primary and fallback denials are final and never execute", async () 
 });
 
 test("invalid verdicts and cancellation never use the configured fallback", async () => {
-  await writeFile(configPath, JSON.stringify(chainConfig));
+  await writeConfigFixture(configPath, JSON.stringify(chainConfig));
   mode = "mismatch";
 
   const invalid = await call(bash("touch wrong-verdict-chain"));
@@ -1440,7 +1450,7 @@ test("invalid verdicts and cancellation never use the configured fallback", asyn
 });
 
 test("failure audit errors block the fallback and all exhausted reviewers block execution", async () => {
-  await writeFile(configPath, JSON.stringify(chainConfig));
+  await writeConfigFixture(configPath, JSON.stringify(chainConfig));
   ctx.modelRegistry.hasConfiguredAuth = () => false;
   auditFails = true;
   expect((await call(bash("touch failed-fallback-audit"))).isError).toBe(true);
@@ -1470,21 +1480,24 @@ test("review plus execution is serialized for concurrent calls", async () => {
   expect(requested).toHaveLength(2);
 });
 
-test("symlink aliases cannot write approval configuration", async () => {
-  const alias = join(root, "config-alias.json");
+test("symlink aliases cannot write security configuration or operator reviewer preferences", async () => {
+  for (const path of [configPath, join(agentRoot, "state/model-selection/reviewers.json")]) {
+    const alias = join(root, `protected-alias-${crypto.randomUUID()}.json`);
+    const before = await readFile(path, "utf8");
 
-  await symlink(configPath, alias);
+    await symlink(path, alias);
 
-  const result = await call({
-    tool: "write",
-    arguments: { path: alias, content: "{}" },
-    goal: "Disable",
-    justification: "Bypass via alias",
-  });
+    const result = await call({
+      tool: "write",
+      arguments: { path: alias, content: "{}" },
+      goal: "Disable",
+      justification: "Bypass via alias",
+    });
 
-  expect(result.isError).toBe(true);
-  expect(requested).toHaveLength(0);
-  expect(JSON.parse(await readFile(configPath, "utf8")).reviewers[0].model).toBe("gpt-6-luna");
+    expect(result.isError).toBe(true);
+    expect(requested).toHaveLength(0);
+    expect(await readFile(path, "utf8")).toBe(before);
+  }
 });
 
 test("approved writes and edits are independently reviewed", async () => {
@@ -1521,7 +1534,7 @@ test("reviewed argument snapshot cannot be mutated during review", async () => {
 });
 
 test("approval and denial remain in activity results and audit without a prompt widget", async () => {
-  await writeFile(
+  await writeConfigFixture(
     configPath,
     JSON.stringify({
       ...config,
