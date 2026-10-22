@@ -11,7 +11,10 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { streamSimple as responses } from "@earendil-works/pi-ai/api/openai-responses";
 import contextManagement from "../../context-management/index.ts";
+import codeQuality from "../../code-quality/index.ts";
+import subagents from "../../subagents/index.ts";
 import { NOTE, readNotes } from "../../context-management/archive.ts";
 import { sessionServices } from "../../shared/session/services.ts";
 
@@ -27,9 +30,45 @@ const tool = (name: string, args: unknown) => [
   { type: "toolCall", id: crypto.randomUUID(), name, arguments: args },
 ];
 
+function wireResponse() {
+  const item = {
+    id: "message-cache-fixture",
+    type: "message",
+    role: "assistant",
+    content: [{ type: "output_text", text: "done", annotations: [] }],
+  };
+  const events = [
+    { type: "response.output_item.added", output_index: 0, item },
+    { type: "response.output_text.delta", output_index: 0, delta: "done" },
+    { type: "response.output_item.done", output_index: 0, item },
+    {
+      type: "response.completed",
+      response: {
+        id: "response-cache-fixture",
+        status: "completed",
+        output: [item],
+        usage: { input_tokens: 100, output_tokens: 1, total_tokens: 101 },
+      },
+    },
+  ];
+
+  return new Response(
+    events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n",
+    {
+      headers: { "content-type": "text/event-stream" },
+    },
+  );
+}
+
 async function fixture(
   script: (turn: number) => any[],
-  setup: { provider?: string; api?: string; pressure?: boolean } = {},
+  setup: {
+    provider?: string;
+    api?: string;
+    pressure?: boolean;
+    wire?: boolean;
+    login?: boolean;
+  } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "pi-context-sdk-"));
   const runtime = await ModelRuntime.create({
@@ -49,7 +88,12 @@ async function fixture(
   runtime.registerProvider(provider, {
     api: api as any,
     apiKey: "synthetic",
-    baseUrl: provider === "anthropic" ? "https://api.anthropic.com" : "https://example.invalid",
+    baseUrl:
+      provider === "anthropic"
+        ? "https://api.anthropic.com"
+        : setup.wire
+          ? "https://api.openai.com/v1"
+          : "https://example.invalid",
     models: [
       {
         id: "working",
@@ -58,12 +102,25 @@ async function fixture(
         input: ["text"],
         contextWindow: 65536,
         maxTokens: 4096,
+        compat: { supportsExplicitPromptCacheMode: setup.wire === true },
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       },
     ],
     streamSimple(model, context, options) {
       const stream = createAssistantMessageEventStream();
       const turn = contexts.push(structuredClone(context.messages));
+
+      if (setup.wire) {
+        return responses(model as any, context, {
+          ...options,
+          apiKey: setup.login ? "synthetic-login-token" : "sk-synthetic",
+          fetch: (async (_url: unknown, init: any) => {
+            requests.push(JSON.parse(init.body));
+
+            return wireResponse();
+          }) as typeof fetch,
+        });
+      }
 
       void (async () => {
         const body = { model: model.id, tools: [{ name: "history" }] };
@@ -80,7 +137,7 @@ async function fixture(
           timestamp: Date.now(),
           content,
           stopReason: content.some((block) => block.type === "toolCall") ? "toolUse" : "stop",
-          usage: setup.pressure ? { ...usage, input: 50000, totalTokens: 50001 } : usage,
+          usage: setup.pressure ? { ...usage, input: 52000, totalTokens: 52001 } : usage,
         };
 
         stream.push({ type: "done", reason: message.stopReason, message });
@@ -106,7 +163,9 @@ async function fixture(
     noThemes: true,
     noContextFiles: true,
     noPromptTemplates: true,
-    extensionFactories: [contextManagement],
+    extensionFactories: setup.wire
+      ? [codeQuality, subagents, contextManagement]
+      : [contextManagement],
   });
 
   await loader.reload();
@@ -138,6 +197,55 @@ async function fixture(
     },
   };
 }
+
+test.each([false, true])(
+  "real Responses requests preserve reusable history boundaries; login=%s",
+  async (login) => {
+    const state = await fixture(() => [], {
+      provider: "openai",
+      api: "openai-responses",
+      wire: true,
+      login,
+    });
+
+    try {
+      await state.session.prompt("Original operator task.");
+      state.manager.appendCustomEntry(NOTE, { key: "progress", text: "New working notes." });
+      await state.session.prompt("Continue the operator task.");
+
+      expect(state.errors).toEqual([]);
+      expect(state.requests).toHaveLength(2);
+
+      const [first, second] = state.requests;
+
+      if (login) {
+        expect(first.prompt_cache_options).toBeUndefined();
+        expect(JSON.stringify(second)).not.toContain("prompt_cache_breakpoint");
+
+        return;
+      }
+
+      expect(first.prompt_cache_options).toEqual({ mode: "explicit" });
+      expect(second.prompt_cache_options).toEqual({ mode: "explicit" });
+
+      const firstTask = first.input.findIndex((item: any) => item.role === "user");
+
+      expect(second.input.slice(0, firstTask + 1)).toEqual(first.input.slice(0, firstTask + 1));
+      expect(first.input[firstTask].content[0].prompt_cache_breakpoint).toEqual({
+        mode: "explicit",
+      });
+      expect(
+        first.input
+          .slice(firstTask + 1)
+          .every((item: any) => !JSON.stringify(item).includes("prompt_cache_breakpoint")),
+      ).toBe(true);
+      expect(JSON.stringify(second.input)).toContain("New working notes.");
+      expect(JSON.stringify(state.manager.getBranch())).not.toContain("prompt_cache_breakpoint");
+    } finally {
+      await state.close();
+    }
+  },
+);
 
 test("SDK rotation preserves user identity and notes, removes complete tool history and retrieves the exact archived output", async () => {
   let evidence = "";

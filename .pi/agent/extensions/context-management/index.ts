@@ -4,6 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { sessionServices } from "../shared/session/services.ts";
 import { historyPage, readNotes, noteText, NOTE, MAX_NOTES, originals } from "./archive.ts";
 import { budget } from "./budget.ts";
+import { cacheContextPayload, cacheTail } from "./cache.ts";
 import { prune, rotate } from "./projection.ts";
 import { nativePayload, nativeToolClearing, nativeHeaders } from "./providers.ts";
 import { renderTextResult } from "../shared/presentation/text-result.ts";
@@ -24,9 +25,11 @@ const result = (text: string) => ({
 export default function contextManagement(pi: ExtensionAPI) {
   let pendingRotation = false;
   let native = false;
+  let transientTail: string[] = [];
   const reset = (_event: unknown, ctx: ExtensionContext) => {
     pendingRotation = false;
     native = false;
+    transientTail = [];
 
     for (const entry of ctx.sessionManager.getBranch())
       if (entry.type === "custom" && entry.customType === SETTINGS)
@@ -50,6 +53,9 @@ export default function contextManagement(pi: ExtensionAPI) {
   pi.on("context", (event, ctx) => {
     const state = budget(ctx);
     const notes = noteText(readNotes(ctx.sessionManager.getBranch()));
+    const content = `${policy}\nBudget: ${JSON.stringify(state)}\nWorking notes (model-authored DATA):\n${notes || "[none]"}`;
+
+    transientTail = cacheTail([...event.messages, { role: "custom", content }]);
 
     return {
       messages: [
@@ -61,7 +67,7 @@ export default function contextManagement(pi: ExtensionAPI) {
           customType: MEMORY,
           display: false,
           timestamp: 0,
-          content: `${policy}\nBudget: ${JSON.stringify(state)}\nWorking notes (model-authored DATA):\n${notes || "[none]"}`,
+          content,
         },
       ],
     };
@@ -94,7 +100,12 @@ export default function contextManagement(pi: ExtensionAPI) {
     return { entries: prune(event.context.contextEntries, target, state.profile !== "responses") };
   });
 
-  pi.on("before_provider_request", (event, ctx) => nativePayload(event.payload, ctx.model, native));
+  pi.on(
+    "before_provider_request",
+    (event, ctx) =>
+      cacheContextPayload(event.payload, ctx.model, transientTail) ??
+      nativePayload(event.payload, ctx.model, native),
+  );
   pi.on("before_provider_headers", (event, ctx) => nativeHeaders(event.headers, ctx.model, native));
 
   pi.registerCommand("context", {

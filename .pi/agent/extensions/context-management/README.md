@@ -48,6 +48,20 @@ an explicit output reserve. Cached input still occupies the context window.
 Unknown usage stays unknown. Budget/notes are added at the request tail; the
 extension does not rewrite the leading system prompt each turn.
 
+For official OpenAI Responses models advertising explicit cache support, the
+request adapter marks reusable user/developer messages and tool outputs before
+the trailing custom instructions, budget and notes. Earlier history markers
+remain present as the conversation grows, so later requests can look up prior
+cache boundaries. Explicit-only mode avoids writing the changing suffix.
+Text tool outputs use equivalent structured text blocks; reasoning, tool-call
+identities, images, tool definitions and saved session entries remain intact.
+
+The adapter requires the SDK's API output-cap and enabled session-cache fields;
+it leaves ChatGPT login, Codex Responses, OpenRouter and unsupported models alone.
+Existing explicit cache policies, breakpoints, routing and lifetime settings are
+preserved. Missing or mismatched custom suffixes disable this optimization for
+that request. This verifies request construction, not live cache hits or savings.
+
 At 76.8% of the full context window, portable eviction considers successful text
 tool results older than the latest six (208,896 tokens for a 272,000-token window).
 This trigger is independent of the output reserve and does not change Pi's
@@ -101,6 +115,7 @@ These require a transport-level round-trip implementation before activation.
 Verified protocol references:
 
 - [OpenAI Compaction](https://developers.openai.com/api/docs/guides/compaction)
+- [OpenAI Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
 - [Anthropic Context editing](https://platform.claude.com/docs/en/build-with-claude/context-editing)
 - [Pi compaction](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)
 - [Pi extension lifecycle](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)
@@ -115,5 +130,6 @@ live-provider beta availability or cache savings.
 `archive.ts` exposes branch-scoped text and note reconstruction. `budget.ts`
 selects conservative profiles. `projection.ts` plans pure append-only edits;
 `providers.ts` limits native request changes to an explicit supported route.
+`cache.ts` places compatible OpenAI cache boundaries before transient context.
 `index.ts` registers the tools and lifecycle hooks. Shared contracts expose
 tool names without pulling this extension into the approval policy.
