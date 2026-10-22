@@ -9,7 +9,7 @@ import type { Entry } from "../../shared/review/entries.ts";
 import type { Config } from "../../shared/configuration/schemas.ts";
 
 const config: Config = {
-  reviewers: [{ provider: "fixture", model: "review", thinking: "off" }],
+  reviewer: { provider: "fixture", model: "review", thinking: "off" },
   recentUserPrompts: 2,
   requestTimeoutMs: 1000,
   sandbox: { backend: "bwrap", executable: "/bin/true", runnerExecutable: "/bin/true" },

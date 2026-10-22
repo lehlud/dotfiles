@@ -211,7 +211,7 @@ test("normal Pi steering carries its main task through the correction and subseq
         },
         branch,
         {
-          reviewers: [{ provider: "fixture", model: "review", thinking: "off" }],
+          reviewer: { provider: "fixture", model: "review", thinking: "off" },
           recentUserPrompts: 1,
           requestTimeoutMs: 1000,
           sandbox: { backend: "bwrap", executable: "/bin/true", runnerExecutable: "/bin/true" },

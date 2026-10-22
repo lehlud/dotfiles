@@ -128,7 +128,7 @@ beforeAll(async () => {
   if (built.exitCode) throw new Error(built.stderr.toString());
 
   config = {
-    reviewers: [{ provider: "openai", model: "fixture", thinking: "off" }],
+    reviewer: { provider: "openai", model: "fixture", thinking: "off" },
     recentUserPrompts: 6,
     requestTimeoutMs: 1000,
     sandbox: { backend: "bwrap", executable: bwrap, runnerExecutable: runner },

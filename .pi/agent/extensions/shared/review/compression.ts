@@ -7,7 +7,7 @@ import { operatorPrompts, type Entry } from "./evidence.ts";
 import type { ReviewSettings } from "./protocol.ts";
 import {
   requestVerdict,
-  ReviewChainError,
+  ReviewError,
   type ReviewAttempt,
   type ReviewProcessing,
 } from "./client.ts";
@@ -143,7 +143,7 @@ async function compressText(
 
       return result.verdict;
     } catch (error) {
-      if (error instanceof ReviewChainError && usage)
+      if (error instanceof ReviewError && usage)
         error.usage = error.usage ? sumUsage(usage, error.usage) : usage;
 
       throw error;
@@ -233,7 +233,7 @@ export async function preparePromptContext(
           promptId,
           version: PROMPT_COMPRESSION_VERSION,
           policy: digest(COMPRESSION_SYSTEM),
-          reviewers: config.reviewers,
+          reviewer: config.reviewer,
         }),
       );
 
@@ -272,7 +272,7 @@ export async function preparePromptContext(
         try {
           compressed = await compressText(original, config, registry, observer, signal, processing);
         } catch (error) {
-          if (error instanceof ReviewChainError && usage)
+          if (error instanceof ReviewError && usage)
             error.usage = error.usage ? sumUsage(usage, error.usage) : usage;
 
           throw error;

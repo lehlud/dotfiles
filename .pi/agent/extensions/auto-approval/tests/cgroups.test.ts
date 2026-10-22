@@ -57,7 +57,7 @@ test("delegation is device-owned configuration, never a per-action or portable p
   expect(() =>
     parseConfig(
       JSON.stringify({
-        reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }],
+        reviewer: { provider: "openai", model: "gpt-6-luna", thinking: "medium" },
         recentUserPrompts: 10,
         requestTimeoutMs: 10000,
         sandbox: { backend: "bwrap", cgroupRoot: "/sys/fs/cgroup/pi-actions" },
@@ -76,7 +76,12 @@ test("review metadata identifies current cgroup preflight and mandatory pre-payl
     masked: [],
     cgroup: { root: "/delegated", device: 1, inode: 2, controls },
   };
-  const config = { reviewers: [], recentUserPrompts: 10, requestTimeoutMs: 1000, sandbox: native };
+  const config = {
+    reviewer: undefined,
+    recentUserPrompts: 10,
+    requestTimeoutMs: 1000,
+    sandbox: native,
+  };
   const plan = describeSandbox(
     {
       tool: "bash",
@@ -119,7 +124,7 @@ test("requested limits and agent claims alone never produce cgroup enforcement e
       sandbox: { limits: { memoryMiB: 4096 } },
     },
     { path: "/project", cwd: "/project", bindings: ["/project"], masked: [] },
-    { reviewers: [], recentUserPrompts: 10, requestTimeoutMs: 1000, sandbox: native },
+    { reviewer: undefined, recentUserPrompts: 10, requestTimeoutMs: 1000, sandbox: native },
   );
 
   expect(plan.resourceEnforcement).toBeUndefined();
@@ -130,7 +135,7 @@ test("the cgroup review regression retains old objections alongside current evid
     const envelope = buildReview(
       fixture.action,
       fixture.entries,
-      { reviewers: [], recentUserPrompts: 10, requestTimeoutMs: 1000, sandbox: native },
+      { reviewer: undefined, recentUserPrompts: 10, requestTimeoutMs: 1000, sandbox: native },
       "/project",
       [],
       fixture.sandboxPlan,
@@ -155,7 +160,7 @@ test("the cgroup review regression retains old objections alongside current evid
     buildReview(
       fixture.action,
       fixture.entries,
-      { reviewers: [], recentUserPrompts: 10, requestTimeoutMs: 1000, sandbox: native },
+      { reviewer: undefined, recentUserPrompts: 10, requestTimeoutMs: 1000, sandbox: native },
       "/project",
       [],
       fixture.sandboxPlan,

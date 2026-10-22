@@ -38,7 +38,7 @@ async function fixture(hold = false) {
 
   const state = new ModelState(directory);
 
-  state.saveReviewers([previous]);
+  state.saveReviewer(previous);
 
   const runtime = await ModelRuntime.create({
     authPath: join(directory, "auth.json"),
@@ -143,7 +143,7 @@ async function fixture(hold = false) {
             description: "Synthetic held tool, no external effects",
             parameters: Type.Object({}),
             async execute(_id, _args, _signal, _update, ctx) {
-              toolReviewers = sessionServices(ctx).activeReviewers?.();
+              toolReviewers = sessionServices(ctx).activeReviewer?.();
               toolStarted.resolve();
               await finishTool.promise;
 
@@ -200,7 +200,7 @@ async function fixture(hold = false) {
   };
 }
 
-test("real Pi switches main model, thinking, reviewers and speed at the next steering boundary", async () => {
+test("real Pi switches main model, thinking, reviewer and speed at the next steering boundary", async () => {
   const app = await fixture(true);
   const session = await app.create(false, async (title, options) =>
     options.find((item) =>
@@ -225,10 +225,10 @@ test("real Pi switches main model, thinking, reviewers and speed at the next ste
   });
   app.finishResponse.resolve();
   await app.toolStarted.promise;
-  expect(app.toolReviewers()).toEqual([previous]);
+  expect(app.toolReviewers()).toEqual(previous);
   await session.prompt("/reviewer");
-  expect(app.state.reviewers()).toEqual([next]);
-  expect(sessionServices(session).activeReviewers?.()).toEqual([previous]);
+  expect(app.state.reviewer()).toEqual(next);
+  expect(sessionServices(session).activeReviewer?.()).toEqual(previous);
   app.finishTool.resolve();
   await running;
   expect(app.requests[1]).toMatchObject({
@@ -236,7 +236,7 @@ test("real Pi switches main model, thinking, reviewers and speed at the next ste
     reasoning: "high",
     payload: { provider: { sort: "throughput" } },
   });
-  expect(sessionServices(session).activeReviewers?.()).toEqual([next]);
+  expect(sessionServices(session).activeReviewer?.()).toEqual(next);
   expect(app.notices.some((text) => text.includes("queued for next turn"))).toBe(true);
 
   const users = session.sessionManager
@@ -271,14 +271,14 @@ test("real Pi /reviewer asks for known models and thinking without a working-mod
 
   await modelShown.promise;
   expect(prompts[0].options).toContain("openrouter/vendor/review-next");
-  expect(app.state.reviewers()).toEqual([previous]);
+  expect(app.state.reviewer()).toEqual(previous);
   modelChoice.resolve("openrouter/vendor/review-next");
   await thinkingShown.promise;
   expect(prompts[1].options).toEqual(["✓ low", "high"]);
-  expect(app.state.reviewers()).toEqual([previous]);
+  expect(app.state.reviewer()).toEqual(previous);
   thinkingChoice.resolve("high");
   await command;
-  expect(app.state.reviewers()).toEqual([next]);
+  expect(app.state.reviewer()).toEqual(next);
   expect(session.model?.id).toBe("working-old");
   expect(session.thinkingLevel).toBe("low");
   expect(app.requests).toHaveLength(0);
@@ -287,19 +287,19 @@ test("real Pi /reviewer asks for known models and thinking without a working-mod
   ).toHaveLength(0);
 });
 
-test("new Pi sessions restore the last pair and reviewer chain while resume keeps its own pair", async () => {
+test("new Pi sessions restore the last pair and reviewer while resume keeps its own pair", async () => {
   const app = await fixture();
   const first = await app.create();
 
   await first.setModel(new ModelRegistry(app.runtime).find("openrouter", "working-new")!);
   first.setThinkingLevel("high");
-  await first.prompt("/reviewer add openrouter/vendor/review-next high");
+  await first.prompt("/reviewer set openrouter/vendor/review-next high");
 
   const fresh = await app.create();
 
   expect(fresh.model?.id).toBe("working-new");
   expect(fresh.thinkingLevel).toBe("high");
-  expect(sessionServices(fresh).activeReviewers?.()).toEqual([previous, next]);
+  expect(sessionServices(fresh).activeReviewer?.()).toEqual(next);
   await fresh.prompt("Check the restored choice.");
   expect(app.requests[0]).toMatchObject({ model: "working-new", reasoning: "high" });
 
@@ -313,7 +313,7 @@ test("new Pi sessions restore the last pair and reviewer chain while resume keep
     thinking: "high",
   });
   await fresh.prompt("/reviewer set openrouter/missing high");
-  expect(app.state.reviewers()).toEqual([previous, next]);
+  expect(app.state.reviewer()).toEqual(next);
   expect(app.notices.some((text) => text.includes("Model not found"))).toBe(true);
   await resumed.prompt("Continue the existing conversation.");
   expect(app.state.working()).toEqual({

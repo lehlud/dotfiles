@@ -5,19 +5,11 @@ import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { reviewerSchema, type Reviewer } from "../review/protocol.ts";
 
-export const reviewersSchema = Type.Array(reviewerSchema, {
+const legacyReviewersSchema = Type.Array(reviewerSchema, {
   minItems: 1,
   maxItems: 8,
   uniqueItems: true,
 });
-
-export function parseReviewers(value: unknown): Reviewer[] {
-  if (!Check(reviewersSchema, value)) {
-    throw new Error("Reviewers must be 1–8 distinct provider/model/thinking selections");
-  }
-
-  return value;
-}
 
 export function parseSelection(value: unknown): Reviewer {
   if (!Check(reviewerSchema, value)) {
@@ -74,17 +66,35 @@ export class ModelState {
     return value === undefined ? undefined : parseSelection(value);
   }
 
-  reviewers(): Reviewer[] {
-    const value = this.read("reviewers.json");
+  reviewer(): Reviewer | undefined {
+    const value = this.read("reviewer.json");
 
-    return value === undefined ? [] : parseReviewers(value);
+    if (value !== undefined) return parseSelection(value);
+
+    const legacy = this.read("reviewers.json");
+
+    if (legacy === undefined) return undefined;
+
+    if (!Check(legacyReviewersSchema, legacy))
+      throw new Error("Invalid legacy reviewer preferences");
+
+    return legacy[0];
+  }
+
+  /** Import the active choice once; old sessions may still hold the legacy file open. */
+  migrateReviewer() {
+    if (this.read("reviewer.json") !== undefined) return;
+
+    const selected = this.reviewer();
+
+    if (selected) this.saveReviewer(selected);
   }
 
   saveWorking(value: Reviewer) {
     this.write("working.json", parseSelection(value));
   }
 
-  saveReviewers(value: Reviewer[]) {
-    this.write("reviewers.json", parseReviewers(value));
+  saveReviewer(value: Reviewer) {
+    this.write("reviewer.json", parseSelection(value));
   }
 }

@@ -1,15 +1,12 @@
 import { expect, test } from "bun:test";
-import { buildReview, reviewWithFallback } from "../review.ts";
+import { buildReview, reviewAction } from "../review.ts";
 import { readPromptOriginal, type PromptLookup } from "../../shared/review/originals.ts";
 import { promptDigest } from "../../shared/review/prompts.ts";
 import type { Request } from "../../shared/contracts/action.ts";
 import type { Config } from "../../shared/configuration/schemas.ts";
 
 const config: Config = {
-  reviewers: [
-    { provider: "primary", model: "fixture", thinking: "off" },
-    { provider: "fallback", model: "fixture", thinking: "off" },
-  ],
+  reviewer: { provider: "primary", model: "fixture", thinking: "off" },
   recentUserPrompts: 10,
   requestTimeoutMs: 5000,
   sandbox: { backend: "bwrap", executable: "/bwrap", runnerExecutable: "/runner" },
@@ -138,7 +135,7 @@ test("cancellation during error feedback prevents another reviewer request", asy
   const controller = new AbortController();
 
   await expect(
-    reviewWithFallback(
+    reviewAction(
       config,
       review.registry,
       envelope,
@@ -171,7 +168,7 @@ test.each([
     turn === 1 ? [lookup(malformed)] : turn === 2 ? [lookup(valid)] : review.verdict(),
   );
   const failures: unknown[] = [];
-  const result = await reviewWithFallback(config, review.registry, envelope, {
+  const result = await reviewAction(config, review.registry, envelope, {
     ...observer,
     lookupFailed: (failure: unknown) => failures.push(failure),
   });
@@ -193,7 +190,7 @@ test("three bad original lookups stop with a specific safe diagnostic and no fal
   const { envelope } = fixture();
   const review = gate(envelope, () => [lookup({ ...valid, path: "synthetic-private-input" })]);
 
-  await expect(reviewWithFallback(config, review.registry, envelope, observer)).rejects.toThrow(
+  await expect(reviewAction(config, review.registry, envelope, observer)).rejects.toThrow(
     "invalid-arguments",
   );
   expect(review.calls).toHaveLength(3);
@@ -206,7 +203,7 @@ test("three bad original lookups stop with a specific safe diagnostic and no fal
 test("a denial stays final even when it accompanies a malformed original lookup", async () => {
   const { envelope } = fixture();
   const review = gate(envelope, () => [...review.verdict("deny"), lookup({})]);
-  const result = await reviewWithFallback(config, review.registry, envelope, observer);
+  const result = await reviewAction(config, review.registry, envelope, observer);
 
   expect(result.verdict.decision).toBe("deny");
   expect(review.calls).toHaveLength(1);
@@ -216,14 +213,14 @@ test("repair never supplies original-inspection credit or permission for other t
   const { envelope } = fixture();
   const review = gate(envelope, (turn) => (turn === 1 ? [lookup({})] : review.verdict()));
 
-  await expect(reviewWithFallback(config, review.registry, envelope, observer)).rejects.toThrow(
+  await expect(reviewAction(config, review.registry, envelope, observer)).rejects.toThrow(
     "inspect every compressed original",
   );
   expect(review.calls).toHaveLength(2);
 
   const hostile = gate(envelope, () => [lookup({ command: "touch forbidden" }, "bash")]);
 
-  await expect(reviewWithFallback(config, hostile.registry, envelope, observer)).rejects.toThrow(
+  await expect(reviewAction(config, hostile.registry, envelope, observer)).rejects.toThrow(
     "unsupported tool",
   );
   expect(hostile.calls).toHaveLength(1);
@@ -236,7 +233,7 @@ test.each(["lookup", "lookupFailed"])(
     const review = gate(envelope, () => [lookup(callback === "lookup" ? valid : {})]);
 
     await expect(
-      reviewWithFallback(config, review.registry, envelope, {
+      reviewAction(config, review.registry, envelope, {
         ...observer,
         [callback]: () => {
           throw new Error("synthetic-private-audit-error");

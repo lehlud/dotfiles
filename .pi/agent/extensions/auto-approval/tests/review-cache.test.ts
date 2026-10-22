@@ -3,7 +3,7 @@ import { streamSimple as responses } from "@earendil-works/pi-ai/api/openai-resp
 import { streamSimple as completions } from "@earendil-works/pi-ai/api/openai-completions";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
 import { cacheStream } from "../../shared/providers/cache-stream.ts";
-import { buildReview, reviewWithFallback } from "../review.ts";
+import { buildReview, reviewAction } from "../review.ts";
 import { buildGoalReview, GOAL_REVIEW_SYSTEM } from "../../conversations/goal-review.ts";
 import { reviewCacheKey, cacheReviewPayload } from "../../shared/review/cache.ts";
 import { REVIEW_SYSTEM } from "../review-policy.ts";
@@ -11,7 +11,7 @@ import type { Config } from "../../shared/configuration/schemas.ts";
 import type { PreparedPrompts } from "../../shared/review/contracts.ts";
 
 const config: Config = {
-  reviewers: [{ provider: "openai", model: "cache-fixture", thinking: "off" }],
+  reviewer: { provider: "openai", model: "cache-fixture", thinking: "off" },
   recentUserPrompts: 10,
   requestTimeoutMs: 5000,
   sandbox: { backend: "bwrap", executable: "/unused", runnerExecutable: "/unused" },
@@ -137,7 +137,7 @@ test("real OpenAI requests reuse keys, schema and explicit prefixes across disti
   const second = review("printf second");
 
   for (const envelope of [first, second]) {
-    const checked = await reviewWithFallback(config, wire.registry, envelope, observer);
+    const checked = await reviewAction(config, wire.registry, envelope, observer);
 
     expect(checked.verdict.requestId).toBe(envelope.requestId);
     expect(checked.usage).toMatchObject({ input: 1000, cacheRead: 2000, cacheWrite: 1000 });
@@ -170,7 +170,7 @@ test("real OpenAI requests reuse keys, schema and explicit prefixes across disti
 
   wire.stale(first.requestId);
 
-  await expect(reviewWithFallback(config, wire.registry, second, observer)).rejects.toThrow(
+  await expect(reviewAction(config, wire.registry, second, observer)).rejects.toThrow(
     "different requestId",
   );
   expect(wire.requests).toHaveLength(3);
@@ -195,7 +195,7 @@ test("goal blocker metadata keeps a stable completion schema and cache prefix", 
   ];
 
   for (const envelope of snapshots) {
-    const checked = await reviewWithFallback(
+    const checked = await reviewAction(
       config,
       wire.registry,
       envelope,
@@ -221,11 +221,11 @@ test("real OpenRouter requests keep session affinity without unsupported cache f
   const wire = wireRegistry("openrouter");
   const routerConfig = {
     ...config,
-    reviewers: [{ ...config.reviewers[0], provider: "openrouter" }],
+    reviewer: { ...config.reviewer!, provider: "openrouter" },
   };
 
   for (const envelope of [review(), review("printf other")]) {
-    await reviewWithFallback(routerConfig, wire.registry, envelope, observer);
+    await reviewAction(routerConfig, wire.registry, envelope, observer);
   }
 
   expect(wire.requests).toHaveLength(2);
@@ -246,12 +246,12 @@ test.each(["anthropic/claude-sonnet-4.6", "qwen/qwen3-coder-plus", "openai/gpt-6
     const wire = wireRegistry("openrouter", "sk-synthetic", id);
     const routerConfig = {
       ...config,
-      reviewers: [{ provider: "openrouter", model: id, thinking: "off" as const }],
+      reviewer: { provider: "openrouter", model: id, thinking: "off" as const },
     };
     const envelopes = [review(), review("printf next")];
 
     for (const envelope of envelopes)
-      await reviewWithFallback(routerConfig, wire.registry, envelope, observer);
+      await reviewAction(routerConfig, wire.registry, envelope, observer);
 
     const prefixBlocks = wire.requests.map(({ body, headers }, index) => {
       const content = body.messages.find((message: any) => message.role === "user").content;
@@ -277,8 +277,8 @@ test("OpenRouter Responses reviewers retain exact JSON and reusable prefix marke
   const wire = wireRegistry("openrouter", "sk-synthetic", id, "openai-responses");
   const envelope = review();
 
-  await reviewWithFallback(
-    { ...config, reviewers: [{ provider: "openrouter", model: id, thinking: "off" }] },
+  await reviewAction(
+    { ...config, reviewer: { provider: "openrouter", model: id, thinking: "off" } },
     wire.registry,
     envelope,
     observer,
@@ -297,7 +297,7 @@ test("OpenRouter Responses reviewers retain exact JSON and reusable prefix marke
 test("ChatGPT login keeps the SDK's unsupported cache fields omitted", async () => {
   const wire = wireRegistry("openai", "synthetic-login-token");
 
-  await reviewWithFallback(config, wire.registry, review(), observer);
+  await reviewAction(config, wire.registry, review(), observer);
   expect(wire.requests).toHaveLength(1);
   expect(wire.requests[0].body.prompt_cache_options).toBeUndefined();
   expect(JSON.stringify(wire.requests[0].body.input)).not.toContain("prompt_cache_breakpoint");
@@ -307,13 +307,13 @@ test.each(["openai", "openrouter"])(
   "real %s reviewer requests apply fast on/off while preserving cache and schema",
   async (provider) => {
     const wire = wireRegistry(provider);
-    const settings = { ...config, reviewers: [{ ...config.reviewers[0], provider }] };
+    const settings = { ...config, reviewer: { ...config.reviewer!, provider } };
     let enabled = false;
 
     for (const fast of [false, true, false]) {
       enabled = fast;
 
-      const checked = await reviewWithFallback(
+      const checked = await reviewAction(
         settings,
         wire.registry,
         review(),
@@ -325,7 +325,7 @@ test.each(["openai", "openrouter"])(
       );
 
       expect(checked.verdict.decision).toBe("approve");
-      expect(checked.selectedReviewer).toEqual(settings.reviewers[0]);
+      expect(checked.selectedReviewer).toEqual(settings.reviewer);
     }
 
     const [off, on, restored] = wire.requests.map((request) => request.body);

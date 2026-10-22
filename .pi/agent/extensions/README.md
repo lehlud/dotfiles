@@ -45,7 +45,7 @@ review infrastructure never import a feature entry point.
   cannot authorize actions. Native provider features are route-scoped and opt-in.
 - Fast mode owns its operator toggle and status; shared request hooks apply it to the working model, peers, subagents and side conversations. The review client applies the same preference to approval, completion, editorial and compression requests. Reviewer policy, model selection and sandbox access remain independent.
 - Model selection owns operator preferences and the footer. Native working-model commands persist
-  one model/thinking pair; `/reviewer` persists an ordered chain outside the security configuration.
+  one model/thinking pair; `/reviewer` persists one reviewer pair outside the security configuration.
   Shared session bindings snapshot reviewer choices at turn boundaries and pass parent selections
   to peers without sharing write authority. An active review retains its own configuration.
 - Code quality has no feature dependencies, tools or reviewer. Its transient context instruction

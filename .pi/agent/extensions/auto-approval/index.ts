@@ -50,7 +50,7 @@ export default function autoApproval(pi: ExtensionAPI) {
 
       await assertSandboxReady(config);
 
-      if (!config.reviewers.length) {
+      if (!config.reviewer) {
         ctx.ui.notify(
           "Auto-Approval needs a reviewer. Use /reviewer set <provider/model> <thinking>.",
           "warning",
@@ -99,14 +99,15 @@ export default function autoApproval(pi: ExtensionAPI) {
     },
   }));
   pi.registerCommand("auto-approval", {
-    description: "Show mandatory approval configuration; use /reviewer to select approval models",
+    description:
+      "Show mandatory approval configuration; use /reviewer to choose the approval model",
     handler: async (_args, ctx) => {
       try {
         const config = await loadSessionConfig(ctx);
 
         await assertSandboxReady(config);
         ctx.ui.notify(
-          `Auto-Approval ON\nActive reviewers (priority order):\n${config.reviewers.map((item, i) => `${i + 1}. ${reviewerLabel(item)}`).join("\n") || "None. Use /reviewer set <provider/model> <thinking>."}\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nDevice paths/views/credential profiles (optional): ${localConfigPath}\nUse /reviewer for persistent model choices. Changes apply at the next turn; in-flight reviews keep their selection. No bypass/off command.`,
+          `Auto-Approval ON\nActive reviewer: ${config.reviewer ? reviewerLabel(config.reviewer) : "None. Use /reviewer to choose one."}\nSandbox: ${config.sandbox.backend ?? "docker"}\nWorkspace: ${(await detectWorkspace(ctx.cwd)).path} (automatic; home-level Git roots ignored)\nCurrent directory: ${ctx.cwd}\nConfig: ${configPath}\nDevice paths/views/credential profiles (optional): ${localConfigPath}\nUse /reviewer for persistent model choices. Changes apply at the next turn; in-flight reviews keep their selection. No bypass/off command.`,
           "info",
         );
       } catch (error) {

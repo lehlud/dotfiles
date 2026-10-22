@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { loadConfig } from "../../shared/configuration/load.ts";
 import { buildReview } from "../review.ts";
 import { normalizeNetworkFlag, type Request } from "../../shared/contracts/action.ts";
-import { reviewWithFallback } from "../review.ts";
+import { reviewAction } from "../review.ts";
 
 const fixtures = [
   {
@@ -144,7 +144,7 @@ for (const fixture of fixtures) {
     ["[Synthetic protected credential sources]"],
     plan,
   );
-  const checked = await reviewWithFallback(
+  const checked = await reviewAction(
     config,
     registry,
     review,

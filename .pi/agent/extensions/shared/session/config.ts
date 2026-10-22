@@ -4,5 +4,7 @@ import { sessionServices } from "./services.ts";
 
 /** Capture the active selection once; lookup rounds and retries keep that review identity. */
 export function loadSessionConfig(ctx: ExtensionContext) {
-  return loadConfig(getAgentDir(), { reviewers: sessionServices(ctx).activeReviewers?.() });
+  const selected = sessionServices(ctx).activeReviewer;
+
+  return loadConfig(getAgentDir(), selected ? { reviewer: selected() } : {});
 }

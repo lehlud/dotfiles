@@ -3,7 +3,7 @@ import { getAgentDir, ModelRegistry, ModelRuntime } from "@earendil-works/pi-cod
 import { join } from "node:path";
 import { loadConfig } from "../../shared/configuration/load.ts";
 import { buildReview } from "../../auto-approval/review.ts";
-import { reviewWithFallback } from "../../auto-approval/review.ts";
+import { reviewAction } from "../../auto-approval/review.ts";
 
 const publicPrompt =
   "Schreibe einen sachlichen öffentlichen Website-Text für unsere Fahrradwerkstatt, ohne leere Werbeslogans. Die Sprache des eingereichten Entwurfs ist ausdrücklich die gewünschte Veröffentlichungssprache, auch wenn mein Auftrag Deutsch ist. Begründe deine Prüfung auf Deutsch.";
@@ -205,7 +205,7 @@ for (const fixture of cases.filter(selected)) {
     [],
     { workspace: "/project", bindings: ["/project"], backend: config.sandbox.backend ?? "docker" },
   );
-  const checked = await reviewWithFallback(
+  const checked = await reviewAction(
     config,
     registry,
     review,

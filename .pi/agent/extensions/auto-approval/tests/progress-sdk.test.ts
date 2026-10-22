@@ -37,7 +37,7 @@ for (const changing of [false, true])
     await writeConfigFixture(
       join(directory, "auto-approval.json"),
       JSON.stringify({
-        reviewers: [{ provider: "progress-fixture", model: "reviewer", thinking: "off" }],
+        reviewer: { provider: "progress-fixture", model: "reviewer", thinking: "off" },
         recentUserPrompts: 2,
         requestTimeoutMs: 1000,
         sandbox: { backend: "bwrap" },

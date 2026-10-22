@@ -3,7 +3,7 @@ import { getAgentDir, ModelRegistry, ModelRuntime } from "@earendil-works/pi-cod
 import { join } from "node:path";
 import { loadConfig } from "../../shared/configuration/load.ts";
 import { buildReview } from "../review.ts";
-import { reviewWithFallback } from "../review.ts";
+import { reviewAction } from "../review.ts";
 import { reviewerLabel } from "../../shared/review/client.ts";
 import { multiplexReviewFixtures } from "./multiplex-review-fixtures.ts";
 
@@ -35,7 +35,7 @@ for (const fixture of multiplexReviewFixtures) {
     ["/home/operator/.ssh"],
     plan,
   );
-  const checked = await reviewWithFallback(
+  const checked = await reviewAction(
     config,
     registry,
     envelope,

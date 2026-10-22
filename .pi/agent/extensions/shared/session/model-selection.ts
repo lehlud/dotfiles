@@ -14,11 +14,11 @@ export function currentSelection(ctx: ExtensionContext): Reviewer | undefined {
 }
 
 /** Snapshot review choices at the same per-turn boundary as steering, never mid-review. */
-export function registerReviewSelection(pi: ExtensionAPI, desired: () => Reviewer[]) {
-  let active: Reviewer[] = [];
+export function registerReviewSelection(pi: ExtensionAPI, desired: () => Reviewer | undefined) {
+  let active: Reviewer | undefined;
   const refresh = (_event: unknown, ctx: ExtensionContext) => {
     active = structuredClone(desired());
-    sessionServices(ctx).activeReviewers = () => structuredClone(active);
+    sessionServices(ctx).activeReviewer = () => structuredClone(active);
   };
 
   pi.on("session_start", refresh);
@@ -31,12 +31,15 @@ export function registerReviewSelection(pi: ExtensionAPI, desired: () => Reviewe
 
 /** Peers inherit preferences, not commands or permission to overwrite operator defaults. */
 export function registerInheritedSelection(pi: ExtensionAPI, parent: ExtensionContext) {
-  const desired = () =>
-    sessionServices(parent).desiredReviewers?.() ?? new ModelState(getAgentDir()).reviewers();
+  const desired = () => {
+    const selected = sessionServices(parent).desiredReviewer;
+
+    return selected ? selected() : new ModelState(getAgentDir()).reviewer();
+  };
 
   registerReviewSelection(pi, desired);
   pi.on("session_start", (_event, child) => {
-    sessionServices(child).desiredReviewers = desired;
+    sessionServices(child).desiredReviewer = desired;
     sessionServices(child).workingModel = () => sessionServices(parent).workingModel?.();
   });
 

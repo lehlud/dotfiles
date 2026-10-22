@@ -11,18 +11,21 @@ import { registerModelFooter } from "./footer.ts";
 
 export function registerModelSelection(pi: ExtensionAPI, agentDirectory: string) {
   const state = new ModelState(agentDirectory);
+
+  state.migrateReviewer();
+
   let restoring = false;
-  let desired = state.reviewers();
-  const refreshReviewers = registerReviewSelection(pi, () => desired);
+  let desired = state.reviewer();
+  const refreshReviewer = registerReviewSelection(pi, () => desired);
 
   registerModelFooter(pi);
   pi.on("session_start", async (event, ctx) => {
-    desired = state.reviewers();
-    refreshReviewers(event, ctx);
+    desired = state.reviewer();
+    refreshReviewer(event, ctx);
 
     const services = sessionServices(ctx);
 
-    services.desiredReviewers = () => structuredClone(desired);
+    services.desiredReviewer = () => structuredClone(desired);
     services.workingModel = () => currentSelection(ctx);
 
     const fresh =
@@ -76,10 +79,10 @@ export function registerModelSelection(pi: ExtensionAPI, agentDirectory: string)
     pi,
     () => desired,
     (next, ctx) => {
-      state.saveReviewers(next);
+      state.saveReviewer(next);
       desired = next;
 
-      if (ctx.isIdle()) refreshReviewers({}, ctx);
+      if (ctx.isIdle()) refreshReviewer({}, ctx);
     },
   );
 }

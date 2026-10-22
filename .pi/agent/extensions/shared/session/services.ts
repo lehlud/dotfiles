@@ -31,8 +31,8 @@ export type SessionServices = {
   setAgentGoal?: (text: string, signal?: AbortSignal) => Promise<Goal>;
   fastMode?: () => boolean;
   workingModel?: () => Reviewer | undefined;
-  desiredReviewers?: () => Reviewer[];
-  activeReviewers?: () => Reviewer[];
+  desiredReviewer?: () => Reviewer | undefined;
+  activeReviewer?: () => Reviewer | undefined;
   inlineModelStatus?: boolean;
   operatorGoal?: () => string | undefined;
   operatorGoalId?: () => string | undefined;

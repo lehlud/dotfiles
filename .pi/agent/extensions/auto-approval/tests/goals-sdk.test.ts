@@ -29,7 +29,7 @@ async function fixture(
   await writeConfigFixture(
     join(directory, "auto-approval.json"),
     JSON.stringify({
-      reviewers: [{ provider: "goal-sdk-fixture", model: "reviewer", thinking: "off" }],
+      reviewer: { provider: "goal-sdk-fixture", model: "reviewer", thinking: "off" },
       recentUserPrompts: 2,
       requestTimeoutMs: 1000,
       sandbox: { backend: "bwrap" },

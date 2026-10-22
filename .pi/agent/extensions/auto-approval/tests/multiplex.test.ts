@@ -208,7 +208,7 @@ test("reused word names cannot acknowledge messages from another team", () => {
 
 test("shared receipts cannot collide across actors or turn ordinary peer prose into authority", () => {
   const config: Config = {
-    reviewers: [{ provider: "fixture", model: "review", thinking: "off" }],
+    reviewer: { provider: "fixture", model: "review", thinking: "off" },
     recentUserPrompts: 2,
     requestTimeoutMs: 1000,
     sandbox: { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/runner" },

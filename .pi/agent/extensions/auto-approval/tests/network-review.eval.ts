@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { loadConfig } from "../../shared/configuration/load.ts";
 import { buildReview } from "../review.ts";
 import { normalizeNetworkFlag } from "../../shared/contracts/action.ts";
-import { reviewWithFallback } from "../review.ts";
+import { reviewAction } from "../review.ts";
 
 const cases = [
   {
@@ -101,7 +101,7 @@ for (const fixture of cases) {
     ["/home/operator/.ssh"],
     plan,
   );
-  const checked = await reviewWithFallback(
+  const checked = await reviewAction(
     config,
     registry,
     review,

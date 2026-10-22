@@ -18,7 +18,7 @@ import type {
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { assertSandboxReady, loadConfig } from "../shared/configuration/load.ts";
 import { buildGoalReview, verifyGoal } from "./goal-review.ts";
-import { ReviewChainError } from "../shared/review/client.ts";
+import { ReviewError } from "../shared/review/client.ts";
 import { operatorPromptRecords } from "../shared/review/prompts.ts";
 import type { GoalSource } from "../shared/contracts/goal.ts";
 import { sessionServices } from "../shared/session/services.ts";
@@ -459,8 +459,8 @@ export class GoalController {
         requestId: envelope?.requestId,
         fingerprint: envelope?.fingerprint,
         reason: String(error),
-        attempts: error instanceof ReviewChainError ? error.attempts : [],
-        usage: error instanceof ReviewChainError ? error.usage : undefined,
+        attempts: error instanceof ReviewError ? error.attempts : [],
+        usage: error instanceof ReviewError ? error.usage : undefined,
       });
       ctx.ui.notify(
         `Goal not confirmed: ${signal.aborted ? "interrupted" : String(error)}`,

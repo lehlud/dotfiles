@@ -11,7 +11,7 @@ const agent = join(home, ".pi", "agent");
 const source = join(agent, "extensions", "auto-approval");
 const runner = join(home, ".local", "cache", "pi-auto-approval", "executor");
 const portable = {
-  reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }],
+  reviewer: { provider: "openai", model: "gpt-6-luna", thinking: "medium" },
   recentUserPrompts: 6,
   requestTimeoutMs: 120000,
   sandbox: { backend: "bwrap" },

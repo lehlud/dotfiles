@@ -2,7 +2,7 @@
 import { getAgentDir, ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { loadConfig } from "../../shared/configuration/load.ts";
-import { buildReview, reviewWithFallback } from "../review.ts";
+import { buildReview, reviewAction } from "../review.ts";
 import { reviewerLabel } from "../../shared/review/client.ts";
 import { steeringReviewFixtures } from "./steering-review-fixtures.ts";
 import { taskContinuationReviewFixtures } from "./task-continuation-review-fixtures.ts";
@@ -50,7 +50,7 @@ for (const fixture of fixtures) {
       ? fixture.operatorGoal
       : undefined,
   );
-  const checked = await reviewWithFallback(
+  const checked = await reviewAction(
     config,
     registry,
     envelope,

@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ModelState, parseReviewers } from "../../shared/configuration/model-state.ts";
-import { updateReviewers } from "../../model-selection/reviewers.ts";
+import { ModelState } from "../../shared/configuration/model-state.ts";
+import { updateReviewer } from "../../model-selection/reviewer.ts";
 import { modelFooter, modelLabel, registerModelFooter } from "../../model-selection/footer.ts";
 import { registerModelSelection } from "../../model-selection/index.ts";
 import { registerInheritedSelection } from "../../shared/session/model-selection.ts";
@@ -76,67 +76,92 @@ function fixture() {
   };
 }
 
-test("atomic preferences retain full model/thinking pairs and independent reviewer order", async () => {
+test("atomic preferences retain independent working and single reviewer pairs", async () => {
   const state = new ModelState(await temporary());
 
   expect(state.working()).toBeUndefined();
-  expect(state.reviewers()).toEqual([]);
+  expect(state.reviewer()).toBeUndefined();
   state.saveWorking(primary);
-  state.saveReviewers([primary, fallback]);
+  state.saveReviewer(primary);
 
   const otherProcess = new ModelState(join(state.directory, "../.."));
 
   otherProcess.saveWorking(fallback);
   expect(state.working()).toEqual(fallback);
-  expect(state.reviewers()).toEqual([primary, fallback]);
-  expect((await stat(join(state.directory, "working.json"))).mode & 0o777).toBe(0o600);
-  expect(() => state.saveReviewers([])).toThrow();
-  expect(() => state.saveReviewers([primary, primary])).toThrow();
-  expect(state.reviewers()).toEqual([primary, fallback]);
+  expect(state.reviewer()).toEqual(primary);
+  expect((await stat(join(state.directory, "reviewer.json"))).mode & 0o777).toBe(0o600);
+  expect(() => state.saveReviewer([] as any)).toThrow();
+  expect(() => state.saveReviewer([primary, fallback] as any)).toThrow();
+  expect(state.reviewer()).toEqual(primary);
+});
+
+test("legacy ordered preferences migrate their active choice without retaining a fallback", async () => {
+  const state = new ModelState(await temporary());
+
+  await mkdir(state.directory, { recursive: true });
+  await writeFile(join(state.directory, "reviewers.json"), JSON.stringify([primary, fallback]));
+  expect(state.reviewer()).toEqual(primary);
+  state.migrateReviewer();
+  expect(JSON.parse(await readFile(join(state.directory, "reviewer.json"), "utf8"))).toEqual(
+    primary,
+  );
+  state.saveReviewer(fallback);
+  state.migrateReviewer();
+  expect(state.reviewer()).toEqual(fallback);
+  await rm(join(state.directory, "reviewer.json"));
+  await writeFile(join(state.directory, "reviewers.json"), "[{}]");
+  expect(() => state.migrateReviewer()).toThrow("Invalid legacy");
 });
 
 test("malformed and symlinked state fails closed without replacing the target", async () => {
   const state = new ModelState(await temporary());
 
-  state.saveReviewers([primary]);
+  state.saveReviewer(primary);
 
-  const path = join(state.directory, "reviewers.json");
+  const path = join(state.directory, "reviewer.json");
 
   await writeFile(path, "broken");
-  expect(() => state.reviewers()).toThrow();
-  expect(() => state.saveReviewers([fallback])).toThrow();
+  expect(() => state.reviewer()).toThrow();
+  expect(() => state.saveReviewer(fallback)).toThrow();
   await rm(path);
 
   const target = join(state.directory, "private-target");
 
   await writeFile(target, "keep");
   await symlink(target, path);
-  expect(() => state.reviewers()).toThrow("regular file");
-  expect(() => state.saveReviewers([primary])).toThrow("regular file");
+  expect(() => state.reviewer()).toThrow("regular file");
+  expect(() => state.saveReviewer(primary)).toThrow("regular file");
   expect(await readFile(target, "utf8")).toBe("keep");
 });
 
-test("reviewer commands preserve nested model IDs, explicit thinking and fallback priority", () => {
+test("reviewer commands replace one pair and reject list-management commands", () => {
   const { ctx } = fixture();
-  const choices = updateReviewers("add openrouter/vendor/model high", [primary], ctx);
+  const selected = updateReviewer("set openrouter/vendor/model high", primary, ctx);
 
-  expect(choices).toEqual([primary, fallback]);
-  expect(updateReviewers("move 2 1", choices, ctx)).toEqual([fallback, primary]);
-  expect(updateReviewers("thinking off 2", choices, ctx)[1].thinking).toBe("off");
-  expect(updateReviewers("set fixture/new high", choices, ctx)[1]).toEqual(fallback);
-  expect(() => updateReviewers("remove 1", [primary], ctx)).toThrow();
-  expect(() => updateReviewers("set fixture/plain high", choices, ctx)).toThrow("unsupported");
-  expect(() => updateReviewers("set fixture/missing high", choices, ctx)).toThrow("not found");
-  expect(() => updateReviewers("thinking banana", choices, ctx)).toThrow();
-  expect(() => parseReviewers(Array(9).fill(fallback))).toThrow();
-  expect(choices).toEqual([primary, fallback]);
+  expect(selected).toEqual(fallback);
+  expect(updateReviewer("thinking off", selected, ctx)).toEqual({ ...fallback, thinking: "off" });
+
+  for (const input of [
+    "add fixture/new high",
+    "move 2 1",
+    "remove 1",
+    "edit 2",
+    "thinking low 2",
+  ]) {
+    expect(() => updateReviewer(input, selected, ctx)).toThrow();
+  }
+
+  expect(() => updateReviewer("set fixture/plain high", selected, ctx)).toThrow("unsupported");
+  expect(() => updateReviewer("set fixture/missing high", selected, ctx)).toThrow("not found");
+  expect(() => updateReviewer("thinking banana", selected, ctx)).toThrow();
+  expect(primary.thinking).toBe("low");
 });
 
 test("busy reviewer changes persist immediately but activate at the next turn", async () => {
   const directory = await temporary();
   const state = new ModelState(directory);
 
-  state.saveReviewers([primary]);
+  state.saveReviewer(primary);
 
   const app = fixture();
 
@@ -144,32 +169,36 @@ test("busy reviewer changes persist immediately but activate at the next turn", 
   await app.emit("session_start", { reason: "startup" });
   app.ctx.isIdle = () => false;
   await app.command("set openrouter/vendor/model high");
-  expect(state.reviewers()).toEqual([fallback]);
-  expect(sessionServices(app.ctx).activeReviewers?.()).toEqual([primary]);
+  expect(state.reviewer()).toEqual(fallback);
+  expect(sessionServices(app.ctx).activeReviewer?.()).toEqual(primary);
   expect(app.notices.at(-1)).toContain("queued for next turn");
+  expect(app.notices.at(-1)).not.toContain("priority");
   await app.emit("turn_start");
-  expect(sessionServices(app.ctx).activeReviewers?.()).toEqual([fallback]);
+  expect(sessionServices(app.ctx).activeReviewer?.()).toEqual(fallback);
   await app.command("remove 1");
-  expect(state.reviewers()).toEqual([fallback]);
+  expect(state.reviewer()).toEqual(fallback);
   app.ctx.thinkingLevel = "high";
   await app.emit("thinking_level_select");
   expect(state.working()).toEqual({ ...primary, thinking: "high" });
-  expect(await readFile(join(state.directory, "reviewers.json"), "utf8")).not.toContain("apiKey");
+  expect(await readFile(join(state.directory, "reviewer.json"), "utf8")).not.toContain("apiKey");
 });
 
-test("peer preferences follow their own boundaries and cannot overwrite root defaults", async () => {
+test("peer preferences follow their own boundaries without resurrecting an old reviewer", async () => {
   const parent = fixture();
   const child = fixture();
-  let desired = [primary as typeof primary | typeof fallback];
+  let desired: typeof primary | typeof fallback | undefined = primary;
 
-  sessionServices(parent.ctx).desiredReviewers = () => desired;
+  sessionServices(parent.ctx).desiredReviewer = () => desired;
   sessionServices(parent.ctx).workingModel = () => fallback;
   registerInheritedSelection(child.pi, parent.ctx);
   await child.emit("session_start");
-  desired = [fallback];
-  expect(sessionServices(child.ctx).activeReviewers?.()).toEqual([primary]);
+  desired = fallback;
+  expect(sessionServices(child.ctx).activeReviewer?.()).toEqual(primary);
   await child.emit("turn_start");
-  expect(sessionServices(child.ctx).activeReviewers?.()).toEqual([fallback]);
+  expect(sessionServices(child.ctx).activeReviewer?.()).toEqual(fallback);
+  desired = undefined;
+  await child.emit("turn_start");
+  expect(sessionServices(child.ctx).activeReviewer?.()).toBeUndefined();
   await child.emit("turn_end");
   expect(child.ctx.model.id).toBe(fallback.model);
   expect(child.ctx.thinkingLevel).toBe("high");
@@ -221,7 +250,7 @@ test("inline speed replaces the TUI status row without hiding the RPC status sig
 });
 
 test("a review in flight keeps its snapshot and a denial never consults newly selected reviewers", async () => {
-  const config = { reviewers: [primary], requestTimeoutMs: 1000, recentUserPrompts: 10 };
+  const config = { reviewer: primary, requestTimeoutMs: 1000, recentUserPrompts: 10 };
   const calls: string[] = [];
   const result = requestVerdict(
     config,
@@ -231,7 +260,7 @@ test("a review in flight keeps its snapshot and a denial never consults newly se
       hasConfiguredAuth: () => true,
       streamSimple(model) {
         calls.push(model.id);
-        config.reviewers = [fallback as any];
+        config.reviewer = fallback as any;
 
         return {
           result: async () => ({

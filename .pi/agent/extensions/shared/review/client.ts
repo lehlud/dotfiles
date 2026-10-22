@@ -104,7 +104,7 @@ function incompleteReview(response: AssistantMessage, envelope: ReviewEnvelope) 
   };
 }
 
-export class ReviewChainError extends Error {
+export class ReviewError extends Error {
   constructor(
     message: string,
     public attempts: ReviewAttempt[],
@@ -307,10 +307,7 @@ export async function requestVerdict(
   const source = JSON.parse(envelope.text).latestUserPrompt;
 
   if (typeof source !== "string" || !source.trim())
-    throw new ReviewChainError(
-      "Latest operator prompt unavailable; no fallback, nothing executed",
-      [],
-    );
+    throw new ReviewError("Latest operator prompt unavailable; no fallback, nothing executed", []);
 
   const context = reviewContext(envelope, systemPrompt);
   const attempts: ReviewAttempt[] = [];
@@ -321,148 +318,144 @@ export async function requestVerdict(
     processing,
   };
 
-  for (const candidate of config.reviewers) {
-    signal?.throwIfAborted();
-    observer.start(candidate);
+  const candidate = config.reviewer;
 
-    const model = registry.find(candidate.provider, candidate.model);
-    let reason = unavailable(registry, candidate, model);
+  if (!candidate) throw new ReviewError("No reviewer selected; use /reviewer to choose one", []);
 
-    if (!reason && model) reason = reviewCapacityIssue(context, model);
+  signal?.throwIfAborted();
+  observer.start(candidate);
 
-    let response: AssistantMessage | undefined;
+  const model = registry.find(candidate.provider, candidate.model);
+  let reason = unavailable(registry, candidate, model);
 
-    state.consulted.clear();
+  if (!reason && model) reason = reviewCapacityIssue(context, model);
 
-    try {
-      if (!reason && model) {
-        response = await requestCandidate(
-          registry,
-          candidate,
-          model,
-          envelope,
-          config.requestTimeoutMs,
-          signal,
-          context,
-          observer,
-          state,
-          availability,
-        );
-      }
-    } catch (error) {
-      signal?.throwIfAborted();
+  let response: AssistantMessage | undefined;
 
-      if (error instanceof RecoveryAuditError || error instanceof ReviewerToolError) {
-        const detail =
-          error instanceof RecoveryAuditError ? "Provider recovery audit failed" : error.message;
-        const reason = `${detail}; no fallback, nothing executed`;
+  state.consulted.clear();
 
-        attempts.push({ ...candidate, status: "invalid", reason });
-
-        throw new ReviewChainError(reason, attempts, state.usage);
-      }
-
-      if (error instanceof Error && providerRefusal(error.message)) {
-        const reason = "Reviewer refused the check; no fallback, nothing executed";
-
-        attempts.push({ ...candidate, status: "invalid", reason });
-
-        throw new ReviewChainError(reason, attempts, state.usage);
-      }
-
-      reason =
-        error instanceof ProviderHeldError
-          ? error.message
-          : error instanceof Error && error.message === "Reviewer request timed out"
-            ? error.message
-            : `Reviewer provider request failed${providerFailureDetail(error)}`;
-    } finally {
-      observer.finish();
-    }
-
-    signal?.throwIfAborted();
-
-    if (response) {
-      if (response.stopReason !== "stop") {
-        // An explicit request-bound denial stays final even if transport fails
-        // after delivering it. An approval from a failed response is never used.
-        const stopped = incompleteReview(response, envelope);
-
-        if (stopped.denial) {
-          attempts.push({ ...candidate, status: "deny", reason: stopped.denial.reason });
-
-          return {
-            verdict: stopped.denial,
-            selectedReviewer: candidate,
-            attempts,
-            usage: state.usage,
-            promptLookups: state.promptLookups,
-          };
-        }
-
-        if (stopped.blocked) {
-          attempts.push({ ...candidate, status: "invalid", reason: stopped.blocked });
-
-          throw new ReviewChainError(stopped.blocked, attempts, state.usage);
-        }
-
-        reason = stopped.failure;
-      }
-    }
-
-    if (reason) {
-      const attempt: ReviewAttempt = { ...candidate, status: "failed", reason };
-
-      attempts.push(attempt);
-      // A failed audit/display callback aborts the chain, never authorizes a retry.
-      observer.failed(attempt);
-
-      continue;
-    }
-
-    let verdict: ReturnType<typeof parseVerdict>;
-
-    try {
-      verdict = parseVerdict(
-        textContent(response!.content),
-        envelope.requestId,
-        envelope.goalCheck,
+  try {
+    if (!reason && model) {
+      response = await requestCandidate(
+        registry,
+        candidate,
+        model,
+        envelope,
+        config.requestTimeoutMs,
+        signal,
+        context,
+        observer,
+        state,
+        availability,
       );
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : "Invalid reviewer verdict";
+    }
+  } catch (error) {
+    signal?.throwIfAborted();
+
+    if (error instanceof RecoveryAuditError || error instanceof ReviewerToolError) {
+      const detail =
+        error instanceof RecoveryAuditError ? "Provider recovery audit failed" : error.message;
+      const reason = `${detail}; no fallback, nothing executed`;
 
       attempts.push({ ...candidate, status: "invalid", reason });
 
-      throw new ReviewChainError(reason, attempts, state.usage);
+      throw new ReviewError(reason, attempts, state.usage);
     }
 
-    if (
-      verdict.decision === "approve" &&
-      [...(envelope.promptSources?.keys() ?? [])].some((id) => !state.consulted.has(id))
-    ) {
-      const reason =
-        "Reviewer must inspect every compressed original before approval; no fallback, nothing executed";
+    if (error instanceof Error && providerRefusal(error.message)) {
+      const reason = "Reviewer refused the check; no fallback, nothing executed";
 
       attempts.push({ ...candidate, status: "invalid", reason });
 
-      throw new ReviewChainError(reason, attempts, state.usage);
+      throw new ReviewError(reason, attempts, state.usage);
     }
 
-    attempts.push({ ...candidate, status: verdict.decision, reason: verdict.reason });
-
-    // A valid denial is final. Never search for a model willing to approve it.
-    return {
-      verdict,
-      selectedReviewer: candidate,
-      attempts,
-      usage: state.usage,
-      promptLookups: state.promptLookups,
-    };
+    reason =
+      error instanceof ProviderHeldError
+        ? error.message
+        : error instanceof Error && error.message === "Reviewer request timed out"
+          ? error.message
+          : `Reviewer provider request failed${providerFailureDetail(error)}`;
+  } finally {
+    observer.finish();
   }
 
-  throw new ReviewChainError(
-    `No configured reviewer completed the check: ${attempts.map((item) => `${reviewerLabel(item)}: ${item.reason}`).join("; ")}`,
+  signal?.throwIfAborted();
+
+  if (response) {
+    if (response.stopReason !== "stop") {
+      // An explicit request-bound denial stays final even if transport fails
+      // after delivering it. An approval from a failed response is never used.
+      const stopped = incompleteReview(response, envelope);
+
+      if (stopped.denial) {
+        attempts.push({ ...candidate, status: "deny", reason: stopped.denial.reason });
+
+        return {
+          verdict: stopped.denial,
+          selectedReviewer: candidate,
+          attempts,
+          usage: state.usage,
+          promptLookups: state.promptLookups,
+        };
+      }
+
+      if (stopped.blocked) {
+        attempts.push({ ...candidate, status: "invalid", reason: stopped.blocked });
+
+        throw new ReviewError(stopped.blocked, attempts, state.usage);
+      }
+
+      reason = stopped.failure;
+    }
+  }
+
+  if (reason) {
+    const attempt: ReviewAttempt = { ...candidate, status: "failed", reason };
+
+    attempts.push(attempt);
+    // A failed audit/display callback aborts review, never authorizes execution.
+    observer.failed(attempt);
+
+    throw new ReviewError(
+      `Reviewer check failed: ${reviewerLabel(candidate)}: ${reason}`,
+      attempts,
+      state.usage,
+    );
+  }
+
+  let verdict: ReturnType<typeof parseVerdict>;
+
+  try {
+    verdict = parseVerdict(textContent(response!.content), envelope.requestId, envelope.goalCheck);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "Invalid reviewer verdict";
+
+    attempts.push({ ...candidate, status: "invalid", reason });
+
+    throw new ReviewError(reason, attempts, state.usage);
+  }
+
+  if (
+    verdict.decision === "approve" &&
+    [...(envelope.promptSources?.keys() ?? [])].some((id) => !state.consulted.has(id))
+  ) {
+    const reason =
+      "Reviewer must inspect every compressed original before approval; no fallback, nothing executed";
+
+    attempts.push({ ...candidate, status: "invalid", reason });
+
+    throw new ReviewError(reason, attempts, state.usage);
+  }
+
+  attempts.push({ ...candidate, status: verdict.decision, reason: verdict.reason });
+
+  // A valid denial is final. Never search for a model willing to approve it.
+  return {
+    verdict,
+    selectedReviewer: candidate,
     attempts,
-    state.usage,
-  );
+    usage: state.usage,
+    promptLookups: state.promptLookups,
+  };
 }

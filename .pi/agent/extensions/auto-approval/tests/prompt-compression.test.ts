@@ -6,17 +6,14 @@ import { preparePromptContext } from "../../shared/review/compression.ts";
 import { buildReview } from "../review.ts";
 import { type Config } from "../../shared/configuration/schemas.ts";
 import { readPromptOriginal } from "../../shared/review/originals.ts";
-import { reviewWithFallback } from "../review.ts";
-import { ReviewChainError } from "../../shared/review/client.ts";
+import { reviewAction } from "../review.ts";
+import { ReviewError } from "../../shared/review/client.ts";
 import { OPERATOR_INPUT_ENTRY } from "../../shared/contracts/operator-input.ts";
 import { promptDigest } from "../../shared/review/prompts.ts";
 
 const root = await mkdtemp(join(tmpdir(), "pi-prompt-compression-"));
 const config: Config = {
-  reviewers: [
-    { provider: "fixture", model: "small", thinking: "off" },
-    { provider: "fallback", model: "small", thinking: "off" },
-  ],
+  reviewer: { provider: "fixture", model: "small", thinking: "off" },
   recentUserPrompts: 6,
   requestTimeoutMs: 5000,
   sandbox: { backend: "bwrap", executable: "/usr/bin/bwrap", runnerExecutable: "/executor" },
@@ -258,16 +255,18 @@ test("chunked compression stays bounded and sums usage, denial preserves raw int
   expect(calls[0].model.provider).toBe("fixture");
 });
 
-test("provider absence permits fallback, malformed summaries and cancellation never do", async () => {
+test("provider absence, malformed summaries and cancellation block without selecting another model", async () => {
   missing = true;
-  await preparePromptContext(branch(original), config, registry, join(root, "fallback"));
-  expect(calls[0].model.provider).toBe("fallback");
+  await expect(
+    preparePromptContext(branch(original), config, registry, join(root, "unavailable")),
+  ).rejects.toThrow("Reviewer model not found");
+  expect(calls).toHaveLength(0);
   missing = false;
   mode = "invalid";
   calls = [];
   await expect(
     preparePromptContext(branch(original), config, registry, join(root, "invalid")),
-  ).rejects.toBeInstanceOf(ReviewChainError);
+  ).rejects.toBeInstanceOf(ReviewError);
   expect(calls).toHaveLength(1);
 
   const cancelled = new AbortController();
@@ -395,7 +394,7 @@ test("reviewer can discover an omitted prohibition in the original and deny with
 
   calls = [];
 
-  const result = await reviewWithFallback(config, gate, envelope, {
+  const result = await reviewAction(config, gate, envelope, {
     start() {},
 
     finish() {},
@@ -430,7 +429,7 @@ test("approval without original inspection and arbitrary reviewer tools fail wit
 
   calls = [];
   await expect(
-    reviewWithFallback(config, registry, envelope, { start() {}, finish() {}, failed() {} }),
+    reviewAction(config, registry, envelope, { start() {}, finish() {}, failed() {} }),
   ).rejects.toThrow("inspect every compressed original");
   expect(calls).toHaveLength(1);
 
@@ -456,7 +455,7 @@ test("approval without original inspection and arbitrary reviewer tools fail wit
   };
 
   await expect(
-    reviewWithFallback(config, hostile, envelope, { start() {}, finish() {}, failed() {} }),
+    reviewAction(config, hostile, envelope, { start() {}, finish() {}, failed() {} }),
   ).rejects.toThrow("no fallback");
 });
 
@@ -512,7 +511,7 @@ test("ten compressed prompts are eager and all ten originals can be checked befo
     },
   };
 
-  const result = await reviewWithFallback(config, gate, envelope, {
+  const result = await reviewAction(config, gate, envelope, {
     start() {},
 
     finish() {},

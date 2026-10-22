@@ -58,7 +58,7 @@ binaryTest(
     await writeConfigFixture(
       join(agentDir, "auto-approval.json"),
       JSON.stringify({
-        reviewers: [{ provider: "unavailable-reviewer", model: "none", thinking: "off" }],
+        reviewer: { provider: "unavailable-reviewer", model: "none", thinking: "off" },
         recentUserPrompts: 2,
         requestTimeoutMs: 1000,
         sandbox: { backend: "bwrap" },
@@ -169,8 +169,8 @@ binaryTest(
       );
       expect(events.find((event) => event.id === "reviewer").success).toBe(true);
       expect(
-        JSON.parse(await readFile(join(agentDir, "state/model-selection/reviewers.json"), "utf8")),
-      ).toEqual([{ provider: "mailbox-binary-fixture", model: "working", thinking: "off" }]);
+        JSON.parse(await readFile(join(agentDir, "state/model-selection/reviewer.json"), "utf8")),
+      ).toEqual({ provider: "mailbox-binary-fixture", model: "working", thinking: "off" });
       child.stdin.write(
         JSON.stringify({ id: "team", type: "prompt", message: "/multiplex 2" }) + "\n",
       );
@@ -318,7 +318,7 @@ binaryTest(
     await writeConfigFixture(
       join(agentDir, "auto-approval.json"),
       JSON.stringify({
-        reviewers: [{ provider: "unavailable-reviewer", model: "none", thinking: "off" }],
+        reviewer: { provider: "unavailable-reviewer", model: "none", thinking: "off" },
         recentUserPrompts: 2,
         requestTimeoutMs: 1000,
         sandbox: { backend: "bwrap" },

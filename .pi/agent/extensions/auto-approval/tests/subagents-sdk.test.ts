@@ -71,7 +71,7 @@ async function fixture(route: { provider?: string; api?: string } = {}) {
   await writeConfigFixture(
     join(agentDir, "auto-approval.json"),
     JSON.stringify({
-      reviewers: [{ provider: "subagent-sdk-fixture", model: "review", thinking: "off" }],
+      reviewer: { provider: "subagent-sdk-fixture", model: "review", thinking: "off" },
       recentUserPrompts: 10,
       requestTimeoutMs: 5000,
       sandbox: { backend: "bwrap" },

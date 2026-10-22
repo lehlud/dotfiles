@@ -64,7 +64,7 @@ export const resolvedConfigSchema = Type.Object(
   {
     ...reviewContextProperties,
     // An unconfigured installation can start, but no action can pass independent review.
-    reviewers: Type.Array(reviewerSchema, { maxItems: 8, uniqueItems: true }),
+    reviewer: Type.Optional(reviewerSchema),
     credentialProfiles: Type.Optional(Type.Array(credentialProfileSchema, { maxItems: 32 })),
     sandbox: Type.Union([
       Type.Object(

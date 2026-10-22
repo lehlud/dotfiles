@@ -148,7 +148,7 @@ const { default: extension } = await import("../index.ts");
 const configPath = join(agentRoot, "auto-approval.json");
 const localConfigPath = join(agentRoot, "auto-approval.device.json");
 const config = {
-  reviewers: [{ provider: "openai", model: "gpt-6-luna", thinking: "medium" }],
+  reviewer: { provider: "openai", model: "gpt-6-luna", thinking: "medium" },
   recentUserPrompts: 6,
   requestTimeoutMs: 120000,
   sandbox: { backend: "docker", image: `sha256:${"a".repeat(64)}` },
@@ -1229,14 +1229,12 @@ test("missing and invalid config fail closed without reviewer or execution", asy
   expect(await exists(join(root, "invalid-config"))).toBe(false);
 });
 
-test("saved reviewers load independently of the portable security configuration", async () => {
+test("the saved reviewer loads independently of the portable security configuration", async () => {
   await writeConfigFixture(
     configPath,
     JSON.stringify({
       ...config,
-      reviewers: [
-        { provider: "replacement-provider", model: "replacement-model", thinking: "low" },
-      ],
+      reviewer: { provider: "replacement-provider", model: "replacement-model", thinking: "low" },
     }),
   );
   expect((await call(bash("printf switched"))).isError).not.toBe(true);
@@ -1353,89 +1351,70 @@ test("OpenRouter session cannot replace the configured direct OpenAI reviewer", 
   expect(requested[0].model.id).toBe("gpt-6-luna");
 });
 
-const fallback = { provider: "openrouter", model: "openai/gpt-6-luna", thinking: "medium" };
-const chainConfig = { ...config, reviewers: [...config.reviewers, fallback] };
+const alternative = { provider: "openrouter", model: "openai/gpt-6-luna", thinking: "medium" };
 
-test("explicit authenticated fallback is executed once and audited with the original request", async () => {
-  await writeConfigFixture(configPath, JSON.stringify(chainConfig));
+test("an explicitly selected reviewer replaces the previous one and is audited once", async () => {
+  await writeConfigFixture(configPath, JSON.stringify({ ...config, reviewer: alternative }));
   ctx.modelRegistry.hasConfiguredAuth = (model) => model.provider === "openrouter";
 
-  const result = await call(bash("printf explicit-fallback"));
+  const result = await call(bash("printf selected-reviewer"));
 
   expect(result.isError).not.toBe(true);
   expect(executedRequests).toHaveLength(1);
-
-  const audit = result.details.approval;
-
-  expect(audit.selectedReviewer).toEqual(fallback);
-  expect(audit.reviewAttempts.map((attempt: any) => attempt.status)).toEqual(["failed", "approve"]);
-
-  const failure = entries.find((entry) => entry.customType === "auto-approval-reviewer-failure");
-
-  expect(failure.data.requestId).toBe(audit.requestId);
-  expect(failure.data.fingerprint).toBe(audit.fingerprint);
+  expect(result.details.approval.selectedReviewer).toEqual(alternative);
+  expect(result.details.approval.reviewAttempts.map((attempt: any) => attempt.status)).toEqual([
+    "approve",
+  ]);
+  expect(requested).toHaveLength(1);
   expect(requested[0].model.provider).toBe("openrouter");
-  expect(requested[0].model.id).toBe("openai/gpt-6-luna");
-  expect(statuses.some((status) => status.includes("approval: openrouter/openai/gpt-6-luna"))).toBe(
-    true,
-  );
-  expect(statuses.some((status) => status.includes("→") || status.includes("(medium)"))).toBe(
+  expect(entries.some((entry) => entry.customType === "auto-approval-reviewer-failure")).toBe(
     false,
   );
   expect(currentApprovalStatus).toBeUndefined();
   ctx.modelRegistry.hasConfiguredAuth = () => true;
-  await call(bash("printf back-to-priority-one"));
-  expect(requested[1].model.provider).toBe("openai");
+  await call(bash("printf same-selected-reviewer"));
+  expect(requested[1].model.provider).toBe("openrouter");
 });
 
-test("technical fallback keeps an immutable action and includes billed usage from both attempts", async () => {
-  await writeConfigFixture(configPath, JSON.stringify(chainConfig));
-
-  const args = bash("printf immutable-fallback-action");
+test("a provider failure retains the exact action and never tries another reviewer", async () => {
+  const args = bash("printf immutable-failed-action");
 
   responseHook = () => {
-    mode = requested.at(-1).model.provider === "openai" ? "error" : "approve";
-    args.arguments.command = "touch mutated-fallback-action";
+    mode = "error";
+    args.arguments.command = "touch mutated-failed-action";
   };
 
   const result = await call(args);
 
-  expect(result.isError).not.toBe(true);
-  expect(executedRequests).toHaveLength(1);
+  expect(result.isError).toBe(true);
+  expect(executedRequests).toHaveLength(0);
   expect(requested.map((request) => request.data.action.arguments.command)).toEqual([
-    "printf immutable-fallback-action",
-    "printf immutable-fallback-action",
+    "printf immutable-failed-action",
   ]);
-  expect(requested[0].data.requestId).toBe(requested[1].data.requestId);
-  expect(result.usage?.totalTokens).toBe(40);
-  expect(result.details.approval.selectedReviewer).toEqual(fallback);
-  expect(await exists(join(root, "mutated-fallback-action"))).toBe(false);
+  expect(result.usage?.totalTokens).toBe(20);
+  expect(result.details.reviewAttempts).toHaveLength(1);
+  expect(await exists(join(root, "mutated-failed-action"))).toBe(false);
 });
 
-test("valid primary and fallback denials are final and never execute", async () => {
-  await writeConfigFixture(configPath, JSON.stringify(chainConfig));
+test("a denial stays final after a reviewer change and never executes", async () => {
   mode = "deny";
-  expect((await call(bash("touch denied-chain"))).isError).toBe(true);
+  expect((await call(bash("touch denied-review"))).isError).toBe(true);
   expect(requested).toHaveLength(1);
-  expect(executedRequests).toHaveLength(0);
-  responseHook = () => {
-    mode = requested.at(-1).model.provider === "openai" ? "error" : "deny";
-  };
+  await writeConfigFixture(configPath, JSON.stringify({ ...config, reviewer: alternative }));
 
-  const result = await call(bash("touch fallback-denied-chain"));
+  const result = await call(bash("touch denied-alternative-review"));
 
   expect(result.isError).toBe(true);
-  expect(result.details.selectedReviewer).toEqual(fallback);
+  expect(result.details.selectedReviewer).toEqual(alternative);
   expect(result.details.decision).toBe("deny");
   expect(result.details.technicalFailure).toBeUndefined();
   expect(executedRequests).toHaveLength(0);
 });
 
-test("invalid verdicts and cancellation never use the configured fallback", async () => {
-  await writeConfigFixture(configPath, JSON.stringify(chainConfig));
+test("invalid verdicts and cancellation cannot select a different reviewer", async () => {
   mode = "mismatch";
 
-  const invalid = await call(bash("touch wrong-verdict-chain"));
+  const invalid = await call(bash("touch wrong-verdict"));
 
   expect(invalid.isError).toBe(true);
   expect(requested).toHaveLength(1);
@@ -1444,24 +1423,23 @@ test("invalid verdicts and cancellation never use the configured fallback", asyn
   const controller = new AbortController();
 
   responseHook = () => controller.abort();
-  expect((await call(bash("touch cancelled-chain"), controller.signal)).isError).toBe(true);
+  expect((await call(bash("touch cancelled-review"), controller.signal)).isError).toBe(true);
   expect(requested).toHaveLength(2);
   expect(executedRequests).toHaveLength(0);
 });
 
-test("failure audit errors block the fallback and all exhausted reviewers block execution", async () => {
-  await writeConfigFixture(configPath, JSON.stringify(chainConfig));
+test("failed audit or unavailable reviewer blocks execution without alternatives", async () => {
   ctx.modelRegistry.hasConfiguredAuth = () => false;
   auditFails = true;
-  expect((await call(bash("touch failed-fallback-audit"))).isError).toBe(true);
+  expect((await call(bash("touch failed-review-audit"))).isError).toBe(true);
   expect(requested).toHaveLength(0);
   expect(executedRequests).toHaveLength(0);
   auditFails = false;
 
-  const result = await call(bash("touch exhausted-reviewers"));
+  const result = await call(bash("touch unavailable-reviewer"));
 
   expect(result.isError).toBe(true);
-  expect(result.details.reviewAttempts).toHaveLength(2);
+  expect(result.details.reviewAttempts).toHaveLength(1);
   expect(result.details.technicalFailure).toBe(true);
   expect(executedRequests).toHaveLength(0);
 });
@@ -1481,7 +1459,7 @@ test("review plus execution is serialized for concurrent calls", async () => {
 });
 
 test("symlink aliases cannot write security configuration or operator reviewer preferences", async () => {
-  for (const path of [configPath, join(agentRoot, "state/model-selection/reviewers.json")]) {
+  for (const path of [configPath, join(agentRoot, "state/model-selection/reviewer.json")]) {
     const alias = join(root, `protected-alias-${crypto.randomUUID()}.json`);
     const before = await readFile(path, "utf8");
 
@@ -1534,16 +1512,6 @@ test("reviewed argument snapshot cannot be mutated during review", async () => {
 });
 
 test("approval and denial remain in activity results and audit without a prompt widget", async () => {
-  await writeConfigFixture(
-    configPath,
-    JSON.stringify({
-      ...config,
-      reviewers: [
-        ...config.reviewers,
-        { provider: "unused-backup", model: "fallback", thinking: "medium" },
-      ],
-    }),
-  );
   await hooks.session_start({}, ctx);
   expect(widgets).toEqual([undefined]);
   expect(currentApprovalStatus).toBeUndefined();

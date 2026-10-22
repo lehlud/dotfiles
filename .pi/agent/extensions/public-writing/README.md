@@ -36,7 +36,7 @@ bun test tests/extension.test.ts
 bun tests/reviewer.eval.ts
 ```
 
-The last command uses configured reviewers and makes paid model requests. It tests six languages, necessary contrasts, quotations, internal communication, mislabeled drafts, public file/shell writes, visitor copy inside source code, layout-only changes and negative test data. It executes no proposed writes or shell actions. An optional argument filters case names, for example `bun tests/reviewer.eval.ts 'public UI prose'`.
+The last command uses the configured reviewer and makes paid model requests. It tests six languages, necessary contrasts, quotations, internal communication, mislabeled drafts, public file/shell writes, visitor copy inside source code, layout-only changes and negative test data. It executes no proposed writes or shell actions. An optional argument filters case names, for example `bun tests/reviewer.eval.ts 'public UI prose'`.
 
 Historical validation on October 5, 2026: 164 automated checks passed, including real bwrap isolation, along with 19 distinct semantic cases using the configured reviewer. Three additional complete gate/executor calls confirmed denial, a style receipt and the operator exemption. The real Pi resource loader loaded all three extensions present at that time without the replaced skill. All three TypeScript checks, shell syntax and diff checks passed. Docker was not tested live.
 

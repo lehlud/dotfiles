@@ -16,10 +16,7 @@ import { sessionServices } from "../../shared/session/services.ts";
 const root = await mkdtemp(join(tmpdir(), "pi-goal-test-"));
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 const config: Config = {
-  reviewers: [
-    { provider: "openai", model: "primary", thinking: "off" },
-    { provider: "backup", model: "fallback", thinking: "off" },
-  ],
+  reviewer: { provider: "openai", model: "primary", thinking: "off" },
   recentUserPrompts: 2,
   requestTimeoutMs: 1000,
   sandbox: { backend: "bwrap", executable: process.execPath, runnerExecutable: process.execPath },
@@ -426,15 +423,21 @@ test("queued operator input supersedes a blocker verdict before it can pause the
   ).toBe(true);
 });
 
-test("provider unavailability uses the configured fallback, never denial", async () => {
+test("an unavailable reviewer pauses goal checks and recovery keeps the same selection", async () => {
   await command("Verify the fixture", ctx);
   providerUnavailable = true;
   await settle();
-  expect(state().status).toBe("complete");
-  expect(requests[0].model.provider).toBe("backup");
+  expect(state().status).toBe("paused");
+  expect(requests).toHaveLength(0);
   expect(entries.some((entry) => entry.customType === "auto-approval-goal-reviewer-failure")).toBe(
     true,
   );
+  providerUnavailable = false;
+  await command("resume", ctx);
+  await settle();
+  expect(state().status).toBe("complete");
+  expect(requests).toHaveLength(1);
+  expect(requests[0].model.provider).toBe("openai");
 });
 
 test("invalid reviewer output pauses without claiming completion or trying fallback", async () => {

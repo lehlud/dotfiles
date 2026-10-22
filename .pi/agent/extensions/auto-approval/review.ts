@@ -9,7 +9,7 @@ import { REVIEW_SYSTEM, WRITING_REVIEW_SYSTEM } from "./review-policy.ts";
 type VerdictArguments = Parameters<typeof requestVerdict>;
 
 /** The shared verdict client receives policy explicitly and cannot authorize an action on its own. */
-export function reviewWithFallback(
+export function reviewAction(
   config: VerdictArguments[0],
   registry: VerdictArguments[1],
   envelope: VerdictArguments[2],

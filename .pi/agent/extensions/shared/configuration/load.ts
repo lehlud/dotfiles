@@ -14,7 +14,7 @@ import {
   type PortableConfig,
 } from "./schemas.ts";
 
-type RuntimeOptions = { home?: string; searchPath?: string; reviewers?: Reviewer[] };
+type RuntimeOptions = { home?: string; searchPath?: string; reviewer?: Reviewer };
 
 export async function assertSandboxReady(config: Config): Promise<void> {
   if (config.sandbox.backend !== "bwrap") return;
@@ -98,7 +98,7 @@ export async function resolveConfig(
 
   const resolved = {
     ...portable,
-    reviewers: runtime.reviewers ?? [],
+    ...(runtime.reviewer ? { reviewer: runtime.reviewer } : {}),
     sandbox,
     ...(local.credentialProfiles ? { credentialProfiles: local.credentialProfiles } : {}),
   };
@@ -145,6 +145,6 @@ export async function loadConfig(
 
   return await resolveConfig(portable, local, {
     ...runtime,
-    reviewers: runtime.reviewers ?? new ModelState(agentDirectory).reviewers(),
+    reviewer: "reviewer" in runtime ? runtime.reviewer : new ModelState(agentDirectory).reviewer(),
   });
 }

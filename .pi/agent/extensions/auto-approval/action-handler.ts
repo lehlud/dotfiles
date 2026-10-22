@@ -6,8 +6,8 @@ import {
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { sessionServices, type ActionLease } from "../shared/session/services.ts";
 import { preparePromptContext } from "../shared/review/compression.ts";
-import { reviewerLabel, ReviewChainError } from "../shared/review/client.ts";
-import { buildReview, reviewWithFallback } from "./review.ts";
+import { reviewerLabel, ReviewError } from "../shared/review/client.ts";
+import { buildReview, reviewAction } from "./review.ts";
 import { reviewSummary } from "./display.ts";
 import { ReviewDisplay } from "./review-display.ts";
 import { ProtectedPaths } from "./protected-paths.ts";
@@ -168,9 +168,9 @@ class ActionRun {
       operatorGoal,
     };
     this.phase = "independent review";
-    this.display.reviewer = config.reviewers.map(reviewerLabel).join(" → ");
+    this.display.reviewer = config.reviewer ? reviewerLabel(config.reviewer) : "—";
 
-    const checked = await reviewWithFallback(
+    const checked = await reviewAction(
       config,
       this.ctx.modelRegistry,
       review,
@@ -235,7 +235,7 @@ class ActionRun {
   private failed(error: unknown) {
     this.display.finish();
 
-    if (error instanceof ReviewChainError) {
+    if (error instanceof ReviewError) {
       this.usage = error.usage;
       this.audit = { ...this.audit, reviewAttempts: error.attempts };
     }

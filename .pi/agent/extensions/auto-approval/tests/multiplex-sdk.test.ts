@@ -102,7 +102,7 @@ async function fixture(
   await writeConfigFixture(
     join(agentDir, "auto-approval.json"),
     JSON.stringify({
-      reviewers: [{ provider: "multiplex-fixture", model: "review", thinking: "off" }],
+      reviewer: { provider: "multiplex-fixture", model: "review", thinking: "off" },
       recentUserPrompts: 6,
       requestTimeoutMs: 10000,
       sandbox: { backend: "bwrap" },

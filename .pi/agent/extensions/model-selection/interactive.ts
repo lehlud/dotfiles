@@ -1,29 +1,12 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
-import { parseReviewers } from "../shared/configuration/model-state.ts";
 import type { Reviewer } from "../shared/review/protocol.ts";
 import { reviewerThinkingLevels } from "./capabilities.ts";
 import { SearchPicker } from "./picker.ts";
-import { reviewerSelection, REVIEWER_USAGE } from "./reviewers.ts";
+import { reviewerSelection } from "./reviewer.ts";
 
 export function interactiveReviewerInput(args: string) {
-  return ["", "set", "add"].includes(args) || /^edit(?:\s|$)/.test(args);
-}
-
-function position(args: string, reviewers: Reviewer[]) {
-  if (args === "add") {
-    if (reviewers.length >= 8) throw new Error("At most eight reviewers can be selected");
-
-    return reviewers.length;
-  }
-
-  if (!args.startsWith("edit")) return 0;
-
-  const match = /^edit\s+([1-8])$/.exec(args);
-
-  if (!match || Number(match[1]) > reviewers.length) throw new Error(REVIEWER_USAGE);
-
-  return Number(match[1]) - 1;
+  return ["", "set"].includes(args);
 }
 
 async function pick(
@@ -61,23 +44,21 @@ async function pick(
 }
 
 /** Save only after both choices succeed; browsing never changes model or review state. */
-export async function chooseReviewers(
-  args: string,
-  previous: Reviewer[],
+export async function chooseReviewer(
+  previous: Reviewer | undefined,
   ctx: ExtensionContext,
   signal: AbortSignal,
-): Promise<Reviewer[] | undefined> {
+): Promise<Reviewer | undefined> {
   if (!ctx.hasUI) {
     ctx.ui.notify(
-      "Interactive reviewer selection needs a UI. Use /reviewer set <provider/model> <thinking> or /reviewer list.",
+      "Interactive reviewer selection needs a UI. Use /reviewer set <provider/model> <thinking> or /reviewer status.",
       "warning",
     );
 
     return;
   }
 
-  const index = position(args, previous);
-  const current = previous[index];
+  const current = previous;
   const reference = current ? `${current.provider}/${current.model}` : undefined;
   const models = ctx.modelRegistry
     .getAvailable()
@@ -86,17 +67,16 @@ export async function chooseReviewers(
 
   if (!models.length) {
     ctx.ui.notify(
-      "No reviewer models with configured authentication are available. Use /login, or /reviewer set to prepare an unavailable fallback.",
+      "No reviewer models with configured authentication are available. Use /login to configure a provider.",
       "warning",
     );
 
     return;
   }
 
-  const role = index === 0 ? "Primary" : `Fallback ${index}`;
   const selected = await pick(
     ctx,
-    `Approval model · ${role}`,
+    "Approval model",
     models.map((model) => {
       const value = `${model.provider}/${model.id}`;
 
@@ -114,7 +94,7 @@ export async function chooseReviewers(
   if (!model || !selected || signal.aborted) return;
 
   const levels = reviewerThinkingLevels(model);
-  const preferred = current?.thinking ?? previous[0]?.thinking;
+  const preferred = current?.thinking;
   const thinking = await pick(
     ctx,
     `Approval thinking · ${selected}`,
@@ -128,9 +108,5 @@ export async function chooseReviewers(
 
   if (!thinking || signal.aborted) return;
 
-  const next = structuredClone(previous);
-
-  next[index] = reviewerSelection(selected, thinking, ctx);
-
-  return parseReviewers(next);
+  return reviewerSelection(selected, thinking, ctx);
 }

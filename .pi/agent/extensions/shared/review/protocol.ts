@@ -21,7 +21,7 @@ export const reviewerSchema = Type.Object(
 export type Reviewer = Static<typeof reviewerSchema>;
 
 export type ReviewSettings = {
-  reviewers: Reviewer[];
+  reviewer?: Reviewer;
   recentUserPrompts: number;
   requestTimeoutMs: number;
 };

@@ -4,8 +4,8 @@ import type { Context, ModelsSimpleStreamOptions } from "@earendil-works/pi-ai";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { loadConfig } from "../../shared/configuration/load.ts";
-import { buildReview, reviewWithFallback } from "../review.ts";
-import { ReviewChainError } from "../../shared/review/client.ts";
+import { buildReview, reviewAction } from "../review.ts";
+import { ReviewError } from "../../shared/review/client.ts";
 import type { ReviewEnvelope, Usage } from "../../shared/review/contracts.ts";
 
 type Layout = "legacy" | "corrected";
@@ -117,7 +117,11 @@ function measuredRegistry(layout: Layout, snapshot: ReviewEnvelope, wire: Record
   };
 }
 
-async function measure(reviewer: (typeof config.reviewers)[number], layout: Layout, index: number) {
+async function measure(
+  reviewer: NonNullable<typeof config.reviewer>,
+  layout: Layout,
+  index: number,
+) {
   const snapshot = envelope(index, layout);
   const wire: Record<string, unknown> = {};
   const started = performance.now();
@@ -130,8 +134,8 @@ async function measure(reviewer: (typeof config.reviewers)[number], layout: Layo
   };
 
   try {
-    const result = await reviewWithFallback(
-      { ...config, reviewers: [reviewer], requestTimeoutMs: 90000 },
+    const result = await reviewAction(
+      { ...config, reviewer, requestTimeoutMs: 90000 },
       measuredRegistry(layout, snapshot, wire),
       snapshot,
       { start() {}, finish() {}, failed() {} },
@@ -154,14 +158,14 @@ async function measure(reviewer: (typeof config.reviewers)[number], layout: Layo
       status: "failed",
       durationMs: Math.round(performance.now() - started),
       // The review client redacts transport failures; never print raw SDK errors or headers.
-      reason: error instanceof ReviewChainError ? error.message : "Live evaluation failed",
+      reason: error instanceof ReviewError ? error.message : "Live evaluation failed",
     };
   }
 }
 
 console.log(JSON.stringify({ report: output, samplesPerLayout: 3, compareLegacy }));
 
-for (const reviewer of config.reviewers) {
+for (const reviewer of config.reviewer ? [config.reviewer] : []) {
   const model = registry.find(reviewer.provider, reviewer.model);
 
   if (!model || !registry.hasConfiguredAuth(model)) {
@@ -190,7 +194,7 @@ for (const reviewer of config.reviewers) {
   }
 }
 
-const checks = config.reviewers.map(({ provider, model }) => {
+const checks = (config.reviewer ? [config.reviewer] : []).map(({ provider, model }) => {
   const corrected = rows.filter(
     (row) => row.provider === provider && row.model === model && row.layout === "corrected",
   );

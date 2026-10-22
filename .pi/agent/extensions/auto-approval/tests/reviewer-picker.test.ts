@@ -9,7 +9,7 @@ import {
 import { KeybindingsManager } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
 import { theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { SearchPicker } from "../../model-selection/picker.ts";
-import { chooseReviewers } from "../../model-selection/interactive.ts";
+import { chooseReviewer } from "../../model-selection/interactive.ts";
 import { reviewerThinkingLevels } from "../../model-selection/capabilities.ts";
 import { registerReviewerCommand } from "../../model-selection/command.ts";
 import { sessionServices } from "../../shared/session/services.ts";
@@ -24,7 +24,6 @@ beforeEach(() => {
 afterEach(() => setKeybindings(previousKeys));
 
 const primary = { provider: "fixture", model: "working", thinking: "low" } as const;
-const fallback = { provider: "fixture", model: "fallback", thinking: "low" } as const;
 const replacement = { provider: "openrouter", model: "vendor/review", thinking: "high" } as const;
 
 function fixture(answers: (string | undefined)[] = []) {
@@ -150,17 +149,13 @@ test("closing a picker detaches its cancellation listener", () => {
   expect(selected).toEqual([undefined]);
 });
 
-test("primary, append and fallback editing use known models and only supported thinking levels", async () => {
-  for (const input of ["", "set", "add", "edit 2"]) {
-    const app = fixture(["openrouter/vendor/review", "high"]);
-    const previous = [primary, fallback];
-    const next = await chooseReviewers(input, previous, app.ctx, new AbortController().signal);
+test("selection replaces the reviewer using known models and supported thinking levels", async () => {
+  const app = fixture(["openrouter/vendor/review", "high"]);
+  const next = await chooseReviewer(primary, app.ctx, new AbortController().signal);
 
-    expect(app.dialogs[1].options).toEqual(["✓ low", "high"]);
-    expect(next?.[input === "add" ? 2 : input === "edit 2" ? 1 : 0]).toEqual(replacement);
-    expect(previous).toEqual([primary, fallback]);
-    expect(next?.length).toBe(input === "add" ? 3 : 2);
-  }
+  expect(app.dialogs[1].options).toEqual(["✓ low", "high"]);
+  expect(next).toEqual(replacement);
+  expect(primary.thinking).toBe("low");
 });
 
 test("the complete terminal flow uses searchable native components for both choices", async () => {
@@ -178,10 +173,8 @@ test("the complete terminal flow uses searchable native components for both choi
       picker.dispose();
     });
 
-  expect(
-    await chooseReviewers("", [primary, fallback], app.ctx, new AbortController().signal),
-  ).toEqual([replacement, fallback]);
-  expect(screens[0]).toContain("Approval model · Primary");
+  expect(await chooseReviewer(primary, app.ctx, new AbortController().signal)).toEqual(replacement);
+  expect(screens[0]).toContain("Approval model");
   expect(screens[1]).toContain("Approval thinking");
 });
 
@@ -190,23 +183,17 @@ test("cancel at either stage, unavailable models and headless invocation leave p
     const stages = answers.length;
     const app = fixture([...answers]);
 
-    expect(
-      await chooseReviewers("", [primary], app.ctx, new AbortController().signal),
-    ).toBeUndefined();
+    expect(await chooseReviewer(primary, app.ctx, new AbortController().signal)).toBeUndefined();
     expect(app.dialogs.length).toBe(stages);
   }
 
   const app = fixture();
 
   app.models.length = 0;
-  expect(
-    await chooseReviewers("", [primary], app.ctx, new AbortController().signal),
-  ).toBeUndefined();
+  expect(await chooseReviewer(primary, app.ctx, new AbortController().signal)).toBeUndefined();
   expect(app.notices.at(-1)).toContain("/login");
   app.ctx.hasUI = false;
-  expect(
-    await chooseReviewers("", [primary], app.ctx, new AbortController().signal),
-  ).toBeUndefined();
+  expect(await chooseReviewer(primary, app.ctx, new AbortController().signal)).toBeUndefined();
   expect(app.notices.at(-1)).toContain("/reviewer set");
 });
 
@@ -228,7 +215,7 @@ test("a replaced command or session shutdown cancels an open picker without a st
   const app = fixture();
   const hooks: Record<string, Function[]> = {};
   let command: any;
-  let current = [primary as typeof primary | typeof replacement];
+  let current: typeof primary | typeof replacement = primary;
   const saved: unknown[] = [];
   const opened = Promise.withResolvers<void>();
 
@@ -243,7 +230,7 @@ test("a replaced command or session shutdown cancels an open picker without a st
       signal.addEventListener("abort", () => resolve(undefined), { once: true }),
     );
   };
-  sessionServices(app.ctx).activeReviewers = () => current;
+  sessionServices(app.ctx).activeReviewer = () => current;
   registerReviewerCommand(
     {
       on: (name: string, handler: Function) => {
@@ -267,7 +254,7 @@ test("a replaced command or session shutdown cancels an open picker without a st
   expect(app.notices.at(-1)).toContain("already open");
   await command.handler("set openrouter/vendor/review high", app.ctx);
   await pending;
-  expect(saved).toEqual([[replacement]]);
+  expect(saved).toEqual([replacement]);
 
   const shutdown = command.handler("", app.ctx);
 
@@ -276,5 +263,5 @@ test("a replaced command or session shutdown cancels an open picker without a st
   for (const handler of hooks.session_shutdown) handler({}, app.ctx);
 
   await shutdown;
-  expect(saved).toEqual([[replacement]]);
+  expect(saved).toEqual([replacement]);
 });

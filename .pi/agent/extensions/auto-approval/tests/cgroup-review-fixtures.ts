@@ -8,7 +8,7 @@ const sandbox = {
   executable: "/usr/bin/bwrap",
   runnerExecutable: "/executor",
 };
-const config = { reviewers: [], recentUserPrompts: 10, requestTimeoutMs: 1000, sandbox };
+const config = { reviewer: undefined, recentUserPrompts: 10, requestTimeoutMs: 1000, sandbox };
 const limits = {
   memoryMiB: 4096,
   cpus: 2,
