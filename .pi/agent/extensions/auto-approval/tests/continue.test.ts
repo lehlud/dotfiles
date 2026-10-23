@@ -32,13 +32,17 @@ function fixture() {
 test("continuation preserves operator context, broadcasts once and resets progress", async () => {
   const state = fixture();
   const team: string[] = [];
-  let resets = 0;
+  let resets = 0,
+    probes = 0;
   const services = sessionServices(state.ctx as any);
 
   services.continueTeam = (content) => {
     team.push(content);
   };
 
+  services.prepareProviderResume = () => {
+    probes++;
+  };
   services.resetProgress = () => {
     resets++;
   };
@@ -46,6 +50,7 @@ test("continuation preserves operator context, broadcasts once and resets progre
   await state.run();
   expect(team).toEqual([CONTINUE_INSTRUCTION]);
   expect(resets).toBe(1);
+  expect(probes).toBe(1);
   expect(state.sent).toEqual([
     {
       message: {

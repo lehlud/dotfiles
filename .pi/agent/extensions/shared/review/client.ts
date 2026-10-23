@@ -16,7 +16,8 @@ import { sumUsage } from "../providers/usage.ts";
 import {
   ProviderAvailability,
   providerAvailability,
-  ProviderHeldError,
+  isProviderHeldError,
+  isRecoveryAuditError,
   RecoveryAuditError,
   providerRefusal,
   transientProviderError,
@@ -352,9 +353,8 @@ export async function requestVerdict(
   } catch (error) {
     signal?.throwIfAborted();
 
-    if (error instanceof RecoveryAuditError || error instanceof ReviewerToolError) {
-      const detail =
-        error instanceof RecoveryAuditError ? "Provider recovery audit failed" : error.message;
+    if (isRecoveryAuditError(error) || error instanceof ReviewerToolError) {
+      const detail = isRecoveryAuditError(error) ? "Provider recovery audit failed" : error.message;
       const reason = `${detail}; no fallback, nothing executed`;
 
       attempts.push({ ...candidate, status: "invalid", reason });
@@ -370,12 +370,11 @@ export async function requestVerdict(
       throw new ReviewError(reason, attempts, state.usage);
     }
 
-    reason =
-      error instanceof ProviderHeldError
+    reason = isProviderHeldError(error)
+      ? error.message
+      : error instanceof Error && error.message === "Reviewer request timed out"
         ? error.message
-        : error instanceof Error && error.message === "Reviewer request timed out"
-          ? error.message
-          : `Reviewer provider request failed${providerFailureDetail(error)}`;
+        : `Reviewer provider request failed${providerFailureDetail(error)}`;
   } finally {
     observer.finish();
   }

@@ -845,6 +845,12 @@ test("agents cannot replace operator goals or switch unfinished agent targets", 
 
 test("repeating an agent goal preserves reviewer feedback and check count", async () => {
   realTask();
+
+  let probes = 0;
+
+  sessionServices(ctx).prepareProviderResume = () => {
+    probes++;
+  };
   await setAgent("Verify parser behavior");
   verdicts = ["deny"];
   await settle();
@@ -866,6 +872,7 @@ test("repeating an agent goal preserves reviewer feedback and check count", asyn
   expect(state().status).toBe("running");
   expect(sent.at(-1).message.content).toContain("missing validation");
   expect(sent.at(-1).message.content).not.toContain("Operator goal:");
+  expect(probes).toBe(0);
 });
 
 test("self-assigned goals need real operator history and reject cancelled tools", async () => {
@@ -1020,4 +1027,19 @@ test("unknown goal provenance cannot become a legacy operator prompt", () => {
   );
 
   expect(data.userPrompts).toEqual(["Repair the parser. Never upload source."]);
+});
+
+test("operator goal resume prepares provider recovery before starting its next turn", async () => {
+  await command("Verify the fixture", ctx);
+  await hooks.turn_end({ ...boundary(), outcome: "error" }, ctx);
+
+  let probes = 0;
+
+  sessionServices(ctx).prepareProviderResume = () => {
+    probes++;
+  };
+  expect(state().status).toBe("paused");
+  await command("resume", ctx);
+  expect(probes).toBe(1);
+  expect(state().status).toBe("running");
 });

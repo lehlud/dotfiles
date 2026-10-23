@@ -53,6 +53,7 @@ export function registerContinue(pi: ExtensionAPI) {
           return;
         }
 
+        services.prepareProviderResume?.();
         services.continueTeam?.(CONTINUE_INSTRUCTION);
         services.resetProgress?.();
         pi.sendMessage(

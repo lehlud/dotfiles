@@ -295,6 +295,9 @@ export class GoalController {
 
     try {
       await this.ready(ctx, revision, signal);
+
+      if (resume && source === "operator") sessionServices(ctx).prepareProviderResume?.();
+
       next = resume
         ? {
             ...current!,

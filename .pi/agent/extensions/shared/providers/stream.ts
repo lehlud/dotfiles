@@ -14,13 +14,15 @@ import { parseVerdict, textContent } from "../review/protocol.ts";
 import {
   providerAvailability,
   ProviderHeldError,
-  RecoveryAuditError,
+  isProviderHeldError,
+  isRecoveryAuditError,
   providerRefusal,
   transientProviderError,
   type AvailabilityNotice,
 } from "./availability.ts";
 import { sumUsage } from "./usage.ts";
 import { cacheStream } from "./cache-stream.ts";
+import { sessionServices } from "../session/services.ts";
 
 const wrappedKey = Symbol.for("pi.auto-approval.provider-stream.v1");
 const zeroUsage = () => ({
@@ -160,7 +162,7 @@ export function resilientStream(
           usage: usage ?? zeroUsage(),
           stopReason: aborted ? "aborted" : "error",
           errorMessage:
-            error instanceof ProviderHeldError || error instanceof RecoveryAuditError
+            isProviderHeldError(error) || isRecoveryAuditError(error)
               ? error.message
               : aborted
                 ? "Model request cancelled"
@@ -242,6 +244,10 @@ export function registerProviderRecovery(pi: ExtensionAPI, availability = provid
   const statusKey = (model: { provider: string; id: string }) =>
     `provider-recovery:${JSON.stringify([model.provider, model.id])}`;
   const install = (_event: unknown, ctx: ExtensionContext) => {
+    sessionServices(ctx).prepareProviderResume = () => {
+      if (ctx.model) availability.requestProbe?.(ctx.model);
+    };
+
     installProviderStreams(
       ctx.modelRegistry,
       availability,

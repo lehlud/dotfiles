@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test";
+import { beforeEach, expect, spyOn, test } from "bun:test";
 import {
   ProviderAvailability,
   ProviderHeldError,
@@ -461,4 +461,113 @@ test("raw refusal markers prevent retries even if a transport throw follows the 
     expect(result.rawStopReason).toBe("refusal");
     expect(isRetryableAssistantError(result)).toBe(false);
   }
+});
+
+test("a cooldown from another extension copy retains its diagnostic across continuation", async () => {
+  const modulePath = "../../shared/providers/availability.ts?standby-copy";
+  const other: typeof import("../../shared/providers/availability.ts") = await import(modulePath);
+  const foreignGate = new other.ProviderAvailability({
+    now: () => now,
+    wait: async (ms) => {
+      now += ms;
+    },
+  });
+  let calls = 0;
+  const wrapped = resilientStream(
+    (() => {
+      calls++;
+
+      return source("error", "", "HTTP 507");
+    }) as any,
+    foreignGate,
+  );
+
+  expect(other.ProviderHeldError).not.toBe(ProviderHeldError);
+  expect((await wrapped(model, context).result()).errorMessage).toContain("availability guard");
+  expect(calls).toBe(6);
+  expect((await wrapped(model, context).result()).errorMessage).toContain("availability guard");
+  expect(calls).toBe(6);
+});
+
+test("standby time counts toward the default five-minute cooldown", async () => {
+  let wall = 1000000;
+  const nowSpy = spyOn(Date, "now").mockImplementation(() => wall);
+  const availability = new ProviderAvailability({ wait: async () => {} });
+
+  try {
+    expect(await availability.run(pair, async () => 507, down)).toBe(507);
+    wall += 299999;
+    await expect(availability.run(pair, async () => 200, down)).rejects.toBeInstanceOf(
+      ProviderHeldError,
+    );
+    wall++;
+    expect(await availability.run(pair, async () => 200, down)).toBe(200);
+  } finally {
+    nowSpy.mockRestore();
+  }
+});
+
+test("explicit continuation admits one early probe and cannot duplicate an active recovery", async () => {
+  let calls = 0;
+  const fail = async () => {
+    calls++;
+
+    return 507;
+  };
+
+  await gate.run(pair, fail, down, undefined, () => {
+    expect(gate.requestProbe(pair)).toBe(false);
+  });
+  expect(gate.requestProbe({ ...pair, id: "another-model" })).toBe(false);
+  expect(gate.requestProbe(pair)).toBe(true);
+  expect(await gate.run(pair, fail, down)).toBe(507);
+  expect(calls).toBe(7);
+  expect(delays).toHaveLength(5);
+  await expect(gate.run(pair, fail, down)).rejects.toBeInstanceOf(ProviderHeldError);
+  expect(calls).toBe(7);
+  expect(gate.requestProbe(pair)).toBe(true);
+
+  let release!: (value: number) => void;
+  const probe = gate.run(
+    pair,
+    () =>
+      new Promise<number>((resolve) => {
+        release = resolve;
+      }),
+    down,
+  );
+
+  await Promise.resolve();
+  expect(gate.requestProbe(pair)).toBe(false);
+  await expect(gate.run(pair, fail, down)).rejects.toBeInstanceOf(ProviderHeldError);
+  release(200);
+  expect(await probe).toBe(200);
+  expect(gate.requestProbe(pair)).toBe(false);
+  await gate.run(pair, fail, down);
+  expect(calls).toBe(13);
+  expect(delays).toHaveLength(10);
+});
+
+test("retry audit failures from another extension copy retain their fail-closed identity", async () => {
+  const modulePath = "../../shared/providers/availability.ts?standby-audit-copy";
+  const other: typeof import("../../shared/providers/availability.ts") = await import(modulePath);
+  let calls = 0;
+  const wrapped = resilientStream(
+    (() => {
+      calls++;
+
+      return source("error", "", "HTTP 507");
+    }) as any,
+    new other.ProviderAvailability({ now: () => now, wait: async () => {} }),
+    () => {
+      throw new Error("synthetic-private-audit-failure");
+    },
+  );
+  const response = await wrapped(model, context).result();
+
+  expect(calls).toBe(1);
+  expect(response.errorMessage).toBe(
+    "Provider recovery audit failed; no fallback, nothing executed",
+  );
+  expect(response.errorMessage).not.toContain("synthetic-private");
 });

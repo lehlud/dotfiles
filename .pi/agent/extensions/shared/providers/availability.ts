@@ -33,9 +33,30 @@ export class ProviderHeldError extends Error {
 }
 
 export class RecoveryAuditError extends Error {
+  readonly code = "PI_RECOVERY_AUDIT";
+
   constructor() {
     super("Provider recovery audit failed; no fallback, nothing executed");
   }
+}
+
+/** Compiled extensions have separate constructors, but share availability state. */
+export function isProviderHeldError(error: unknown): error is ProviderHeldError {
+  if (!(error instanceof Error)) return false;
+
+  const candidate = error as Partial<ProviderHeldError>;
+
+  return (
+    typeof candidate.remainingMs === "number" &&
+    Number.isFinite(candidate.remainingMs) &&
+    candidate.remainingMs >= 0 &&
+    typeof candidate.recovering === "boolean" &&
+    error.message === new ProviderHeldError(candidate.remainingMs, candidate.recovering).message
+  );
+}
+
+export function isRecoveryAuditError(error: unknown): error is RecoveryAuditError {
+  return error instanceof Error && error.message === new RecoveryAuditError().message;
 }
 
 /** Policy refusals are final, including provider-side cybersecurity checks. */
@@ -119,7 +140,23 @@ async function interruptible<T>(work: () => Promise<T>, signal?: AbortSignal): P
 /** State is scoped to each provider/model pair; a successful response ends the outage. */
 export class ProviderAvailability {
   private readonly states = new Map<string, State>();
-  constructor(private clock: Clock = { now: () => performance.now(), wait: abortableWait }) {}
+  private readonly clock: Clock;
+
+  constructor(clock: Partial<Clock> = {}) {
+    // Wall time includes machine standby on platforms where performance.now() pauses.
+    this.clock = { now: () => Date.now(), wait: abortableWait, ...clock };
+  }
+
+  /** Explicit operator continuation permits one early probe, never a parallel recovery. */
+  requestProbe(pair: Pair): boolean {
+    const state = this.states.get(JSON.stringify([pair.provider, pair.id]));
+
+    if (!state || state.probing || state.recovering) return false;
+
+    state.until = 0;
+
+    return true;
+  }
 
   async run<T>(
     pair: Pair,
@@ -160,7 +197,7 @@ export class ProviderAvailability {
         } catch (error) {
           signal?.throwIfAborted();
 
-          if (error instanceof ProviderHeldError || !transientProviderError(error)) {
+          if (isProviderHeldError(error) || !transientProviderError(error)) {
             this.states.delete(key);
 
             throw error;

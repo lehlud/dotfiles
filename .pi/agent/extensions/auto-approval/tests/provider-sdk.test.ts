@@ -11,9 +11,13 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { ProviderAvailability } from "../../shared/providers/availability.ts";
+import { ProviderHeldError } from "../../shared/providers/availability.ts";
 import { registerProviderRecovery } from "../../shared/providers/stream.ts";
 import { expiredTokenResponse } from "./provider-error-fixtures.ts";
+import { registerContinue } from "../../conversations/continue.ts";
+
+const modulePath = "../../shared/providers/availability.ts?standby-sdk-copy";
+const other: typeof import("../../shared/providers/availability.ts") = await import(modulePath);
 
 for (const [label, failure] of [
   ["507", "OpenAI API error (507): exceeded request buffer limit while retrying upstream"],
@@ -24,7 +28,7 @@ for (const [label, failure] of [
     let now = 0,
       calls = 0,
       fail = 2;
-    const availability = new ProviderAvailability({
+    const availability = new other.ProviderAvailability({
       now: () => now,
       wait: async (ms) => {
         now += ms;
@@ -99,7 +103,12 @@ for (const [label, failure] of [
       noThemes: true,
       noContextFiles: true,
       noPromptTemplates: true,
-      extensionFactories: [(pi) => registerProviderRecovery(pi, availability)],
+      extensionFactories: [
+        (pi) => {
+          registerProviderRecovery(pi, availability);
+          registerContinue(pi);
+        },
+      ],
     });
 
     await resourceLoader.reload();
@@ -139,6 +148,8 @@ for (const [label, failure] of [
       expect(calls).toBe(9);
       await session.prompt("Still in cooldown");
       expect(calls).toBe(9);
+      expect(other.ProviderHeldError).not.toBe(ProviderHeldError);
+      expect((session.messages.at(-1) as any).errorMessage).toContain("availability guard");
       now += 300000;
       await session.prompt("Single expired-cooldown probe");
       expect(calls).toBe(10);
@@ -149,6 +160,28 @@ for (const [label, failure] of [
       fail = 100;
       await session.prompt("New outage gets five retries again");
       expect(calls).toBe(17);
+      fail = 0;
+
+      let completed!: () => void;
+      const resumed = new Promise<void>((resolve) => {
+        completed = resolve;
+      });
+      const unsubscribe = session.subscribe((event) => {
+        if (event.type === "agent_end") completed();
+      });
+
+      try {
+        await session.prompt("/continue");
+        await resumed;
+      } finally {
+        unsubscribe();
+      }
+
+      expect(calls).toBe(18);
+      expect(session.messages.at(-1)).toMatchObject({
+        stopReason: "stop",
+        content: [{ type: "text", text: "success" }],
+      });
     } finally {
       session.dispose();
       await rm(directory, { recursive: true, force: true });

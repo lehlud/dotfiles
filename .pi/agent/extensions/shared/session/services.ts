@@ -48,6 +48,7 @@ export type SessionServices = {
   peerRevision?: () => number;
   interruptGoal?: (reason?: string) => void;
   resetProgress?: () => void;
+  prepareProviderResume?: () => void;
   resumeGoal?: (ctx: ExtensionCommandContext) => Promise<boolean>;
   continueTeam?: (instruction: string) => void;
   flushOperatorInputs?: () => void;
