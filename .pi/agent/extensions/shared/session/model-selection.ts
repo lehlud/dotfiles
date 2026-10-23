@@ -5,6 +5,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { ModelState } from "../configuration/model-state.ts";
 import type { Reviewer } from "../review/protocol.ts";
+import { registerInheritedRemote } from "./remote.ts";
 import { sessionServices } from "./services.ts";
 
 export function currentSelection(ctx: ExtensionContext): Reviewer | undefined {
@@ -31,6 +32,8 @@ export function registerReviewSelection(pi: ExtensionAPI, desired: () => Reviewe
 
 /** Peers inherit preferences, not commands or permission to overwrite operator defaults. */
 export function registerInheritedSelection(pi: ExtensionAPI, parent: ExtensionContext) {
+  registerInheritedRemote(pi, parent);
+
   const desired = () => {
     const selected = sessionServices(parent).desiredReviewer;
 

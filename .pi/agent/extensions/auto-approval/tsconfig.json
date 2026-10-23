@@ -22,6 +22,7 @@
     "../fast-mode/*.ts",
     "../model-selection/*.ts",
     "../subagents/**/*.ts",
-    "../context-management/**/*.ts"
+    "../context-management/**/*.ts",
+    "../remote/**/*.ts"
   ]
 }

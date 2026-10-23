@@ -2,7 +2,7 @@
 
 For module ownership, lifecycle and development checks, see the [architecture guide](../README.md).
 
-Every external agent action is reviewed by an independent model. Approved actions then run in a separate sandbox. Direct external tools, `!`/`!!`, nested external tool calls and a local execution fallback are blocked. Multiplex's internal `mailbox` transport is outside approval: the hook returns immediately without inspecting message content or contacting a reviewer. The Multiplex extension owns its session-bound delivery.
+Every external agent action is reviewed by an independent model. Approved local actions then run in a separate sandbox. An operator-selected [remote workspace](../remote/README.md) routes project tools through reviewed SSH execution; only explicit native UI confirmation after a failed remote bwrap probe enables remote-account permissions without remote OS isolation. Unsupported required guarantees are rejected. Local credential isolation remains mandatory. Direct external tools, `!`/`!!`, nested external tool calls and a local execution fallback are blocked. Multiplex's internal `mailbox` transport is outside approval: the hook returns immediately without inspecting message content or contacting a reviewer. The Multiplex extension owns its session-bound delivery.
 
 Built-in prompts, interface messages, source comments and extension documentation use English. Model replies and review explanations still follow the latest actual operator prompt's language. Multilingual regression inputs deliberately retain their original languages.
 

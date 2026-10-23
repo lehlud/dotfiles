@@ -80,6 +80,7 @@ class ActionRun {
       this.signal?.throwIfAborted();
       this.phase = "team coordination";
       this.assignment?.assertCurrent();
+      prepared.remote?.assertCurrent();
       this.executionStarted = true;
 
       return await this.execute(prepared);
@@ -98,6 +99,7 @@ class ActionRun {
     workspace,
     credentialPlan,
     sandboxPlan,
+    remote,
   }: PreparedAction) {
     this.phase = "prompt compression";
 
@@ -139,11 +141,14 @@ class ActionRun {
 
     this.phase = "review context preparation";
 
+    const reviewCwd = remote
+      ? `ssh://${remote.target.user}@${remote.target.host}${remote.target.root}`
+      : this.ctx.cwd;
     const review = buildReview(
       request,
       branch,
       config,
-      this.ctx.cwd,
+      reviewCwd,
       [
         ...this.protection.paths,
         "[Additional operator-owned credential sources and executables: privately protected]",
@@ -159,9 +164,13 @@ class ActionRun {
       reviewer: config,
       promptContext: prepared.records.map(({ original: _original, ...record }) => record),
       workspace: workspace.path,
-      cwd: isWebTool(request.tool) || credentialPlan ? this.ctx.cwd : workspace.cwd,
+      cwd: remote
+        ? reviewCwd
+        : isWebTool(request.tool) || credentialPlan
+          ? this.ctx.cwd
+          : workspace.cwd,
       executionCwd: workspace.cwd,
-      backend: config.sandbox.backend ?? "docker",
+      backend: remote ? "ssh" : (config.sandbox.backend ?? "docker"),
       sandboxPlan,
       requestId: review.requestId,
       fingerprint: review.fingerprint,
@@ -201,12 +210,32 @@ class ActionRun {
     return checked.verdict;
   }
 
-  private async execute({ request, workspace, config, credentialPlan }: PreparedAction) {
-    const result = credentialPlan
-      ? await executeWithCredentials(request, credentialPlan, config, this.signal, workspace)
-      : request.sandbox?.gitConfig === true
-        ? await executeWithGitConfig(request, workspace, config, this.signal)
-        : await executeIsolated(request, workspace, config.sandbox, this.signal);
+  private async execute({
+    request,
+    workspace,
+    config,
+    credentialPlan,
+    remote,
+    localGitWorkspace,
+  }: PreparedAction) {
+    const result = remote
+      ? request.sandbox?.gitConfig === true
+        ? await executeWithGitConfig(
+            request,
+            localGitWorkspace!,
+            config,
+            this.signal,
+            undefined,
+            undefined,
+            undefined,
+            (text) => remote.execute(this.signal, text),
+          )
+        : await remote.execute(this.signal)
+      : credentialPlan
+        ? await executeWithCredentials(request, credentialPlan, config, this.signal, workspace)
+        : request.sandbox?.gitConfig === true
+          ? await executeWithGitConfig(request, workspace, config, this.signal)
+          : await executeIsolated(request, workspace, config.sandbox, this.signal);
 
     if (isWebTool(request.tool))
       return {

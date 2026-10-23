@@ -5,6 +5,7 @@ import type { QuestionClient } from "../contracts/questions.ts";
 import type { Goal } from "../contracts/goal.ts";
 import type { SubagentMode, SubagentActivity } from "../contracts/subagents.ts";
 import type { CacheLineage } from "../providers/cache-affinity.ts";
+import type { RemoteSession } from "../contracts/remote.ts";
 import type { Reviewer } from "../review/protocol.ts";
 
 export type ActionLease = {
@@ -15,6 +16,7 @@ export type ActionLease = {
 
 /** Trusted session capabilities; models cannot inspect or mutate this registry. */
 export type SessionServices = {
+  remote?: RemoteSession;
   cacheLineage?: () => CacheLineage | undefined;
   parentCacheLineage?: () => CacheLineage | undefined;
   delegationMode?: SubagentMode;

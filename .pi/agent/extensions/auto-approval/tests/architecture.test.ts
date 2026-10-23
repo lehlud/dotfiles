@@ -60,6 +60,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
     "model-selection": ["model-selection", "shared"],
     subagents: ["subagents", "shared"],
     "context-management": ["context-management", "shared"],
+    remote: ["remote", "shared"],
   };
 
   return edges

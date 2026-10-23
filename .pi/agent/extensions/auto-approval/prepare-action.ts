@@ -15,6 +15,9 @@ import { isWebTool } from "../web-research/index.ts";
 import { resolveWebRuntime, reviewedWebRequest } from "../web-research/runtime.ts";
 import { describeSandbox } from "./sandbox-plan.ts";
 import { sessionServices } from "../shared/session/services.ts";
+import { remoteSession } from "../shared/session/remote.ts";
+import { REMOTE_TOOLS, type RemotePrepared } from "../shared/contracts/remote.ts";
+import type { Workspace } from "./isolation.ts";
 import { assertDelegatedAction } from "../shared/contracts/subagents.ts";
 
 export async function prepareAction(
@@ -49,7 +52,61 @@ export async function prepareAction(
   if (!Check(tool.parameters, request.arguments))
     throw new Error("Invalid underlying tool arguments");
 
-  validateGitRequest(request, config);
+  const remoteRoute = remoteSession(ctx);
+  const remoteTarget = remoteRoute?.target();
+
+  validateGitRequest(request, config, Boolean(remoteTarget));
+
+  const remoteTool = REMOTE_TOOLS.has(name);
+
+  if (name === "remote_tunnel" && !remoteTarget)
+    throw new Error("Select a remote workspace with /remote first");
+
+  if (remoteTarget && remoteTool) {
+    stage("remote workspace validation");
+
+    const remote: RemotePrepared = remoteRoute!.prepare(
+      request,
+      config,
+      ctx.sessionManager.getSessionId(),
+      sessionServices(ctx).delegationMode === "review",
+    );
+    const workspace: Workspace = {
+      path: remoteTarget.root,
+      cwd: remoteTarget.root,
+      bindings: [remoteTarget.root],
+      masked: [],
+    };
+    const localGitWorkspace = request.sandbox?.gitConfig
+      ? await validateWorkspace(
+          ctx.cwd,
+          config.sandbox,
+          protection.paths,
+          undefined,
+          undefined,
+          "credential",
+        )
+      : undefined;
+
+    return {
+      request,
+      config,
+      workspace,
+      credentialPlan: undefined,
+      sandboxPlan: remote.plan,
+      remote,
+      localGitWorkspace,
+    };
+  }
+
+  if (
+    remoteTarget &&
+    name === "credential_exec" &&
+    (request.sandbox?.projectFiles || request.sandbox?.paths)
+  )
+    throw new Error(
+      "Credential tools execute locally; remote project files cannot be exposed through local mount grants",
+    );
 
   const credential = name === "credential_exec";
 
@@ -105,7 +162,15 @@ export async function prepareAction(
 
   const sandboxPlan = describeSandbox(request, workspace, config, credentialPlan);
 
-  return { request, config, workspace, credentialPlan, sandboxPlan };
+  return {
+    request,
+    config,
+    workspace,
+    credentialPlan,
+    sandboxPlan,
+    remote: undefined as RemotePrepared | undefined,
+    localGitWorkspace: undefined as Workspace | undefined,
+  };
 }
 
 export type PreparedAction = Awaited<ReturnType<typeof prepareAction>>;

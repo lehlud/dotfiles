@@ -62,7 +62,7 @@ export function publicGitConfiguration(entries: [string, string][]): string {
     .join("");
 }
 
-export function validateGitRequest(request: Request, config: Config): void {
+export function validateGitRequest(request: Request, config: Config, remote = false): void {
   if (request.sandbox?.gitConfig !== undefined && request.tool !== "git")
     throw new Error("gitConfig is available only to the argv-only Git tool");
 
@@ -70,7 +70,7 @@ export function validateGitRequest(request: Request, config: Config): void {
 
   validateGitArgv(request.arguments.argv as string[]);
 
-  if (config.sandbox.backend !== "bwrap")
+  if (config.sandbox.backend !== "bwrap" && (!remote || request.sandbox?.gitConfig === true))
     throw new Error("The local Git route requires native Linux bwrap isolation");
 
   if (
@@ -106,6 +106,7 @@ export async function executeWithGitConfig(
   home = homedir(),
   xdg = process.env.XDG_CONFIG_HOME ?? join(home, ".config"),
   global = process.env.GIT_CONFIG_GLOBAL,
+  dispatch?: (publicConfig: string) => ReturnType<typeof executeIsolated>,
 ) {
   validateGitRequest(request, config);
 
@@ -216,7 +217,11 @@ export async function executeWithGitConfig(
       ? await read({ home, xdg, ...(global !== undefined ? { global } : {}) })
       : [];
 
-    await writeFile(publicSource, publicGitConfiguration(values), { mode: 0o400 });
+    const publicConfig = publicGitConfiguration(values);
+
+    if (dispatch) return await dispatch(publicConfig);
+
+    await writeFile(publicSource, publicConfig, { mode: 0o400 });
 
     return await executeIsolated(
       request,

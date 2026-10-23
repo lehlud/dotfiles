@@ -6,18 +6,22 @@ review infrastructure never import a feature entry point.
 
 | Module             | Responsibility                                                                                       | Main entry                    |
 | ------------------ | ---------------------------------------------------------------------------------------------------- | ----------------------------- |
-| Auto-Approval      | Authorize and execute one exact operation in mandatory isolation                                     | `auto-approval/index.ts`      |
+| Auto-Approval      | Authorize and execute one exact operation under its reviewed execution boundary                      | `auto-approval/index.ts`      |
 | Conversations      | Goals, completion checks, steering, clarification questions, side conversations, progress detection  | `conversations/index.ts`      |
 | Multiplex          | Equal peer sessions, coordination, authenticated mailboxes, shared activity                          | `multiplex/index.ts`          |
 | Subagents          | Bounded delegated sessions, parent-only mailboxes, read-only reviews, kill and explicit resurrection | `subagents/index.ts`          |
 | Context management | Request budgets, original-history retrieval, working notes, append-only eviction and rotation        | `context-management/index.ts` |
 | Fast mode          | Session speed preference for working and review models on OpenAI/Codex and OpenRouter                | `fast-mode/index.ts`          |
-| Model selection    | Persistent model/thinking pairs, ordered reviewer commands and live request-boundary changes         | `model-selection/index.ts`    |
+| Model selection    | Persistent model/thinking pairs, single reviewer selection and live request-boundary changes         | `model-selection/index.ts`    |
 | Provider recovery  | Attach bounded transport recovery to the working model                                               | `provider-recovery/index.ts`  |
 | Code quality       | Standing multilingual code readability rules on every working-model request                          | `code-quality/index.ts`       |
 | Public writing     | Frozen editorial policy and an independently reviewed prose receipt                                  | `public-writing/index.ts`     |
 | Web research       | DDGS queries and public URL text extraction through the isolated worker                              | `web-research/index.ts`       |
+| Remote workspaces  | Operator selection, SSH transport, remote tools and bounded forwarding                               | `remote/index.ts`             |
 | Shared library     | Settings, immutable action contracts, provider transport, review evidence, session services          | `shared/`                     |
+
+Remote workspaces are owned by [`remote/index.ts`](remote/README.md). The operator selects and
+confirms the target; Auto-Approval reviews each exact remote action before SSH dispatch.
 
 ## Boundaries
 
@@ -72,7 +76,7 @@ storage. `ActionRun` preserves this sequence:
 3. Load settings and validate sandbox paths, tools, workspace and protected storage.
 4. Build bounded operator evidence and request an independent verdict.
 5. Persist the exact verdict before any approved operation executes.
-6. Recheck the lease and cancellation, then execute in mandatory isolation.
+6. Recheck the lease and cancellation, then execute under the reviewed local or remote boundary.
 7. Release the lease and finish review presentation on every exit path.
 
 `prepare-action.ts` performs preflight. `sandbox-plan.ts` describes the reviewed scope without

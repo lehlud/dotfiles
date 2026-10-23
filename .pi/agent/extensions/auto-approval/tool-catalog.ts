@@ -14,6 +14,7 @@ import { sandboxRequestSchema } from "../shared/contracts/action.ts";
 import { webTools } from "../web-research/index.ts";
 import { writingCheckTool } from "../public-writing/index.ts";
 import { credentialCommandTool } from "./credential-command.ts";
+import { tunnelTool } from "../shared/contracts/remote.ts";
 import { gitTool } from "./git-command.ts";
 
 export const TOOL_NAME = "approved_action";
@@ -31,6 +32,7 @@ export const factories = {
   writing_check: (_cwd: string) => writingCheckTool,
   credential_exec: (_cwd: string) => credentialCommandTool,
   git: (_cwd: string) => gitTool,
+  remote_tunnel: (_cwd: string) => tunnelTool,
 };
 
 export type ToolName = keyof typeof factories;

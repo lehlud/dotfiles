@@ -27,6 +27,7 @@ export class ProtectedPaths {
     sourceDir,
     // Shared gate contracts stay protected even with a custom PI_CODING_AGENT_DIR.
     join(sourceDir, "../shared"),
+    join(sourceDir, "../remote"),
     getAgentDir(),
     join(homedir(), ".docker"),
     join(homedir(), ".ssh"),

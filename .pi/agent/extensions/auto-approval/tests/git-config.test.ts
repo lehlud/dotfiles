@@ -367,3 +367,32 @@ nativeTest(
     ).toEqual(before);
   },
 );
+
+nativeTest(
+  "remote dispatch receives only approved public settings, with private sources unchanged",
+  async () => {
+    let received = "";
+    const result = await executeWithGitConfig(
+      action(["status"]),
+      workspace,
+      config,
+      undefined,
+      home,
+      xdg,
+      undefined,
+      async (publicConfig) => {
+        received = publicConfig;
+
+        return { content: [{ type: "text", text: "Remote dispatch" }], details: {} };
+      },
+    );
+
+    expect(received).toContain("Ada Grüße 雪");
+    expect(received).not.toContain("synthetic-private-token");
+    expect(received).not.toContain("credential");
+    expect(received).not.toContain("alias");
+    expect(text(result)).toBe("Remote dispatch");
+
+    for (const [path, original] of originals) expect(await readFile(path, "utf8")).toBe(original);
+  },
+);

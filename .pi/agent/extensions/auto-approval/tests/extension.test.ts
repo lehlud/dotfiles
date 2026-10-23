@@ -1652,7 +1652,11 @@ test("relocated gate infrastructure stays protected with an alternate agent dire
   await symlink(resolve(import.meta.dir, "../../shared"), alias);
 
   try {
-    for (const path of [shared, join(alias, "review/new-gate.ts")]) {
+    for (const path of [
+      shared,
+      join(alias, "review/new-gate.ts"),
+      resolve(import.meta.dir, "../../remote/ssh.ts"),
+    ]) {
       const result = await call({
         tool: "write",
         arguments: { path, content: "Unreviewed gate replacement" },
@@ -1694,4 +1698,130 @@ test("action reviews capture the active operator goal once and retain it in the 
   } finally {
     services.operatorGoal = previous;
   }
+});
+
+function remoteFixture() {
+  const target = {
+    user: "synthetic",
+    host: "test.example",
+    folder: "project",
+    root: "/home/synthetic/project",
+    isolation: "confirmed-account" as const,
+    knownHosts: "public-host-key",
+    confirmation: { source: "operator-ui" as const, reason: "Remote namespaces unavailable" },
+  };
+  const executed: string[] = [];
+  let current = true;
+
+  sessionServices(ctx).remote = {
+    target: () => target,
+    cleanup: async () => {},
+    prepare: (request, _config, actor, readOnly) => {
+      expect(actor).toBe("test-session");
+      expect(readOnly).toBe(false);
+
+      return {
+        target,
+        plan: { backend: "ssh", remote: target, requested: request.sandbox ?? {} },
+        assertCurrent: () => {
+          if (!current) throw new Error("Remote target changed");
+        },
+        execute: async () => {
+          expect(
+            entries.some(
+              (entry) =>
+                entry.customType === "auto-approval-review" && entry.data.decision === "approve",
+            ),
+          ).toBe(true);
+          executed.push(request.tool);
+
+          return { content: [{ type: "text", text: "Remote result" }], details: {} };
+        },
+      };
+    },
+  };
+
+  return {
+    target,
+    executed,
+    invalidate: () => {
+      current = false;
+    },
+  };
+}
+
+test("remote actions keep exact review and persisted verdict ahead of dispatch", async () => {
+  const remote = remoteFixture();
+  const result = await call({
+    tool: "read",
+    arguments: { path: "README.md" },
+    goal: "Smoke test",
+    justification: "Read remote project metadata",
+  });
+
+  expect(result.isError).not.toBe(true);
+  expect(remote.executed).toEqual(["read"]);
+  expect(executedRequests).toEqual([]);
+  expect(requested[0].data.sandboxPlan).toMatchObject({ backend: "ssh", remote: remote.target });
+  expect(result.details.approval.cwd).toBe("ssh://synthetic@test.example/home/synthetic/project");
+});
+
+test("remote denial, failed verdict persistence and changed target cannot dispatch", async () => {
+  const remote = remoteFixture();
+
+  mode = "deny";
+  expect((await call(bash("printf remote"))).isError).toBe(true);
+  expect(remote.executed).toEqual([]);
+  mode = "approve";
+  auditFails = true;
+  expect((await call(bash("printf remote"))).isError).toBe(true);
+  expect(remote.executed).toEqual([]);
+  auditFails = false;
+  responseHook = remote.invalidate;
+  expect((await call(bash("printf remote"))).isError).toBe(true);
+  expect(remote.executed).toEqual([]);
+});
+
+test("web requests stay local and remote credential project mounts are rejected", async () => {
+  const remote = remoteFixture();
+  const search = await call({
+    tool: "websearch",
+    arguments: { query: "public documentation" },
+    goal: "Smoke test",
+    justification: "Read public documentation",
+  });
+
+  expect(search.isError).not.toBe(true);
+  expect(remote.executed).toEqual([]);
+  expect(executedRequests.at(-1).tool).toBe("websearch");
+
+  const auth = await call({
+    tool: "credential_exec",
+    arguments: { profile: "github", argv: ["status"] },
+    goal: "Smoke test",
+    justification: "Remote project mount must not be mapped locally",
+    sandbox: { projectFiles: "read" },
+  });
+
+  expect(auth.isError).toBe(true);
+  expect(JSON.stringify(auth)).toContain("remote project files");
+});
+
+test("a saved remote target with no live extension cannot fall back to local execution", async () => {
+  sessionServices(ctx).remote = undefined;
+  entries.push({
+    type: "custom",
+    customType: "remote-workspace",
+    data: { host: "remote.example" },
+  });
+
+  const blocked = await call(bash("printf must-not-run-locally"));
+
+  expect(blocked.isError).toBe(true);
+  expect(JSON.stringify(blocked)).toContain("local fallback is blocked");
+  expect(requested).toEqual([]);
+  expect(executedRequests).toEqual([]);
+  entries.push({ type: "custom", customType: "remote-workspace", data: null });
+  expect((await call(bash("printf local-again"))).isError).not.toBe(true);
+  expect(executedRequests).toHaveLength(1);
 });

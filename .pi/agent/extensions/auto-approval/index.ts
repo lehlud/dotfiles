@@ -42,7 +42,10 @@ export default function autoApproval(pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    sessionServices(ctx).cleanup = () => session.cleanup();
+    sessionServices(ctx).cleanup = async () => {
+      await session.cleanup();
+      await sessionServices(ctx).remote?.cleanup(ctx.sessionManager.getSessionId());
+    };
     lock(ctx);
 
     try {

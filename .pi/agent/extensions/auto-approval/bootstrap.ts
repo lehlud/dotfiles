@@ -61,6 +61,7 @@ export async function prepareCompanionDependencies(directory: string): Promise<v
     "code-quality",
     "fast-mode",
     "model-selection",
+    "remote",
     "subagents",
     "context-management",
   ]) {
