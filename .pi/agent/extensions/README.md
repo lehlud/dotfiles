@@ -142,3 +142,7 @@ checking trailing spaces and other whitespace errors.
 
 Add behavior tests in the appropriate existing suite, and update architecture checks when
 deliberately adding a dependency.
+
+Home-directory actions use narrow per-action grants without a mandatory device view. Operator-requested
+Pi setup/source work uses `sandbox.maintenance`; private runtime/credential data stays excluded and
+active security settings remain pinned until restart. See [Auto-Approval](auto-approval/README.md#pi-maintenance).

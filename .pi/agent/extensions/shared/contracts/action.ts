@@ -2,6 +2,12 @@ import { Type, type Static } from "typebox";
 
 export const sandboxRequestSchema = Type.Object(
   {
+    maintenance: Type.Optional(
+      Type.Boolean({
+        description:
+          "Request scoped Pi configuration/setup/extension-source maintenance explicitly asked for by the operator. Use selected paths; independent review remains mandatory. Credentials, audit/session data and running executors are excluded. Active security settings stay pinned until Pi restarts.",
+      }),
+    ),
     projectFiles: Type.Optional(
       Type.Union([Type.Literal("read"), Type.Literal("write")], {
         description:
@@ -29,6 +35,12 @@ export const sandboxRequestSchema = Type.Object(
           {
             path: Type.String({ pattern: "^/", minLength: 1 }),
             access: Type.Union([Type.Literal("read"), Type.Literal("write")]),
+            create: Type.Optional(
+              Type.Union([Type.Literal("file"), Type.Literal("directory")], {
+                description:
+                  "Create a missing file/directory only after this exact action is approved; its existing parent stays outside the writable grant. Existing occupants must be re-reviewed.",
+              }),
+            ),
           },
           { additionalProperties: false },
         ),

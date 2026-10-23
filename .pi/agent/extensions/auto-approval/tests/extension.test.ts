@@ -1666,7 +1666,7 @@ test("relocated gate infrastructure stays protected with an alternate agent dire
 
       expect(result.isError).toBe(true);
       expect(result.details.technicalStage).toBe("protected path validation");
-      expect(result.details.reason).toContain("cannot modify Pi installation");
+      expect(result.details.reason).toContain("use sandbox.maintenance");
     }
 
     expect(requested).toEqual([]);
@@ -1919,4 +1919,96 @@ test("review-only subagents and remote file grants cannot use the local engine",
   expect((await call(containerAction())).isError).toBe(true);
   expect(fixture.executed).toEqual([]);
   expect(requested).toEqual([]);
+});
+
+test("Pi maintenance denial or failed audit cannot mutate public configuration", async () => {
+  const path = join(agentRoot, "settings.json");
+
+  await writeFile(path, "{}");
+
+  const request = {
+    tool: "write",
+    arguments: { path, content: '{"editorPadding":2}' },
+    goal: "Maintain the explicitly requested Pi setup",
+    justification: "Change only the requested public setting",
+    sandbox: { maintenance: true, paths: [{ path, access: "write" }] },
+  };
+
+  mode = "deny";
+  expect((await call(request)).isError).toBe(true);
+  expect(await readFile(path, "utf8")).toBe("{}");
+  expect(requested[0].data.sandboxPlan.maintenance).toMatchObject({
+    credentials: false,
+    scope: request.sandbox.paths,
+  });
+  mode = "approve";
+  auditFails = true;
+  expect((await call(request)).isError).toBe(true);
+  expect(await readFile(path, "utf8")).toBe("{}");
+  expect(executedRequests).toEqual([]);
+});
+
+test("a maintenance flag cannot grant private session data or credential access", async () => {
+  const path = join(agentRoot, "auth.json");
+  const result = await call({
+    tool: "read",
+    arguments: { path },
+    goal: "Test",
+    justification: "A flag alone must not expose login data",
+    sandbox: { maintenance: true, paths: [{ path, access: "read" }] },
+  });
+
+  expect(result.isError).toBe(true);
+  expect(requested).toEqual([]);
+  expect(executedRequests).toEqual([]);
+});
+
+test("missing-path creation requests remain unexecuted when review or audit fails", async () => {
+  const path = join(root, "not-created-before-approval");
+  const request = {
+    tool: "write",
+    arguments: { path, content: "approved contents" },
+    goal: "Create the requested file",
+    justification: "Creation is part of this one reviewed action",
+    sandbox: { paths: [{ path, access: "write", create: "file" }] },
+  };
+
+  mode = "deny";
+  expect((await call(request)).isError).toBe(true);
+  await expect(access(path)).rejects.toThrow();
+  mode = "approve";
+  auditFails = true;
+  expect((await call(request)).isError).toBe(true);
+  await expect(access(path)).rejects.toThrow();
+  expect(executedRequests).toEqual([]);
+});
+
+test("approved Pi extension maintenance executes after persisted review and keeps subsequent actions gated", async () => {
+  const path = join(agentRoot, "extensions/maintenance-fixture/index.ts");
+
+  await mkdir(resolve(path, ".."), { recursive: true });
+  await writeFile(path, "export const value = 1;\n");
+
+  const result = await call({
+    tool: "write",
+    arguments: { path, content: "export const value = 2;\n" },
+    goal: "Implement the requested Pi extension change",
+    justification: "Narrow source maintenance without login or runtime access",
+    sandbox: { maintenance: true, paths: [{ path, access: "write" }] },
+  });
+
+  expect(result.isError).not.toBe(true);
+  expect(await readFile(path, "utf8")).toContain("value = 2");
+  expect(
+    entries.some(
+      (entry) => entry.customType === "auto-approval-review" && entry.data.decision === "approve",
+    ),
+  ).toBe(true);
+  expect(requested[0].data.sandboxPlan.maintenance.activation).toContain("restart Pi");
+
+  const count = executedRequests.length;
+
+  mode = "deny";
+  expect((await call(bash("printf still-gated"))).isError).toBe(true);
+  expect(executedRequests).toHaveLength(count);
 });

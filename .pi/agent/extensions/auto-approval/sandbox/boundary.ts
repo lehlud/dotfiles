@@ -19,7 +19,7 @@ export async function assertWorkspaceBoundary(
     { path: string; expected: number; seen: number; write: boolean; read: boolean }
   >();
   const walk = async (path: string): Promise<void> => {
-    if (hidden(path)) return;
+    if (hidden(path) || workspace.pendingPaths?.some((entry) => entry.path === path)) return;
 
     const stat = await lstat(path);
 

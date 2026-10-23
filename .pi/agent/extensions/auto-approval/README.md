@@ -14,7 +14,7 @@ The footer shows only the reviewer currently handling an action, with a spinner,
 
 Technical failures before independent review identify the failing preflight stage. The model display remains `—` because no reviewer was called. Web search and page fetch use an empty, read-only sandbox workspace without project mounts or project validation. They need no legacy skill files; private session `/tmp`, resource validation and independent network approval remain active.
 
-`~/.pi/agent/auto-approval.json` is synchronized through the public dotfiles repository. It contains review-context settings and the sandbox backend, but no model selections, device paths or workspace permissions. Optional local paths and permissions belong in `auto-approval.device.json`, which Git excludes. With another `PI_CODING_AGENT_DIR`, both files live there. Sandbox configuration is reloaded for every action.
+`~/.pi/agent/auto-approval.json` is synchronized through the public dotfiles repository. It contains review-context settings and the sandbox backend, but no model selections, device paths or workspace permissions. Optional local paths and permissions belong in `auto-approval.device.json`, which Git excludes. With another `PI_CODING_AGENT_DIR`, both files live there. Sandbox configuration is normally reloaded for each action. After approved writable Pi maintenance, this process pins its existing security settings until restart; working/reviewer model selection remains live.
 
 [`/reviewer`](../model-selection/README.md) opens a searchable model and thinking-level selector and saves one reviewer independently of the working model. `/reviewer set <provider/model> <thinking>` and `/reviewer thinking <level>` provide explicit selection; `/reviewer status` shows it. Choices persist for new sessions and take effect at the next turn, without replacing an in-flight check's reviewer. The single pair lives in operator-owned runtime state, not `auto-approval.json`. Existing lists migrate by retaining their previously active first entry. Provider failures retain the existing bounded retries and cooldown for that same model; no automatic alternate model is selected. Missing authentication or models, unsupported thinking levels, timeouts, invalid verdicts, safety refusals and truncated or aborted answers block the action. A valid request-bound denial remains binding even if the provider subsequently reports a transport failure. Fixed diagnostic categories replace raw provider errors that could contain credentials or prompt text. Credentials remain private; `/login` configures each provider on each machine.
 
@@ -46,9 +46,29 @@ retention, compression and legacy-session behavior.
 - Without a project repository, the current directory is used.
 - A Git root at or above the home directory is ignored. An uninitialized project under home therefore receives no access to all dotfiles.
 
-Pi started directly in home requires a restricted `sandbox.workspaceViews` entry in `auto-approval.device.json`. The local setup lists individual public, versioned dotfiles. Unversioned files, credentials and active approval code are not mounted. This view permits edits to mounted files but no new files in their read-only parent directories. Ordinary project work needs no local allowlist.
+Starting Pi in home does not require a device configuration entry. Home starts as an empty, read-only projection unless an optional default `workspaceViews` entry supplies selected public paths. Local `read`, `edit` and `write` actions naming a home file automatically request only that file; the resulting scope is visible to independent review. Shell commands request the files/directories they need in `sandbox.paths`. No whole-home mount is implicit, and an explicit home/ancestor mount remains excluded. Existing symlink, hardlink, credential and runtime checks still apply.
+
+A missing target can be requested with a writable path grant and `create: "file"` or `create: "directory"`. Its existing parent is pinned during preparation; nothing is created before review. After approval is persisted, the native executor exclusively creates that exact target and mounts it writable without granting its parent. A late occupant or changed parent aborts creation. Failed runs remove only their own empty scaffolding; useful outputs and successful empty files remain. Native home-file `write` requests infer `create: "file"` when necessary. Scoped creation currently requires bwrap. Nested missing parents need separate bounded creation actions.
+
+For example, fixing `~/.local/bin/cmatrix` can start with an ordinary named `read`, followed by an independently reviewed `edit`. Reading neighbouring wrappers requires their own grants, rather than mounting all home. A shell-created `~/new-project` can use `sandbox.paths: [{"path":"/home/example/new-project","access":"write","create":"directory"}]`. Neither workflow requires editing `auto-approval.device.json`.
 
 Workspaces inside the active Pi installation, approval configuration or known credential directories remain blocked. Protected files inside otherwise permitted bwrap workspaces are masked. Hardlinks are allowed when every link to the inode stays inside mounted, unprotected paths, supporting Cargo artifacts between `release` and `release/deps`. bwrap allows symlinks into the already read-only system `/usr`, such as a virtualenv's Python. Other outward links, links into protected directories and Unix sockets are rejected. Dangling build-cache symlinks do not block the workspace; missing targets are not mounted.
+
+## Pi maintenance
+
+When the actual operator asks for Pi configuration, setup or extension changes, request
+`sandbox.maintenance: true` and selected `sandbox.paths`. This permits independently reviewed
+reads/writes/edits and sandboxed formatting/tests of extension source, public agent configuration
+files (`settings.json`, `models.json`, `auto-approval.json` and its device override), and the Pi
+launcher. It exposes no implicit project or private agent-directory mount. Maintenance runs locally
+and currently requires `/remote` to be off. A flag alone supplies no user authorization.
+
+Credential/login files, session/audit/state data, running executors, bridge secrets and kernel/runtime
+controls remain excluded. Source/configuration work is allowed; bypassing the active reviewer or
+isolation is not. Writable maintenance pins this process's current security configuration after its
+approval is persisted, so model-authored settings cannot activate themselves. Restart Pi to activate
+the completed setup changes. Normal model/thinking/reviewer selections keep their existing live
+request-boundary behaviour. No outside-Pi JSON edit is required merely to authorize maintenance.
 
 ## Tool display
 
@@ -153,7 +173,7 @@ Only after recorded approval is `GH_TOKEN` or `GITHUB_TOKEN` retrieved from Pi's
 
 The actual CLI invocation receives no added shell, inherited host environment or shared session `/tmp` data. Without explicit file access, project files are not mounted. `sandbox.projectFiles: "read"` or `"write"` requests the current project view with those permissions and current working directory. `sandbox.paths` requests selected files/directories instead or additionally, such as a readable comment file. Both are reviewed with the command; credential sources and gate code remain protected. Private CLI configuration or project code can enable execution and must be considered when it poses a concrete risk. The reviewed executable is rehashed before execution and mounted as a read-only copy; an intervening update requires another review. Only this invocation and its descendants receive selected authentication variables. Tokens travel through a private stdin protocol and appear in neither process arguments nor review context or audit. Ordinary CLI output masks selected token values and their URL, JSON and Base64 forms. Output limits, timeout, cancellation and process-group cleanup still apply. The private temporary filesystem, executable copy and login copies are removed afterward. Subsequent ordinary actions receive no credentials.
 
-Additional program/credential bindings are configured once outside Pi in `auto-approval.device.json`. A review profile contains no token values or list of service operations: only the executable, sources and `argumentPolicy: "review"`. New commands need action review rather than new operator configuration. This example represents a separately installed trusted service CLI:
+Additional program/credential bindings live in `auto-approval.device.json`; an explicit operator request can authorize their independently reviewed maintenance, with activation after restart. A review profile contains no token values or list of service operations: only the executable, sources and `argumentPolicy: "review"`. New commands need action review rather than new operator configuration. This example represents a separately installed trusted service CLI:
 
 ```json
 {

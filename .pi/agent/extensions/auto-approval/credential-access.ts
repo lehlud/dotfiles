@@ -147,7 +147,7 @@ export async function resolveCredentialPlan(
     };
   } else
     throw new Error(
-      "Unknown credential profile; the operator must configure credentialProfiles in auto-approval.device.json outside Pi",
+      "Unknown credential profile; an explicit operator request can authorize scoped maintenance of credentialProfiles in auto-approval.device.json, with activation after restart. Login credentials remain private",
     );
 
   return {

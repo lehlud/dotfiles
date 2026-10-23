@@ -19,6 +19,7 @@ export function describeSandbox(
     source: "executor-preflight",
     workspace: workspace.path,
     bindings: workspace.bindings,
+    createdAfterApproval: workspace.pendingPaths ?? [],
     readOnlyBindings: workspace.readOnlyBindings ?? [],
     executableSearchPaths: workspace.searchPaths ?? [],
     localTools: workspace.localTools ?? [],
@@ -55,6 +56,16 @@ export function describeSandbox(
       lifetime: credential || name === "git" ? "one action" : "Pi session",
       private: true,
     },
+    maintenance: request.sandbox?.maintenance
+      ? {
+          scope: request.sandbox.paths,
+          authorization:
+            "Requires the actual operator's explicit Pi maintenance task; flag alone is not authorization",
+          activation:
+            "Active security settings and native executors stay unchanged; restart Pi to activate setup changes",
+          credentials: false,
+        }
+      : undefined,
     requested: request.sandbox ?? {},
     backend: config.sandbox.backend ?? "docker",
     resourceEnforcement: workspace.cgroup

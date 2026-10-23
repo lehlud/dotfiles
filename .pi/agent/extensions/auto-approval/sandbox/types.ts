@@ -9,6 +9,13 @@ export type Workspace = {
   path: string;
   cwd: string;
   bindings: string[];
+  pendingPaths?: {
+    path: string;
+    parent: string;
+    device: string;
+    inode: string;
+    create: "file" | "directory";
+  }[];
   readOnlyBindings?: string[];
   searchPaths?: string[];
   localTools?: LocalTool[];

@@ -11,6 +11,7 @@ import { buildReview, reviewAction } from "./review.ts";
 import { reviewSummary } from "./display.ts";
 import { ReviewDisplay } from "./review-display.ts";
 import { ProtectedPaths } from "./protected-paths.ts";
+import { pinSecurityConfig } from "../shared/session/security-config.ts";
 import { prepareAction, type PreparedAction } from "./prepare-action.ts";
 import { executeWithCredentials } from "./credential-access.ts";
 import { executeWithGitConfig } from "./git-config.ts";
@@ -83,6 +84,13 @@ class ActionRun {
       this.assignment?.assertCurrent();
       prepared.remote?.assertCurrent();
       await prepared.container?.assertCurrent();
+
+      if (
+        prepared.request.sandbox?.maintenance &&
+        prepared.request.sandbox.paths?.some((entry) => entry.access === "write")
+      )
+        pinSecurityConfig(prepared.config);
+
       this.executionStarted = true;
 
       return await this.execute(prepared);
@@ -102,6 +110,7 @@ class ActionRun {
     credentialPlan,
     sandboxPlan,
     remote,
+    reviewedProtection,
   }: PreparedAction) {
     this.phase = "prompt compression";
 
@@ -152,7 +161,7 @@ class ActionRun {
       config,
       reviewCwd,
       [
-        ...this.protection.paths,
+        ...reviewedProtection,
         "[Additional operator-owned credential sources and executables: privately protected]",
       ],
       sandboxPlan,

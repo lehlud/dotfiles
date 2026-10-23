@@ -10,6 +10,7 @@ import { temporaryMountpoints, cleanTemporaryMountpoints } from "./temporary-mou
 import { sandboxArguments } from "./arguments.ts";
 import type { SandboxConfig, Workspace } from "./types.ts";
 import { createCgroupScope, type CgroupScope } from "./cgroup-scope.ts";
+import { createGrantedPaths, cleanEmptyCreatedPaths } from "./created-paths.ts";
 import { assertCgroupsHidden } from "./cgroup-boundary.ts";
 
 /** Both backends are mandatory isolation. A launch failure never executes on the host. */
@@ -27,10 +28,15 @@ export async function executeIsolated(
 
   const scope = await createCgroupScope(config, workspace, request.sandbox);
 
+  let created: Awaited<ReturnType<typeof createGrantedPaths>> = [];
+  let completed = false;
+
   try {
     signal?.throwIfAborted();
+    created = await createGrantedPaths(workspace);
+    signal?.throwIfAborted();
 
-    return await executeCommand(
+    const result = await executeCommand(
       request,
       workspace,
       config,
@@ -39,6 +45,10 @@ export async function executeIsolated(
       gitConfigReader,
       scope,
     );
+
+    completed = !result.isError;
+
+    return result;
   } catch (error) {
     if (scope && (await scope.memoryKilled()))
       throw new Error("Isolated action exceeded its aggregate cgroup memory limit", {
@@ -47,7 +57,11 @@ export async function executeIsolated(
 
     throw error;
   } finally {
-    await scope?.dispose();
+    try {
+      if (!completed) await cleanEmptyCreatedPaths(created);
+    } finally {
+      await scope?.dispose();
+    }
   }
 }
 

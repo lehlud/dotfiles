@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { homedir } from "node:os";
 import type { SandboxRequest } from "../../shared/contracts/action.ts";
 import { resolveLocalTools } from "../local-tools.ts";
@@ -68,7 +68,8 @@ export async function validateWorkspace(
   protectedPaths: readonly string[],
   request?: SandboxRequest,
   privateTemporaryDirectory?: string,
-  mode: "project" | "web" | "credential" = "project",
+  mode: "project" | "web" | "credential" | "scoped" = "project",
+  homeDirectory = homedir(),
 ): Promise<Workspace> {
   await assertToolHost(request?.tools, config);
 
@@ -81,7 +82,11 @@ export async function validateWorkspace(
     );
 
   const detected =
-    mode !== "project" ? { path: "/workspace", cwd: "/workspace" } : await detectWorkspace(cwd);
+    mode === "scoped"
+      ? { path: await realpath(cwd), cwd: await realpath(cwd) }
+      : mode !== "project"
+        ? { path: "/workspace", cwd: "/workspace" }
+        : await detectWorkspace(cwd, homeDirectory);
   const temporaryDirectory = privateTemporaryDirectory
     ? await realpath(privateTemporaryDirectory)
     : undefined;
@@ -112,15 +117,22 @@ export async function validateWorkspace(
       "Workspace is inside protected Pi, approval, or credential storage; choose a separate project directory",
     );
 
-  let bindings = await projectBindings(workspace, config, protectedRoots, mode);
+  let bindings = await projectBindings(workspace, config, protectedRoots, mode, homeDirectory);
 
   const cgroup = await planCgroup(config, request?.limits);
 
-  const access = await additionalGrants(bindings, request, temporaryDirectory, protectedRoots);
+  const access = await additionalGrants(
+    bindings,
+    request,
+    temporaryDirectory,
+    protectedRoots,
+    config.backend === "bwrap",
+    homeDirectory,
+  );
 
   bindings = access.bindings;
 
-  const { modes, localTools, searchPaths, readOnlyBindings } = access;
+  const { modes, localTools, searchPaths, readOnlyBindings, pendingPaths } = access;
   const writable = (path: string) =>
     (temporaryDirectory && within(temporaryDirectory, path)) ||
     modes.get(bindings.filter((root) => within(root, path)).at(-1)!) === "write";
@@ -129,6 +141,7 @@ export async function validateWorkspace(
     ...detected,
     bindings,
     readOnlyBindings,
+    ...(pendingPaths.length ? { pendingPaths } : {}),
     searchPaths,
     masked,
     ...(localTools.length ? { localTools } : {}),
@@ -146,10 +159,18 @@ async function projectBindings(
   workspace: string,
   config: SandboxConfig,
   protectedRoots: string[],
-  mode: "project" | "web" | "credential",
+  mode: "project" | "web" | "credential" | "scoped",
+  homeDirectory: string,
 ) {
   const root = workspace;
   let bindings = mode !== "project" ? [] : [workspace];
+
+  if (
+    mode === "project" &&
+    config.backend !== "bwrap" &&
+    workspace === (await realpath(homeDirectory))
+  )
+    return [];
 
   if (mode === "project" && config.backend === "bwrap") {
     const view = config.workspaceViews?.find((entry) => resolve(entry.root) === root);
@@ -175,17 +196,17 @@ async function projectBindings(
         throw new Error(
           `Directory ${workspace} is outside the operator-configured workspace view; edit sandbox.workspaceViews in ~/.pi/agent/auto-approval.device.json outside Pi.`,
         );
-    } else if (workspace === (await realpath(homedir()))) {
-      throw new Error(
-        "The home directory needs a restricted workspaceViews entry containing public files; edit ~/.pi/agent/auto-approval.device.json outside Pi. Project workspaces are detected automatically.",
-      );
+    } else if (workspace === (await realpath(homeDirectory))) {
+      // Home starts as an empty projection; each action grants only the paths it needs.
+      bindings = [];
     }
   } else if (
     mode === "project" &&
     config.backend !== "bwrap" &&
     protectedRoots.some((path) => within(workspace, path))
   ) {
-    throw new Error("Workspace overlaps Pi, its gate, or protected configuration");
+    if (workspace === (await realpath(homeDirectory))) bindings = [];
+    else throw new Error("Workspace overlaps Pi, its gate, or protected configuration");
   }
 
   return bindings;
@@ -196,10 +217,13 @@ async function additionalGrants(
   request: SandboxRequest | undefined,
   temporaryDirectory: string | undefined,
   protectedRoots: string[],
+  canMask: boolean,
+  homeDirectory: string,
 ) {
   const projectAccess: "read" | "write" = request?.projectFiles ?? "write";
   const modes = new Map(bindings.map((path) => [path, projectAccess]));
-  const home = await realpath(homedir());
+  const home = await realpath(homeDirectory);
+  const pendingPaths: NonNullable<Workspace["pendingPaths"]> = [];
   const searchPaths: string[] = [];
   const localTools = await resolveLocalTools(request?.tools);
 
@@ -216,7 +240,11 @@ async function additionalGrants(
   ];
 
   for (const grant of writableGrants) {
-    const path = await realpath(grant);
+    const path = await realpath(grant).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+
+      return resolve(grant);
+    });
 
     if (toolRoots.some((root) => within(root, path) || within(path, root)))
       throw new Error(
@@ -231,7 +259,41 @@ async function additionalGrants(
   ];
 
   for (const entry of extra) {
-    const path = await realpath(entry.path);
+    let path: string;
+    let metadata;
+
+    try {
+      path = await realpath(entry.path);
+      metadata = await lstat(path);
+
+      if ("create" in entry && entry.create)
+        throw new Error(
+          "Creation target already exists; remove create and review the existing occupant",
+        );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+
+      if (!("create" in entry) || !entry.create || entry.access !== "write")
+        throw new Error(
+          "A missing grant needs write access and create: file/directory with an existing parent",
+        );
+
+      if (!canMask) throw new Error("Scoped creation requires the native bwrap backend");
+
+      const parent = await realpath(dirname(entry.path));
+      const info = await lstat(parent, { bigint: true });
+
+      if (!info.isDirectory()) throw new Error("Creation parent must be an existing directory");
+
+      path = resolve(parent, basename(entry.path));
+      pendingPaths.push({
+        path,
+        parent,
+        device: info.dev.toString(),
+        inode: info.ino.toString(),
+        create: entry.create,
+      });
+    }
 
     if (
       temporaryDirectory &&
@@ -239,9 +301,7 @@ async function additionalGrants(
     )
       throw new Error("Additional access overlaps private sandbox temporary storage");
 
-    const stat = await lstat(path);
-
-    if (!stat.isFile() && !stat.isDirectory())
+    if (metadata && !metadata.isFile() && !metadata.isDirectory())
       throw new Error(
         `Additional access needs an existing regular file or directory: ${entry.path}`,
       );
@@ -251,19 +311,34 @@ async function additionalGrants(
 
     if (
       ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/tmp"].includes(path) ||
-      ["/proc", "/dev", "/executor", "/opt/pi-tools", "/tmp/home", "/tmp/pi-tools"].some((root) =>
-        within(root, path),
+      ["/proc", "/dev", "/sys", "/executor", "/opt/pi-tools", "/tmp/home", "/tmp/pi-tools"].some(
+        (root) => within(root, path),
       )
     )
       throw new Error("Additional access overlaps sandbox runtime infrastructure");
 
-    if (protectedRoots.some((root) => within(root, path) || within(path, root)))
+    if (canMask) {
+      for (const root of protectedRoots.filter((root) => within(path, root) && root !== path)) {
+        const exists = await lstat(root).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return undefined;
+
+          throw error;
+        });
+
+        if (!exists)
+          throw new Error(
+            "Select a narrower grant: its parent contains a reserved private path that does not exist yet",
+          );
+      }
+    }
+
+    if (protectedRoots.some((root) => within(root, path) || (!canMask && within(path, root))))
       throw new Error(
         `Additional access overlaps protected Pi or credential storage: ${entry.path}`,
       );
 
     if (request?.executableSearchPaths?.includes(entry.path)) {
-      if (!stat.isDirectory()) throw new Error("Executable search paths must be directories");
+      if (!metadata?.isDirectory()) throw new Error("Executable search paths must be directories");
 
       searchPaths.push(path);
 
@@ -278,7 +353,7 @@ async function additionalGrants(
 
   const readOnlyBindings = bindings.filter((path) => modes.get(path) === "read");
 
-  return { bindings, modes, localTools, searchPaths, readOnlyBindings };
+  return { bindings, modes, localTools, searchPaths, readOnlyBindings, pendingPaths };
 }
 
 async function protectedMasks(bindings: string[], protectedRoots: string[]) {

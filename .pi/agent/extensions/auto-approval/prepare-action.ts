@@ -18,6 +18,8 @@ import { sessionServices } from "../shared/session/services.ts";
 import { remoteSession } from "../shared/session/remote.ts";
 import { REMOTE_TOOLS, type RemotePrepared } from "../shared/contracts/remote.ts";
 import type { Workspace } from "./isolation.ts";
+import { maintenancePaths } from "./maintenance.ts";
+import { scopeHomeFile } from "./sandbox/home-access.ts";
 import { containerFileReader } from "./container-reader.ts";
 import type { ContainerPrepared } from "../shared/contracts/containers.ts";
 import { assertDelegatedAction } from "../shared/contracts/subagents.ts";
@@ -36,7 +38,7 @@ export async function prepareAction(
   if (!validRequest || !snapshot.goal.trim() || !snapshot.justification.trim())
     throw new Error("Invalid action, goal, or justification");
 
-  const request = reviewedWebRequest(normalizeNetworkFlag(snapshot));
+  let request = reviewedWebRequest(normalizeNetworkFlag(snapshot));
 
   assertDelegatedAction(sessionServices(ctx).delegationMode, request);
 
@@ -46,6 +48,8 @@ export async function prepareAction(
   const config = await loadSessionConfig(ctx);
 
   await assertSandboxReady(config);
+
+  let reviewedProtection = [...protection.paths];
 
   const name = request.tool as ToolName;
   // Private built-in definitions: never resolve a same-name extension/MCP
@@ -57,6 +61,9 @@ export async function prepareAction(
 
   const remoteRoute = remoteSession(ctx);
   const remoteTarget = remoteRoute?.target();
+
+  if (remoteTarget && request.sandbox?.maintenance)
+    throw new Error("Pi maintenance runs locally; turn off /remote before editing this Pi setup");
 
   validateGitRequest(request, config, Boolean(remoteTarget));
 
@@ -94,6 +101,7 @@ export async function prepareAction(
     return {
       request,
       config,
+      reviewedProtection,
       workspace,
       credentialPlan: undefined,
       sandboxPlan: remote.plan,
@@ -102,6 +110,9 @@ export async function prepareAction(
       localGitWorkspace,
     };
   }
+
+  request = await scopeHomeFile(request, ctx.cwd);
+  reviewedProtection = await maintenancePaths(request, protection.paths);
 
   if (
     remoteTarget &&
@@ -121,17 +132,19 @@ export async function prepareAction(
   stage("credential profile validation");
 
   const credentialPlan = credential ? await resolveCredentialPlan(request, config) : undefined;
-  const activeProtectedPaths = [...protection.paths, ...credentialProtectedPaths(config)];
+  const activeProtectedPaths = [...reviewedProtection, ...credentialProtectedPaths(config)];
   const privateTmp =
     credential || containerJob || name === "git" ? undefined : await session.temporaryStorage();
 
   stage("workspace validation");
 
-  const mode = isWebTool(name)
-    ? "web"
-    : (credential || containerJob) && !request.sandbox?.projectFiles
-      ? "credential"
-      : "project";
+  const mode = request.sandbox?.maintenance
+    ? "scoped"
+    : isWebTool(name)
+      ? "web"
+      : (credential || containerJob) && !request.sandbox?.projectFiles
+        ? "credential"
+        : "project";
   const workspace = await validateWorkspace(
     ctx.cwd,
     config.sandbox,
@@ -166,6 +179,7 @@ export async function prepareAction(
     return {
       request,
       config,
+      reviewedProtection,
       workspace,
       credentialPlan: undefined,
       sandboxPlan: container.plan,
@@ -190,13 +204,13 @@ export async function prepareAction(
 
     const path = await canonicalPath(sandboxHostPath(workspace, String(request.arguments.path)));
     const roots = [
-      ...(await protection.roots),
+      ...(await Promise.all(reviewedProtection.map(canonicalPath))),
       ...(await Promise.all(credentialProtectedPaths(config).map(canonicalPath))),
     ];
 
     if (roots.some((p) => path === p || path.startsWith(`${p}/`)))
       throw new Error(
-        "The agent cannot modify Pi installation, approval code, configuration, or credentials",
+        "Protected path: use sandbox.maintenance with selected paths for an operator-requested Pi change; credentials and active executors remain excluded",
       );
   }
 
@@ -205,6 +219,7 @@ export async function prepareAction(
   return {
     request,
     config,
+    reviewedProtection,
     workspace,
     credentialPlan,
     sandboxPlan,

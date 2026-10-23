@@ -108,10 +108,14 @@ export function createApprovalRenderers(
           ...(args?.network !== undefined ? { network: args.network ? "host" : "none" } : {}),
         };
         const labels = [
+          ...(changes.maintenance ? ["Pi maintenance · one action"] : []),
           ...(changes.projectFiles ? [`project files: ${changes.projectFiles} · one command`] : []),
           ...(changes.gitConfig === true ? ["git config: read-only · one command"] : []),
           ...(changes.tools ?? []).map((name: string) => `tool: ${name}`),
-          ...(changes.paths ?? []).map((entry: any) => `${entry.access}: ${entry.path}`),
+          ...(changes.paths ?? []).map(
+            (entry: any) =>
+              `${entry.access}: ${entry.path}${entry.create ? ` (create ${entry.create})` : ""}`,
+          ),
           ...(changes.network ? [`network: ${changes.network}`] : []),
           ...(changes.environment
             ? [`environment: ${Object.keys(changes.environment).join(", ")}`]

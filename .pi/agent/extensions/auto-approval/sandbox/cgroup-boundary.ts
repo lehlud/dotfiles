@@ -20,7 +20,8 @@ export async function assertCgroupsHidden(workspace: Workspace) {
   ];
 
   for (const source of sources) {
-    const path = await realpath(source);
+    const pending = workspace.pendingPaths?.find((entry) => entry.path === source);
+    const path = await realpath(pending?.parent ?? source);
 
     if ((await statfs(path)).type === 0x63677270 || mounts.some((mount) => within(path, mount)))
       throw new Error(`Cgroup controller files must remain outside every sandbox mount: ${source}`);

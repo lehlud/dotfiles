@@ -17,7 +17,7 @@ export const credentialCommandTool: ToolDefinition<any, any> = {
   name: "credential_exec",
   label: "Authenticated command",
   description:
-    "One argv-only command using an operator-owned program/login binding. The independent reviewer authorizes the full argv and service effects; profiles may add an operator argument allowlist. github binds native gh to its existing login without a fixed subcommand list. Request network: true for remote access, sandbox.projectFiles: read/write for current-project access or sandbox.paths for selected files. No shell, shared /tmp, inherited environment or login-file mounts. Every command and access expansion requires its own review. Other program/login bindings must be configured by the operator outside Pi.",
+    "One argv-only command using an operator-owned program/login binding. The independent reviewer authorizes the full argv and service effects; profiles may add an operator argument allowlist. github binds native gh to its existing login without a fixed subcommand list. Request network: true for remote access, sandbox.projectFiles: read/write for current-project access or sandbox.paths for selected files. No shell, shared /tmp, inherited environment or login-file mounts. Every command and access expansion requires its own review. Other program bindings require an explicit operator request and scoped Pi maintenance review; activation requires restart. Login credentials remain private.",
   parameters: Type.Object(
     { profile: name, argv: Type.Array(value, { minItems: 1, maxItems: 64 }) },
     { additionalProperties: false },

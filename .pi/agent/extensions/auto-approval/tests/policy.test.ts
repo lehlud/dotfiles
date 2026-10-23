@@ -211,7 +211,7 @@ describe("review policy", () => {
       normalizeNetworkFlag({ ...request, network: false, sandbox: { network: "host" } }),
     ).toThrow("Conflicting");
     expect(() => normalizeNetworkFlag({ ...request, tool: "read", network: true })).toThrow(
-      "shell and credential actions",
+      "shell, credential and container actions",
     );
     expect(
       normalizeNetworkFlag({ ...request, tool: "credential_exec", network: true }).sandbox?.network,
