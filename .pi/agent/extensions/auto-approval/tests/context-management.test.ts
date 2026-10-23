@@ -1,3 +1,4 @@
+import contextManagement from "../../context-management/index.ts";
 import { expect, test } from "bun:test";
 import { SessionManager, type SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
 import { originals, historyPage, readNotes, NOTE } from "../../context-management/archive.ts";
@@ -289,3 +290,59 @@ test("only registered session metadata tools are available outside action approv
     availableContextTools({ getAllTools: () => [{ name: "history" }, { name: "bash" }] } as any),
   ).toEqual(["history"]);
 });
+
+test.each(["no-op", "prune", "rotate"])(
+  "context %s preserves another extension's pending continuation",
+  async (mode) => {
+    const hooks: Record<string, Function> = {},
+      tools: Record<string, any> = {};
+
+    contextManagement({
+      on: (name: string, callback: Function) => {
+        hooks[name] = callback;
+      },
+      registerCommand() {},
+      registerTool: (tool: any) => {
+        tools[tool.name] = tool;
+      },
+    } as any);
+
+    const manager = mode === "no-op" ? SessionManager.inMemory("/project") : transcript().manager;
+    const ctx: any = {
+      model: { ...model, api: "openai-responses" },
+      getContextUsage: () => ({ tokens: 170000, contextWindow: model.contextWindow }),
+      sessionManager: manager,
+    };
+    const drafts: SessionBoundaryDraft[] = [
+      {
+        type: "custom_message",
+        customType: "goal-next-turn",
+        content: "Continue the existing task",
+        display: false,
+      },
+    ];
+
+    if (mode === "rotate")
+      await tools.new_context.execute("rotation", {}, undefined, undefined, ctx);
+
+    const result = await hooks.turn_end(
+      {
+        outcome: "completed",
+        entries: drafts,
+        continue: true,
+        context: { contextEntries: manager.buildSessionProjection().entries },
+      },
+      ctx,
+    );
+    const effective = result?.entries ?? drafts;
+
+    expect(effective[0]).toEqual(drafts[0]);
+    expect(drafts).toHaveLength(1);
+
+    if (mode === "no-op") expect(result).toBeUndefined();
+    else
+      expect(effective.some((entry: SessionBoundaryDraft) => entry.type === "context_edit")).toBe(
+        true,
+      );
+  },
+);

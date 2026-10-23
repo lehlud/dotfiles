@@ -81,6 +81,8 @@ automatic compaction threshold. It keeps calls, failures, images,
 memory-tool results and small outputs. A batch must save at least 16,000
 characters before any edits are committed. References replace output content
 in the active projection; raw messages, receipts and IDs remain unchanged.
+Boundary edits append to pending entries from other extensions, preserving goal
+continuations and their metadata. A no-op eviction leaves those entries untouched.
 Eviction is pressure-driven, not an idle timer. It can invalidate a cached
 prefix, so the extension avoids many small edits and makes no cache-hit claim.
 

@@ -85,6 +85,7 @@ export default function contextManagement(pi: ExtensionAPI) {
 
       return {
         entries: [
+          ...event.entries,
           ...rotate(event.context.contextEntries),
           { type: "custom" as const, customType: ROTATION, data: { progress: progress(ctx) } },
         ],
@@ -97,7 +98,11 @@ export default function contextManagement(pi: ExtensionAPI) {
 
     const target = Math.max(16000, ((state.used ?? 0) - (state.window - state.reserve) * 0.55) * 4);
 
-    return { entries: prune(event.context.contextEntries, target, state.profile !== "responses") };
+    const changes = prune(event.context.contextEntries, target, state.profile !== "responses");
+
+    if (!changes.length) return;
+
+    return { entries: [...event.entries, ...changes] };
   });
 
   pi.on("before_provider_request", (event, ctx) => {

@@ -45,6 +45,7 @@ let goalTool: any;
 let operatorGoal: () => string | undefined;
 let statuses: Map<string, string>;
 const boundary = () => ({
+  entries: [],
   outcome: "completed",
   message: {
     role: "assistant",
@@ -1043,3 +1044,35 @@ test("operator goal resume prepares provider recovery before starting its next t
   expect(probes).toBe(1);
   expect(state().status).toBe("running");
 });
+
+test.each([false, true])(
+  "goal continuation preserves earlier boundary drafts; peer changed=%s",
+  async (peerChanged) => {
+    await command("Finish the fixture", ctx);
+    verdicts = ["deny"];
+
+    let revision = 0;
+
+    sessionServices(ctx).peerRevision = () => revision;
+
+    if (peerChanged)
+      duringReview = () => {
+        revision++;
+      };
+
+    const drafts = [
+      {
+        type: "custom_message",
+        customType: "earlier-extension",
+        content: "Retain this boundary message",
+        display: false,
+      },
+    ];
+    const result = await hooks.turn_end({ ...boundary(), entries: drafts }, ctx);
+
+    expect(result.continue).toBe(true);
+    expect(result.entries[0]).toEqual(drafts[0]);
+    expect(result.entries.at(-1).customType).toBe("auto-approval-goal-instruction");
+    expect(drafts).toHaveLength(1);
+  },
+);

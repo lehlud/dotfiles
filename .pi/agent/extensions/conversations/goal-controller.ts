@@ -412,7 +412,10 @@ export class GoalController {
         if (!ctx.hasPendingMessages() && peerChanged && !peersBusy)
           return {
             continue: true,
-            entries: [{ type: "custom_message", ...message(instruction(current)) }],
+            entries: [
+              ...event.entries,
+              { type: "custom_message", ...message(instruction(current)) },
+            ],
           };
 
         return;
@@ -444,7 +447,10 @@ export class GoalController {
       if (!complete && !waiting)
         return {
           continue: true,
-          entries: [{ type: "custom_message", ...message(instruction(this.goal!)) }],
+          entries: [
+            ...event.entries,
+            { type: "custom_message", ...message(instruction(this.goal!)) },
+          ],
         };
     } catch (error) {
       if (this.goal !== current) return;

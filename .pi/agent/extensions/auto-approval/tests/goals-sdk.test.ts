@@ -16,6 +16,7 @@ import autoApproval from "../index.ts";
 import { registerGoals } from "../../conversations/goals.ts";
 import { registerContinue } from "../../conversations/continue.ts";
 import codeQuality from "../../code-quality/index.ts";
+import contextManagement from "../../context-management/index.ts";
 import { textContent } from "../../shared/review/protocol.ts";
 import { registerSteering, STEERING_TYPE } from "../../conversations/steering.ts";
 import type { Goal } from "../../shared/contracts/goal.ts";
@@ -25,6 +26,7 @@ async function fixture(
   steering = false,
   selfAssigned = false,
   externalBlocker = false,
+  pressure = false,
 ) {
   await writeConfigFixture(
     join(directory, "auto-approval.json"),
@@ -78,6 +80,7 @@ async function fixture(
           : undefined;
       const incomplete =
         externalBlocker ||
+        (pressure && workingTurns < 2) ||
         (steering &&
           data &&
           !data.assistantAnswers.some((entry: any) =>
@@ -110,11 +113,11 @@ async function fixture(
         timestamp: Date.now(),
         stopReason: "stop",
         usage: {
-          input: 0,
+          input: pressure && model.id === "working" ? 52000 : 0,
           output: 0,
           cacheRead: 0,
           cacheWrite: 0,
-          totalTokens: 0,
+          totalTokens: pressure && model.id === "working" ? 52000 : 0,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         },
       };
@@ -170,7 +173,9 @@ async function fixture(
     sessionManager.appendCustomMessageEntry("unrelated-fixture", "KEEP-UNRELATED-CONTEXT", false);
   }
 
-  const settingsManager = SettingsManager.inMemory();
+  const settingsManager = SettingsManager.inMemory(
+    pressure ? { compaction: { enabled: false } } : {},
+  );
   const resourceLoader = new DefaultResourceLoader({
     cwd: directory,
     agentDir: directory,
@@ -187,6 +192,8 @@ async function fixture(
         registerSteering(pi, registerGoals(pi));
         registerContinue(pi);
         codeQuality(pi);
+
+        if (pressure) contextManagement(pi);
       },
     ],
   });
@@ -569,6 +576,47 @@ test("a real working model can set its own goal without an action review or forg
 
     expect(saved.data.status).toBe("complete");
   } finally {
+    session.dispose();
+
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("goal continuation survives context pressure when there are no tool outputs to evict", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-goal-context-pressure-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+
+  process.env.PI_CODING_AGENT_DIR = directory;
+
+  const { session, contexts } = await fixture(directory, false, false, false, true);
+  const errors: unknown[] = [],
+    notices: string[] = [];
+
+  try {
+    await session.bindExtensions({
+      mode: "tui",
+      onError: (error) => errors.push(error),
+      uiContext: { setStatus() {}, notify: (text: string) => notices.push(text) } as any,
+    });
+    await session.prompt("/goal resume");
+
+    for (
+      let i = 0;
+      i < 1000 && !errors.length && !notices.some((text) => text.startsWith("Goal confirmed:"));
+      i++
+    )
+      await Bun.sleep(1);
+
+    expect(errors).toEqual([]);
+    expect(notices.some((text) => text.startsWith("Goal incomplete:"))).toBe(true);
+    expect(notices.some((text) => text.startsWith("Goal confirmed:"))).toBe(true);
+    expect(contexts.filter((context) => context.model === "working")).toHaveLength(2);
+    expect(contexts.filter((context) => context.model === "reviewer")).toHaveLength(2);
+  } finally {
+    await session.abort();
     session.dispose();
 
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
