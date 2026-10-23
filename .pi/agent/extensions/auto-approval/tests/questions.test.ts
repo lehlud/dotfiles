@@ -292,7 +292,7 @@ test("question controls render compactly, preserve interrupt and reject unsuppor
     const lines = state.editor().render(width).map(stripTerminalSequences);
 
     expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
-    expect(lines.length).toBeLessThan(15);
+    expect(lines.length).toBeLessThan(22);
   }
 
   const aborted = new AbortController();
@@ -411,4 +411,64 @@ test("command answers preserve internal whitespace and duplicate asks return one
     .get("questions")
     .handler(`answer ${questions[0].id} Keep x  = y\nand two lines`, state.ctx);
   expect(state.client().list()[0].answer).toBe("Keep x  = y\nand two lines");
+});
+
+test("questions separate prompt, choices and guidance and theme the active answer", async () => {
+  const state = fixture();
+  const result = await state.tools
+    .get("ask_user")
+    .execute("layout", { questions: [input] }, undefined, undefined, state.ctx);
+
+  expect(result.content[0].text).toContain(`\n\n${input.question}\n\n- Web`);
+
+  const rendered = state.editor().render(100);
+  const plain = rendered.map((line) => stripTerminalSequences(line).trimEnd());
+  const question = plain.indexOf(input.question);
+  const choice = plain.findIndex((line) => line.includes("› Web"));
+  const hint = plain.findIndex((line) => line.startsWith("Enter:"));
+
+  expect(plain[question - 1]).toBe("");
+  expect(plain[question + 1]).toBe("");
+  expect(choice).toBeGreaterThan(question + 1);
+  expect(plain[hint - 1]).toBe("");
+  expect(plain[hint + 1]).toBe("");
+
+  const colors = getEditorTheme().selectList;
+
+  expect(rendered[choice]).toBe(colors.selectedPrefix("› ") + colors.selectedText("Web"));
+  expect(rendered).toContain("    " + colors.description("Browser client"));
+});
+
+test("long option descriptions wrap with indentation and short terminals retain the selected detail", () => {
+  const state = fixture();
+
+  state.client().ask([
+    {
+      ...input,
+      options: [
+        {
+          label: "First choice",
+          description:
+            "Keep the current sandbox restrictions and use the existing tools to finish the work.",
+        },
+        {
+          label: "Second choice",
+          description: "Change the scope after checking which guarantees are required by the task.",
+        },
+      ],
+    },
+  ]);
+
+  const lines = state.editor().render(45).map(stripTerminalSequences);
+
+  expect(lines.some((line) => line.startsWith("    Keep the current sandbox"))).toBe(true);
+  expect(lines.some((line) => line.endsWith("…"))).toBe(true);
+  expect(lines.every((line) => visibleWidth(line) <= 45)).toBe(true);
+  state.tui.terminal.rows = 20;
+
+  const compact = state.editor().render(45).map(stripTerminalSequences);
+
+  expect(compact.join("\n")).toContain("Second choice");
+  expect(compact.join("\n")).not.toContain("Change the scope");
+  expect(compact.length).toBeLessThan(20);
 });

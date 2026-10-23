@@ -20,7 +20,9 @@ function client(ctx: ExtensionToolContext) {
 }
 
 function formatQuestion(question: UserQuestion): string {
-  const lines = [`${question.id} · ${question.status} · ${question.header}`, question.question];
+  const lines = [`${question.id} · ${question.status} · ${question.header}`, "", question.question];
+
+  if (question.options?.length) lines.push("");
 
   for (const option of question.options ?? []) {
     const description = option.description ? `: ${option.description}` : "";
@@ -28,7 +30,7 @@ function formatQuestion(question: UserQuestion): string {
     lines.push(`- ${option.label}${description}`);
   }
 
-  if (question.answer !== undefined) lines.push(`Operator answer: ${question.answer}`);
+  if (question.answer !== undefined) lines.push("", `Operator answer: ${question.answer}`);
 
   return lines.join("\n");
 }

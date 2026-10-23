@@ -21,6 +21,7 @@ export class QuestionEditor extends CustomEditor {
   private questionId?: string;
   private selected = 0;
   private writing = false;
+  private questionTheme: EditorTheme;
 
   constructor(
     tui: TUI,
@@ -31,6 +32,7 @@ export class QuestionEditor extends CustomEditor {
     private actions: Actions,
   ) {
     super(tui, theme, keys, { embedWorkingStatus: true });
+    this.questionTheme = theme;
     this.answerEditor = new Editor(tui, theme);
     this.answerEditor.onChange = () => tui.requestRender();
     this.answerEditor.onSubmit = (text) => {
@@ -163,33 +165,85 @@ export class QuestionEditor extends CustomEditor {
 
     if (!question) return [];
 
+    const colors = this.questionTheme.selectList;
+    const compact = this.tui.terminal.rows < 24;
+    const heading = clean(question.header).replace(/\s+/g, " ");
+    const owner = clean(question.owner).replace(/\s+/g, " ");
     const lines = [
       this.renderTopBorder(width, 0),
-      `Question · ${clean(question.owner)} · ${this.pending().length} pending · ${clean(question.header)}`,
+      colors.selectedText(`Question · ${heading}`) +
+        colors.scrollInfo(` · ${owner} · ${this.pending().length} pending`),
+      "",
     ];
-    const wrapped = new Text(clean(question.question), 0, 0).render(Math.max(1, width));
+    const wrapped = new Text(clean(question.question), 0, 0)
+      .render(Math.max(1, width))
+      .map((line) => line.trimEnd());
 
-    lines.push(...wrapped.slice(0, 4));
+    const questionLines = compact ? 2 : 4;
 
-    if (wrapped.length > 4) lines.push("… full question is in the activity log");
+    lines.push(...wrapped.slice(0, questionLines));
+
+    if (wrapped.length > questionLines)
+      lines.push(colors.scrollInfo("… full question is in the activity log"));
+
+    lines.push("");
 
     if (this.writing) {
       this.answerEditor.focused = this.focused;
       lines.push(...this.answerEditor.render(width));
     } else {
-      lines.push(
-        ...this.choices(question).map(
-          (choice, index) =>
-            `${index === this.selected ? "›" : " "} ${clean(choice.label)}${choice.description ? ` — ${clean(choice.description)}` : ""}`,
-        ),
-      );
+      lines.push(...this.renderChoices(question, width));
     }
 
     lines.push(
-      "Enter: answer · Tab: text/choices · Ctrl+X: discard · Ctrl+O: log · Esc: interrupt",
+      "",
+      ...new Text(
+        colors.scrollInfo(
+          width < 60
+            ? "Enter answer · Tab text\n^X discard · Esc interrupt"
+            : "Enter: answer · Tab: text/choices · Ctrl+X: discard · Ctrl+O: log · Esc: interrupt",
+        ),
+        0,
+        0,
+      ).render(Math.max(1, width)),
+      "",
     );
 
     return lines.map((line) => truncateToWidth(line, Math.max(1, width)));
+  }
+
+  private renderChoices(question: UserQuestion, width: number) {
+    const colors = this.questionTheme.selectList;
+    const lines: string[] = [];
+    const descriptionLines = (question.options?.length ?? 0) > 3 ? 1 : 2;
+    const compact = this.tui.terminal.rows < 24;
+
+    for (const [index, choice] of this.choices(question).entries()) {
+      const selected = index === this.selected;
+      const label = clean(choice.label).replace(/\s+/g, " ");
+      const text = selected
+        ? colors.selectedText(label)
+        : choice.answer === undefined
+          ? colors.scrollInfo(label)
+          : label;
+
+      lines.push((selected ? colors.selectedPrefix("› ") : "  ") + text);
+
+      if (!choice.description || (compact && !selected)) continue;
+
+      const wrapped = new Text(clean(choice.description), 0, 0)
+        .render(Math.max(1, width - 4))
+        .map((line) => line.trimEnd());
+      const visible = wrapped.slice(0, descriptionLines);
+
+      if (wrapped.length > descriptionLines)
+        visible[visible.length - 1] =
+          truncateToWidth(visible.at(-1)!, Math.max(1, width - 5)) + "…";
+
+      lines.push(...visible.map((line) => "    " + colors.description(line)));
+    }
+
+    return lines;
   }
 
   invalidate() {
