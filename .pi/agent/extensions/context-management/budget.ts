@@ -36,5 +36,6 @@ export function budget(ctx: Pick<ExtensionContext, "getContextUsage" | "model">)
     used,
     available: used === null ? null : Math.max(0, window - reserve - used),
     pressure: used !== null && window > 0 && used >= window * 0.768,
+    renewal: used !== null && window > 0 && used >= Math.min(window * 0.9, window - reserve),
   };
 }

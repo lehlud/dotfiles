@@ -23,11 +23,20 @@ import type { Goal } from "../../shared/contracts/goal.ts";
 
 async function fixture(
   directory: string,
-  steering = false,
-  selfAssigned = false,
-  externalBlocker = false,
-  pressure = false,
+  {
+    steering = false,
+    selfAssigned = false,
+    externalBlocker = false,
+    pressure = false,
+  }: {
+    steering?: boolean;
+    selfAssigned?: boolean;
+    externalBlocker?: boolean;
+    pressure?: boolean | number;
+  } = {},
 ) {
+  const usedTokens = typeof pressure === "number" ? pressure : 52000;
+
   await writeConfigFixture(
     join(directory, "auto-approval.json"),
     JSON.stringify({
@@ -113,11 +122,11 @@ async function fixture(
         timestamp: Date.now(),
         stopReason: "stop",
         usage: {
-          input: pressure && model.id === "working" ? 52000 : 0,
+          input: pressure && model.id === "working" ? usedTokens : 0,
           output: 0,
           cacheRead: 0,
           cacheWrite: 0,
-          totalTokens: pressure && model.id === "working" ? 52000 : 0,
+          totalTokens: pressure && model.id === "working" ? usedTokens : 0,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         },
       };
@@ -230,7 +239,7 @@ test("real Pi waits on an independent blocker without starting another work or r
 
   process.env.PI_CODING_AGENT_DIR = directory;
 
-  const state = await fixture(directory, false, false, true);
+  const state = await fixture(directory, { externalBlocker: true });
   const notices: string[] = [];
 
   try {
@@ -350,7 +359,7 @@ test("real steering keeps a goal running after a correction until the original w
 
   process.env.PI_CODING_AGENT_DIR = directory;
 
-  const state = await fixture(directory, true);
+  const state = await fixture(directory, { steering: true });
   const notices: string[] = [];
 
   try {
@@ -418,7 +427,7 @@ test("real Pi accepts repeated goal changes during a live run without raw comman
 
   process.env.PI_CODING_AGENT_DIR = directory;
 
-  const { session, contexts, release } = await fixture(directory, true);
+  const { session, contexts, release } = await fixture(directory, { steering: true });
   let running: Promise<void> | undefined;
 
   try {
@@ -476,7 +485,7 @@ test("real Pi drops a goal during streaming without stopping work or restoring t
 
   process.env.PI_CODING_AGENT_DIR = directory;
 
-  const { session, contexts, release } = await fixture(directory, true);
+  const { session, contexts, release } = await fixture(directory, { steering: true });
   const notices: string[] = [];
   const statuses = new Map<string, string>();
 
@@ -534,7 +543,7 @@ test("a real working model can set its own goal without an action review or forg
 
   process.env.PI_CODING_AGENT_DIR = directory;
 
-  const { session, contexts } = await fixture(directory, false, true);
+  const { session, contexts } = await fixture(directory, { selfAssigned: true });
 
   try {
     await session.bindExtensions({
@@ -591,7 +600,7 @@ test("goal continuation survives context pressure when there are no tool outputs
 
   process.env.PI_CODING_AGENT_DIR = directory;
 
-  const { session, contexts } = await fixture(directory, false, false, false, true);
+  const { session, contexts } = await fixture(directory, { pressure: true });
   const errors: unknown[] = [],
     notices: string[] = [];
 
@@ -615,6 +624,78 @@ test("goal continuation survives context pressure when there are no tool outputs
     expect(notices.some((text) => text.startsWith("Goal confirmed:"))).toBe(true);
     expect(contexts.filter((context) => context.model === "working")).toHaveLength(2);
     expect(contexts.filter((context) => context.model === "reviewer")).toHaveLength(2);
+  } finally {
+    await session.abort();
+    session.dispose();
+
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an incomplete goal renews critical context even if the model only reports a budget impasse", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-goal-auto-renewal-"));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+
+  process.env.PI_CODING_AGENT_DIR = directory;
+
+  const { session, contexts } = await fixture(directory, { pressure: 60000 });
+  const errors: unknown[] = [],
+    notices: string[] = [];
+
+  session.sessionManager.appendMessage({
+    role: "assistant",
+    api: "fixture",
+    provider: "fixture",
+    model: "working",
+    timestamp: 0,
+    content: [{ type: "text", text: "Prior implementation evidence ".repeat(6000) }],
+    stopReason: "stop",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+  });
+
+  try {
+    await session.bindExtensions({
+      mode: "tui",
+      onError: (error) => errors.push(error),
+      uiContext: { setStatus() {}, notify: (text: string) => notices.push(text) } as any,
+    });
+    await session.prompt("/goal resume");
+
+    for (
+      let i = 0;
+      i < 1000 && !errors.length && !notices.some((text) => text.startsWith("Goal confirmed:"));
+      i++
+    )
+      await Bun.sleep(1);
+
+    expect(errors).toEqual([]);
+
+    const work = contexts.filter((entry) => entry.model === "working");
+
+    expect(work).toHaveLength(2);
+    expect(JSON.stringify(work[1].messages).length).toBeLessThan(16000);
+    expect(JSON.stringify(work[1].messages)).toContain(
+      "Missing work identified by the goal reviewer",
+    );
+    expect(
+      session.sessionManager
+        .getBranch()
+        .filter(
+          (entry: any) =>
+            entry.customType === "context-memory-rotation-state" && entry.data?.automatic,
+        ),
+    ).toHaveLength(1);
+    expect(notices.some((text) => text.startsWith("Goal confirmed:"))).toBe(true);
   } finally {
     await session.abort();
     session.dispose();

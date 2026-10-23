@@ -43,6 +43,28 @@ evidence and action receipts from the unmodified log.
 
 ## Projection and recovery
 
+Context headroom is renewable for each request, not a total task or session budget.
+The model is instructed to save a handoff and use `new_context` under pressure,
+rather than stop or ask for a new session merely because headroom is low.
+
+At 90% usage, or earlier when the output reserve would be exhausted, a completed
+boundary that needs another working turn can renew context automatically. It
+waits for delegated work and queued operator input, and never runs on interruption
+or solely to extend an already finished answer. The original session ID, goal,
+operator instructions, notes, approvals and full searchable history remain.
+
+Automatic renewal writes a bounded DATA checkpoint with the last six archived
+entry IDs, short assistant-text excerpts and tool-result references. It does not
+summarize with an LLM or label unverified claims as successful validation. Old
+checkpoint projections are replaced while their originals stay searchable.
+A renewal must save at least 64,000 serialized content characters, reduced to the
+model window size for smaller windows; this is a conservative character estimate,
+not exact tokenization. Irreducible user/custom data and tool images are left to
+ordinary compaction or deliberate rotation. No repeated renewal is allowed
+without new operator input or successful external work. Routine pruning still
+starts at 76.8%; the later whole-history fallback deliberately trades one cache
+prefix change for usable headroom when the model fails to rotate itself.
+
 Budget estimates use Pi's context usage and the selected model's window, with
 an explicit output reserve. Cached input still occupies the context window.
 Unknown usage stays unknown. Budget/notes are added at the request tail; the

@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { streamSimple as responses } from "@earendil-works/pi-ai/api/openai-responses";
+import { textContent } from "../../shared/review/protocol.ts";
 import { cacheStream } from "../../shared/providers/cache-stream.ts";
 import contextManagement from "../../context-management/index.ts";
 import codeQuality from "../../code-quality/index.ts";
@@ -67,6 +68,7 @@ async function fixture(
     provider?: string;
     api?: string;
     pressure?: boolean;
+    usedTokens?: number;
     wire?: boolean;
     login?: boolean;
     id?: string;
@@ -141,7 +143,14 @@ async function fixture(
           timestamp: Date.now(),
           content,
           stopReason: content.some((block) => block.type === "toolCall") ? "toolUse" : "stop",
-          usage: setup.pressure ? { ...usage, input: 52000, totalTokens: 52001 } : usage,
+          usage:
+            setup.usedTokens !== undefined || setup.pressure
+              ? {
+                  ...usage,
+                  input: setup.usedTokens ?? 52000,
+                  totalTokens: (setup.usedTokens ?? 52000) + 1,
+                }
+              : usage,
         };
 
         stream.push({ type: "done", reason: message.stopReason, message });
@@ -519,3 +528,66 @@ test("SDK rotation cannot spin on repeated notes/history-only work", async () =>
     await state.close();
   }
 });
+
+test.each(["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"])(
+  "critical %s context renews even when the model never calls new_context",
+  async (api) => {
+    const state = await fixture(
+      (turn) =>
+        turn === 1
+          ? tool("notes", {
+              operation: "set",
+              key: "next",
+              text: "Implement the remaining allocator; validation is incomplete.",
+            })
+          : [{ type: "text", text: "Continue the implementation with fresh context." }],
+      { usedTokens: 60000, api },
+    );
+
+    try {
+      const original = state.manager.appendMessage({
+        role: "assistant",
+        api: "fixture",
+        provider: "fixture",
+        model: "working",
+        timestamp: 0,
+        content: [{ type: "text", text: "archived-observation ".repeat(8000) }],
+        stopReason: "stop",
+        usage,
+      } as any);
+
+      await state.session.prompt("Finish the authorized task; never edit ROADMAP.md.");
+
+      const markers = state.manager
+        .getBranch()
+        .filter(
+          (entry) =>
+            entry.type === "custom" && entry.customType === "context-memory-rotation-state",
+        );
+
+      expect(state.errors).toEqual([]);
+      expect(markers).toHaveLength(1);
+      expect(state.contexts).toHaveLength(2);
+      expect(JSON.stringify(state.contexts[1]).length).toBeLessThan(16000);
+
+      const memory = state.contexts[1]
+        .map((message: any) => textContent(message.content))
+        .find(
+          (text: string) => text.includes("Headroom is per request") && text.includes("\nBudget: "),
+        )!;
+      const requestBudget = JSON.parse(memory.split("\nBudget: ")[1].split("\n")[0]);
+
+      expect(memory).toContain("not a task/session budget");
+      expect(requestBudget.available).toBeGreaterThan(50000);
+      expect(requestBudget.renewal).toBe(false);
+
+      expect(JSON.stringify(state.contexts[1])).toContain("Implement the remaining allocator");
+      expect(JSON.stringify(state.contexts[1])).toContain("never edit ROADMAP.md");
+      expect(state.manager.getEntry(original)).toMatchObject({
+        message: { content: [{ type: "text", text: "archived-observation ".repeat(8000) }] },
+      });
+    } finally {
+      await state.close();
+    }
+  },
+);

@@ -1,7 +1,9 @@
 import contextManagement from "../../context-management/index.ts";
+import { renewContext, AUTOMATIC_HANDOFF } from "../../context-management/renewal.ts";
 import { expect, test } from "bun:test";
 import { SessionManager, type SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
 import { originals, historyPage, readNotes, NOTE } from "../../context-management/archive.ts";
+import { sessionServices } from "../../shared/session/services.ts";
 import { budget, profile } from "../../context-management/budget.ts";
 import {
   nativePayload,
@@ -346,3 +348,187 @@ test.each(["no-op", "prune", "rotate"])(
       );
   },
 );
+
+test.each([
+  [272000, 128000, 244800],
+  [200000, 8192, 180000],
+  [12000, 4096, 8000],
+])(
+  "renewal starts before output reserve exhaustion for window %i",
+  (window, maxTokens, threshold) => {
+    let tokens = threshold - 1;
+    const ctx: any = {
+      model: { ...model, contextWindow: window, maxTokens },
+      getContextUsage: () => ({ tokens }),
+    };
+
+    expect(budget(ctx).renewal).toBe(false);
+    tokens++;
+    expect(budget(ctx).renewal).toBe(true);
+    ctx.getContextUsage = () => ({ tokens: null });
+    expect(budget(ctx).renewal).toBe(false);
+  },
+);
+
+test("automatic renewal retains notes, constraints, failure evidence and exact archive references", () => {
+  const { manager, user, outputs } = transcript(true);
+
+  manager.appendCustomEntry(NOTE, { key: "next", text: "Implement the allocator, then validate." });
+  manager.appendCustomEntry("auto-approval-review", { decision: "deny", requestId: "keep-denial" });
+
+  const raw = originals(manager.getBranch());
+  const changes = renewContext(manager.buildSessionProjection().entries)!;
+
+  expect(changes).toBeDefined();
+  apply(manager, changes);
+
+  const messages = manager.buildSessionProjection().messages;
+  const handoff = messages.find(
+    (message) => message.role === "custom" && message.customType === AUTOMATIC_HANDOFF,
+  );
+
+  expect(JSON.stringify(handoff)).toContain(outputs.at(-1)!);
+  expect(JSON.stringify(handoff)).not.toContain("signed-secret");
+  expect(JSON.stringify(handoff).length).toBeLessThan(6500);
+  expect(
+    messages.some((message) => message.role === "assistant" || message.role === "toolResult"),
+  ).toBe(false);
+  expect(messages.some((message) => message.role === "user")).toBe(true);
+  expect(manager.getEntry(user)).toBeDefined();
+  expect([...readNotes(manager.getBranch())]).toEqual([
+    ["next", "Implement the allocator, then validate."],
+  ]);
+  expect(JSON.stringify(messages)).toContain("DENIED-1");
+  expect(originals(manager.getBranch()).slice(0, raw.length)).toEqual(raw);
+  expect(manager.getBranch().some((entry: any) => entry.data?.requestId === "keep-denial")).toBe(
+    true,
+  );
+});
+
+test("renewal skips small or irreducible history and tool images unavailable through text history", () => {
+  const manager = SessionManager.inMemory("/project");
+
+  manager.appendMessage({
+    role: "user",
+    content: "irreducible user data ".repeat(6000),
+    timestamp: 0,
+  });
+  manager.appendMessage(assistant([{ type: "text", text: "Small answer" }]));
+  expect(renewContext(manager.buildSessionProjection().entries)).toBeUndefined();
+  manager.appendMessage(assistant([{ type: "text", text: "large reasoning ".repeat(6000) }]));
+  manager.appendMessage({
+    role: "toolResult",
+    toolName: "screenshot",
+    isError: false,
+    toolCallId: "image",
+    timestamp: 0,
+    content: [{ type: "image", data: "opaque", mimeType: "image/png" }],
+  });
+  expect(renewContext(manager.buildSessionProjection().entries)).toBeUndefined();
+});
+
+test("new checkpoints replace older checkpoint projections while preserving their originals", () => {
+  const { manager } = transcript();
+  const old = manager.appendCustomMessageEntry(AUTOMATIC_HANDOFF, "Previous handoff DATA", false);
+
+  apply(manager, renewContext(manager.buildSessionProjection().entries)!);
+
+  const active = manager
+    .buildSessionProjection()
+    .messages.filter(
+      (message) => message.role === "custom" && message.customType === AUTOMATIC_HANDOFF,
+    );
+
+  expect(active).toHaveLength(1);
+  expect(JSON.stringify(active)).not.toContain("Previous handoff DATA");
+  expect(historyPage(manager.getBranch(), { id: old })).toContain("Previous handoff DATA");
+});
+
+test.each([
+  "peers",
+  "subagents",
+  "queued",
+  "finished",
+  "aborted",
+  "signal-aborted",
+  "already-rotated",
+])("automatic renewal respects %s", async (condition) => {
+  const hooks: Record<string, Function> = {};
+
+  contextManagement({
+    on: (name: string, callback: Function) => {
+      hooks[name] = callback;
+    },
+    registerCommand() {},
+    registerTool() {},
+  } as any);
+
+  const { manager, outputs } = transcript();
+  const ctx: any = {
+    model,
+    getContextUsage: () => ({ tokens: 190000 }),
+    sessionManager: manager,
+    hasPendingMessages: () => condition === "queued",
+    signal: condition === "signal-aborted" ? AbortSignal.abort() : undefined,
+  };
+  const services = sessionServices(ctx);
+
+  services.peersBusy = () => condition === "peers";
+  services.subagentsBusy = () => condition === "subagents";
+
+  if (condition === "already-rotated")
+    manager.appendCustomEntry("context-memory-rotation-state", { progress: outputs.at(-1) });
+
+  const result = await hooks.turn_end(
+    {
+      outcome: condition === "aborted" ? "aborted" : "completed",
+      continue: condition !== "finished",
+      entries: [],
+      context: { contextEntries: manager.buildSessionProjection().entries },
+      message: assistant([{ type: "text", text: "done" }]),
+    },
+    ctx,
+  );
+
+  expect(
+    result?.entries?.some((entry: any) => entry.customType === AUTOMATIC_HANDOFF) ?? false,
+  ).toBe(false);
+});
+
+test("a new operator goal permits renewal after an earlier rotation without enabling model-authored resets", async () => {
+  const hooks: Record<string, Function> = {};
+
+  contextManagement({
+    on: (name: string, callback: Function) => {
+      hooks[name] = callback;
+    },
+    registerCommand() {},
+    registerTool() {},
+  } as any);
+
+  const { manager, outputs } = transcript();
+
+  manager.appendCustomEntry("context-memory-rotation-state", { progress: outputs.at(-1) });
+  manager.appendCustomEntry("auto-approval-operator-prompt", {
+    text: "Finish the next authorized goal",
+  });
+
+  const ctx: any = {
+    model,
+    sessionManager: manager,
+    getContextUsage: () => ({ tokens: 190000 }),
+    hasPendingMessages: () => false,
+  };
+  const result = await hooks.turn_end(
+    {
+      outcome: "completed",
+      continue: true,
+      entries: [],
+      context: { contextEntries: manager.buildSessionProjection().entries },
+      message: assistant([]),
+    },
+    ctx,
+  );
+
+  expect(result.entries.some((entry: any) => entry.customType === AUTOMATIC_HANDOFF)).toBe(true);
+});
