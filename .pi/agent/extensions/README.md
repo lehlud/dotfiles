@@ -18,6 +18,7 @@ review infrastructure never import a feature entry point.
 | Public writing     | Frozen editorial policy and an independently reviewed prose receipt                                  | `public-writing/index.ts`     |
 | Web research       | DDGS queries and public URL text extraction through the isolated worker                              | `web-research/index.ts`       |
 | Remote workspaces  | Operator selection, SSH transport, remote tools and bounded forwarding                               | `remote/index.ts`             |
+| Container jobs     | Privately bridged, independently reviewed Docker/Podman project workloads                            | `container-tools/index.ts`    |
 | Shared library     | Settings, immutable action contracts, provider transport, review evidence, session services          | `shared/`                     |
 
 Remote workspaces are owned by [`remote/index.ts`](remote/README.md). The operator selects and

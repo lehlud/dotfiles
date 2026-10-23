@@ -68,6 +68,7 @@ _models="$HOME/.pi/agent/extensions/model-selection/index.ts"
 _subagents="$HOME/.pi/agent/extensions/subagents/index.ts"
 _context="$HOME/.pi/agent/extensions/context-management/index.ts"
 _remote="$HOME/.pi/agent/extensions/remote/index.ts"
+_containers="$HOME/.pi/agent/extensions/container-tools/index.ts"
 if [ ! -r "$_gate" ]; then
     printf 'pi: mandatory approval gate is missing; startup blocked\n' >&2
     exit 1
@@ -80,7 +81,7 @@ if [ ! -r "$_writing" ]; then
     printf 'pi: public-writing extension is missing; startup blocked\n' >&2
     exit 1
 fi
-for _extension in "$_conversations" "$_multiplex" "$_recovery" "$_code_quality" "$_fast" "$_models" "$_subagents" "$_context" "$_remote"; do
+for _extension in "$_conversations" "$_multiplex" "$_recovery" "$_code_quality" "$_fast" "$_models" "$_subagents" "$_context" "$_remote" "$_containers"; do
     if [ ! -r "$_extension" ]; then
         printf 'pi: required extension is missing: %s; startup blocked\n' "$_extension" >&2
         exit 1
@@ -117,6 +118,7 @@ if auto_update_ensure_tar_app pi "$_pi_cache_dir" pi pi/pi 3 _pi_download https:
         --extension "$_subagents" \
         --extension "$_context" \
         --extension "$_remote" \
+        --extension "$_containers" \
         --no-approve \
         --tools approved_action,mailbox,set_goal,ask_user,user_questions,subagent,history,notes,new_context \
         "$@"

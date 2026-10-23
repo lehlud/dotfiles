@@ -23,6 +23,7 @@
     "../model-selection/*.ts",
     "../subagents/**/*.ts",
     "../context-management/**/*.ts",
-    "../remote/**/*.ts"
+    "../remote/**/*.ts",
+    "../container-tools/**/*.ts"
   ]
 }

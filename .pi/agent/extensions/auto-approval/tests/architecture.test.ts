@@ -61,6 +61,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
     subagents: ["subagents", "shared"],
     "context-management": ["context-management", "shared"],
     remote: ["remote", "shared"],
+    "container-tools": ["container-tools", "shared"],
   };
 
   return edges

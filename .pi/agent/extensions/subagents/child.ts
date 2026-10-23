@@ -53,6 +53,7 @@ function bindings(parent: ExtensionContext, job: SubagentResult, hooks: Hooks) {
     pi.on("session_start", (_event, child) => {
       const services = sessionServices(child);
 
+      services.containers = sessionServices(parent).containers;
       services.delegationMode = job.mode;
       services.parentCacheLineage = () => sessionServices(parent).cacheLineage?.();
       services.operatorGoal = () => sessionServices(parent).operatorGoal?.();

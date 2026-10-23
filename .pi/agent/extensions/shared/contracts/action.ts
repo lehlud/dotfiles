@@ -5,7 +5,7 @@ export const sandboxRequestSchema = Type.Object(
     projectFiles: Type.Optional(
       Type.Union([Type.Literal("read"), Type.Literal("write")], {
         description:
-          "For credential_exec only: request current-project files read-only or writable for this one command. Omit for no project mount; sandbox.paths can grant only selected files instead. All accesses require independent approval.",
+          "For credential_exec/container_exec: request current-project files read-only or writable for this one command. Omit for no project mount; sandbox.paths can grant only selected files instead. All accesses require independent approval.",
       }),
     ),
     gitConfig: Type.Optional(
@@ -77,9 +77,9 @@ export type Request = {
 export function normalizeNetworkFlag(request: Request): Request {
   if (request.network === undefined) return request;
 
-  if (!["bash", "powershell", "credential_exec"].includes(request.tool))
+  if (!["bash", "powershell", "credential_exec", "container_exec"].includes(request.tool))
     throw new Error(
-      "The one-command network flag is only supported for shell and credential actions",
+      "The one-command network flag is only supported for shell, credential and container actions",
     );
 
   const mode = request.network ? "host" : "none";

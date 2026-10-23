@@ -78,7 +78,7 @@ test("launcher requires code quality and loads it alongside mandatory action app
 
   expect(launcher).toContain('_code_quality="$HOME/.pi/agent/extensions/code-quality/index.ts"');
   expect(launcher).toContain(
-    '"$_recovery" "$_code_quality" "$_fast" "$_models" "$_subagents" "$_context" "$_remote"; do',
+    '"$_recovery" "$_code_quality" "$_fast" "$_models" "$_subagents" "$_context" "$_remote" "$_containers"; do',
   );
   expect(launcher).toContain('--extension "$_context"');
   expect(launcher).toContain('--extension "$_subagents"');

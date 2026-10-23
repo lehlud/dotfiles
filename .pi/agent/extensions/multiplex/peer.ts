@@ -88,6 +88,7 @@ export async function createPeer(
         registerFastRequests(pi);
         registerInheritedSelection(pi, ctx);
         pi.on("session_start", (_event, child) => {
+          sessionServices(child).containers = sessionServices(ctx).containers;
           sessionServices(child).parentCacheLineage = () => sessionServices(ctx).cacheLineage?.();
           sessionServices(child).publishSubagentActivity = (record) =>
             sessionServices(ctx).publishSubagentActivity?.({

@@ -204,27 +204,31 @@ async function fixture(route: { provider?: string; api?: string } = {}) {
                     id: `${name}-read`,
                     name: "approved_action",
                     arguments: {
-                      tool: serialized.includes("LONG-WORK")
-                        ? "bash"
-                        : serialized.includes("MUTATION-REQUEST")
-                          ? "write"
-                          : serialized.includes("TMP-WORK")
-                            ? "bash"
-                            : "read",
-                      arguments: serialized.includes("LONG-WORK")
-                        ? {
-                            command:
-                              "printf ready > running-marker; sleep 2; printf late > late-marker",
-                            timeout: 5,
-                          }
-                        : serialized.includes("MUTATION-REQUEST")
-                          ? { path: `${name}.txt`, content: "Approved worker change\n" }
-                          : serialized.includes("TMP-WORK")
-                            ? {
-                                command: "printf saved > /tmp/subagent-marker; printf created",
-                                timeout: 5,
-                              }
-                            : { path: "sample.txt" },
+                      tool: serialized.includes("CONTAINER-WORK")
+                        ? "container_exec"
+                        : serialized.includes("LONG-WORK")
+                          ? "bash"
+                          : serialized.includes("MUTATION-REQUEST")
+                            ? "write"
+                            : serialized.includes("TMP-WORK")
+                              ? "bash"
+                              : "read",
+                      arguments: serialized.includes("CONTAINER-WORK")
+                        ? { argv: ["version"] }
+                        : serialized.includes("LONG-WORK")
+                          ? {
+                              command:
+                                "printf ready > running-marker; sleep 2; printf late > late-marker",
+                              timeout: 5,
+                            }
+                          : serialized.includes("MUTATION-REQUEST")
+                            ? { path: `${name}.txt`, content: "Approved worker change\n" }
+                            : serialized.includes("TMP-WORK")
+                              ? {
+                                  command: "printf saved > /tmp/subagent-marker; printf created",
+                                  timeout: 5,
+                                }
+                              : { path: "sample.txt" },
                       goal: "Inspect the operator-authorized project",
                       justification: "Independent review of the existing source",
                     },
@@ -884,4 +888,55 @@ native(
     }
   },
   30000,
+);
+
+native(
+  "work subagents inherit the fixed container route while retaining independent action review",
+  async () => {
+    const state = await fixture();
+    let calls = 0;
+
+    sessionServices(state.ctx()).containers = {
+      async prepare(request) {
+        expect(request.tool).toBe("container_exec");
+
+        return {
+          plan: { backend: "lubox-engine", command: ["version"] },
+          async assertCurrent() {},
+          async execute() {
+            expect(
+              state.reviews.some((review: any) => review.action.tool === "container_exec"),
+            ).toBe(true);
+            calls++;
+
+            return {
+              content: [{ type: "text", text: "Synthetic native engine version" }],
+              details: { exitCode: 0 },
+            };
+          },
+        };
+      },
+    };
+
+    try {
+      const job = (
+        await state.invoke({
+          operation: "spawn",
+          mode: "work",
+          task: "CONTAINER-WORK: inspect the available engine version",
+        })
+      ).details;
+
+      await until(
+        async () =>
+          (await state.invoke({ operation: "status", id: job.id })).details.state === "idle",
+      );
+      expect(calls).toBe(1);
+      expect(
+        state.reviews.filter((review: any) => review.action.tool === "container_exec"),
+      ).toHaveLength(1);
+    } finally {
+      await state.close();
+    }
+  },
 );

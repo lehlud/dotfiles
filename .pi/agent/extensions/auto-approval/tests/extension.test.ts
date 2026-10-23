@@ -1825,3 +1825,98 @@ test("a saved remote target with no live extension cannot fall back to local exe
   expect((await call(bash("printf local-again"))).isError).not.toBe(true);
   expect(executedRequests).toHaveLength(1);
 });
+
+function containerFixture() {
+  let current = true;
+  const executed: unknown[] = [];
+
+  sessionServices(ctx).containers = {
+    async prepare(request, workspace) {
+      return {
+        plan: {
+          backend: "lubox-engine",
+          commands: request.arguments.commands,
+          grants: workspace.bindings,
+        },
+        async assertCurrent() {
+          if (!current) throw new Error("Engine helper changed");
+        },
+        async execute() {
+          expect(
+            entries.some(
+              (entry) =>
+                entry.customType === "auto-approval-review" && entry.data.decision === "approve",
+            ),
+          ).toBe(true);
+          executed.push(request.arguments);
+
+          return {
+            content: [{ type: "text", text: "Synthetic container result" }],
+            details: { exitCode: 0 },
+          };
+        },
+      };
+    },
+  };
+
+  return {
+    executed,
+    invalidate: () => {
+      current = false;
+    },
+  };
+}
+
+const containerAction = () => ({
+  tool: "container_exec",
+  arguments: { argv: ["run", "sdk:cached", "true"] },
+  goal: "Verify the project",
+  justification: "Run the bounded application test container",
+  sandbox: { projectFiles: "read", network: "none", limits: { memoryMiB: 512, cpus: 1, pids: 64 } },
+});
+
+test("container workload limits reach engine review without requiring local cgroup delegation", async () => {
+  await configureGitFixture();
+
+  const fixture = containerFixture();
+  const result = await call(containerAction());
+
+  expect(result.isError).not.toBe(true);
+  expect(fixture.executed).toHaveLength(1);
+  expect(executedRequests).toEqual([]);
+  expect(validatedScopes.at(-1).limits).toBeUndefined();
+  expect(requested[0].data.action.sandbox.limits).toEqual({ memoryMiB: 512, cpus: 1, pids: 64 });
+  expect(requested[0].data.sandboxPlan.backend).toBe("lubox-engine");
+  expect(result.details.approval.backend).toBe("lubox-engine");
+});
+
+test("container denial, audit failure and source change cannot dispatch to the engine", async () => {
+  await configureGitFixture();
+
+  const fixture = containerFixture();
+
+  mode = "deny";
+  expect((await call(containerAction())).isError).toBe(true);
+  mode = "approve";
+  auditFails = true;
+  expect((await call(containerAction())).isError).toBe(true);
+  auditFails = false;
+  responseHook = fixture.invalidate;
+  expect((await call(containerAction())).isError).toBe(true);
+  expect(fixture.executed).toEqual([]);
+  expect(executedRequests).toEqual([]);
+});
+
+test("review-only subagents and remote file grants cannot use the local engine", async () => {
+  await configureGitFixture();
+
+  const fixture = containerFixture();
+
+  sessionServices(ctx).delegationMode = "review";
+  expect((await call(containerAction())).isError).toBe(true);
+  sessionServices(ctx).delegationMode = undefined;
+  remoteFixture();
+  expect((await call(containerAction())).isError).toBe(true);
+  expect(fixture.executed).toEqual([]);
+  expect(requested).toEqual([]);
+});

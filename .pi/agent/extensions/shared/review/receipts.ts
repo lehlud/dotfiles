@@ -91,6 +91,7 @@ export function reviewedReceipts(entries: readonly Entry[]): ReviewedEvidence[] 
           "credential_exec",
           "git",
           "remote_tunnel",
+          "container_exec",
         ].includes(audit.action?.tool ?? "") &&
         audit.toolCallId
       )

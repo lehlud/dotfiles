@@ -18,6 +18,16 @@ Technical failures before independent review identify the failing preflight stag
 
 [`/reviewer`](../model-selection/README.md) opens a searchable model and thinking-level selector and saves one reviewer independently of the working model. `/reviewer set <provider/model> <thinking>` and `/reviewer thinking <level>` provide explicit selection; `/reviewer status` shows it. Choices persist for new sessions and take effect at the next turn, without replacing an in-flight check's reviewer. The single pair lives in operator-owned runtime state, not `auto-approval.json`. Existing lists migrate by retaining their previously active first entry. Provider failures retain the existing bounded retries and cooldown for that same model; no automatic alternate model is selected. Missing authentication or models, unsupported thinking levels, timeouts, invalid verdicts, safety refusals and truncated or aborted answers block the action. A valid request-bound denial remains binding even if the provider subsequently reports a transport failure. Fixed diagnostic categories replace raw provider errors that could contain credentials or prompt text. Credentials remain private; `/login` configures each provider on each machine.
 
+## Container jobs
+
+[`container_exec`](../container-tools/README.md) gives an individually reviewed job access to Lubox's
+operator engine without exposing its socket or bridge credentials. It supports metadata queries,
+image pulls and temporary resource-limited application containers, plus a bounded Compose subset
+when a trusted system Compose provider is installed. Explicit project/path grants, network access
+and OCI workload budgets are reviewed together. Required builder/temporary-storage guarantees that
+cannot be enforced are rejected. No new credential profile or `cgroupRoot` setting is needed for
+this engine route; default bwrap cgroup auto-discovery remains unchanged.
+
 ## Conversation features
 
 Review intent includes recorded operator delivery mode and the current task frame. Steering is

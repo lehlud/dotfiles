@@ -66,6 +66,7 @@ class ActionRun {
         (phase) => {
           this.phase = phase;
         },
+        this.signal,
       );
       const verdict = await this.review(prepared);
 
@@ -81,6 +82,7 @@ class ActionRun {
       this.phase = "team coordination";
       this.assignment?.assertCurrent();
       prepared.remote?.assertCurrent();
+      await prepared.container?.assertCurrent();
       this.executionStarted = true;
 
       return await this.execute(prepared);
@@ -170,7 +172,7 @@ class ActionRun {
           ? this.ctx.cwd
           : workspace.cwd,
       executionCwd: workspace.cwd,
-      backend: remote ? "ssh" : (config.sandbox.backend ?? "docker"),
+      backend: sandboxPlan.backend ?? (remote ? "ssh" : (config.sandbox.backend ?? "docker")),
       sandboxPlan,
       requestId: review.requestId,
       fingerprint: review.fingerprint,
@@ -217,25 +219,28 @@ class ActionRun {
     credentialPlan,
     remote,
     localGitWorkspace,
+    container,
   }: PreparedAction) {
-    const result = remote
-      ? request.sandbox?.gitConfig === true
-        ? await executeWithGitConfig(
-            request,
-            localGitWorkspace!,
-            config,
-            this.signal,
-            undefined,
-            undefined,
-            undefined,
-            (text) => remote.execute(this.signal, text),
-          )
-        : await remote.execute(this.signal)
-      : credentialPlan
-        ? await executeWithCredentials(request, credentialPlan, config, this.signal, workspace)
-        : request.sandbox?.gitConfig === true
-          ? await executeWithGitConfig(request, workspace, config, this.signal)
-          : await executeIsolated(request, workspace, config.sandbox, this.signal);
+    const result = container
+      ? await container.execute(this.signal)
+      : remote
+        ? request.sandbox?.gitConfig === true
+          ? await executeWithGitConfig(
+              request,
+              localGitWorkspace!,
+              config,
+              this.signal,
+              undefined,
+              undefined,
+              undefined,
+              (text) => remote.execute(this.signal, text),
+            )
+          : await remote.execute(this.signal)
+        : credentialPlan
+          ? await executeWithCredentials(request, credentialPlan, config, this.signal, workspace)
+          : request.sandbox?.gitConfig === true
+            ? await executeWithGitConfig(request, workspace, config, this.signal)
+            : await executeIsolated(request, workspace, config.sandbox, this.signal);
 
     if (isWebTool(request.tool))
       return {

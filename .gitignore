@@ -74,6 +74,9 @@
 /.local/share/lubox/*
 !/.local/share/lubox/podman_reconfigure.py
 !/.local/share/lubox/RECONFIGURE.md
+!/.local/share/lubox/engine_jobs/
+/.local/share/lubox/engine_jobs/*
+!/.local/share/lubox/engine_jobs/*.py
 
 !/.config/
 /.config/*

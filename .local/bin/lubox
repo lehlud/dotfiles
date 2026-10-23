@@ -5563,6 +5563,8 @@ destroy keeps lubox/NAME:latest by default; destroy --force also removes it.
     p.add_argument("--log-file", required=True)
     sub.add_parser("__container-init-check", help=argparse.SUPPRESS)
     hidden_names.append("__container-init-check")
+    sub.add_parser("__pi-engine", help=argparse.SUPPRESS)
+    hidden_names.append("__pi-engine")
     p = sub.add_parser("__container-cgroups", help=argparse.SUPPRESS)
     hidden_names.append("__container-cgroups")
     p.add_argument("uid", type=int)
@@ -5587,6 +5589,21 @@ def dispatch(args: argparse.Namespace) -> int:
         return command_container_init_check()
     if args.command == "__container-cgroups":
         return command_container_cgroups(args.uid, args.gid)
+    if args.command == "__pi-engine":
+        import importlib.util
+
+        package = pathlib.Path(__file__).resolve().parent.parent / "share" / "lubox" / "engine_jobs"
+        spec = importlib.util.spec_from_file_location(
+            "lubox_engine_jobs", package / "__init__.py",
+            submodule_search_locations=[str(package)],
+        )
+        if spec is None or spec.loader is None:
+            die("lubox: Pi engine helper is unavailable")
+
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module.main(Engine)
     if args.command == "__install-xdg-open":
         return command_install_xdg_open()
     if args.command == "__hostexec-server":

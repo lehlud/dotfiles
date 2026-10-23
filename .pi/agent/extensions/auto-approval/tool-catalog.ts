@@ -14,6 +14,7 @@ import { sandboxRequestSchema } from "../shared/contracts/action.ts";
 import { webTools } from "../web-research/index.ts";
 import { writingCheckTool } from "../public-writing/index.ts";
 import { credentialCommandTool } from "./credential-command.ts";
+import { containerTool } from "../shared/contracts/containers.ts";
 import { tunnelTool } from "../shared/contracts/remote.ts";
 import { gitTool } from "./git-command.ts";
 
@@ -33,6 +34,7 @@ export const factories = {
   credential_exec: (_cwd: string) => credentialCommandTool,
   git: (_cwd: string) => gitTool,
   remote_tunnel: (_cwd: string) => tunnelTool,
+  container_exec: (_cwd: string) => containerTool,
 };
 
 export type ToolName = keyof typeof factories;
@@ -58,7 +60,7 @@ export const strictParameters = Type.Union(
           description: "Why this exact action is needed now; explain side effects and scope.",
         }),
         sandbox: Type.Optional(sandboxRequestSchema),
-        ...(["bash", "powershell", "credential_exec"].includes(name)
+        ...(["bash", "powershell", "credential_exec", "container_exec"].includes(name)
           ? {
               network: Type.Optional(
                 Type.Boolean({

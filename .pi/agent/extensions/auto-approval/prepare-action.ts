@@ -18,6 +18,8 @@ import { sessionServices } from "../shared/session/services.ts";
 import { remoteSession } from "../shared/session/remote.ts";
 import { REMOTE_TOOLS, type RemotePrepared } from "../shared/contracts/remote.ts";
 import type { Workspace } from "./isolation.ts";
+import { containerFileReader } from "./container-reader.ts";
+import type { ContainerPrepared } from "../shared/contracts/containers.ts";
 import { assertDelegatedAction } from "../shared/contracts/subagents.ts";
 
 export async function prepareAction(
@@ -26,6 +28,7 @@ export async function prepareAction(
   session: ActionSession,
   protection: ProtectedPaths,
   stage: (name: string) => void,
+  signal?: AbortSignal,
 ) {
   const snapshot = actionSnapshot(raw) as Request;
   const validRequest: boolean = Check(strictParameters, snapshot);
@@ -95,45 +98,82 @@ export async function prepareAction(
       credentialPlan: undefined,
       sandboxPlan: remote.plan,
       remote,
+      container: undefined as ContainerPrepared | undefined,
       localGitWorkspace,
     };
   }
 
   if (
     remoteTarget &&
-    name === "credential_exec" &&
+    ["credential_exec", "container_exec"].includes(name) &&
     (request.sandbox?.projectFiles || request.sandbox?.paths)
   )
     throw new Error(
-      "Credential tools execute locally; remote project files cannot be exposed through local mount grants",
+      "Credential/container tools execute locally; remote project files cannot be exposed through local mount grants",
     );
 
   const credential = name === "credential_exec";
+  const containerJob = name === "container_exec";
 
-  if (!credential && request.sandbox?.projectFiles !== undefined)
-    throw new Error("projectFiles is available only to credential_exec");
+  if (!credential && !containerJob && request.sandbox?.projectFiles !== undefined)
+    throw new Error("projectFiles is available only to credential_exec/container_exec");
 
   stage("credential profile validation");
 
   const credentialPlan = credential ? await resolveCredentialPlan(request, config) : undefined;
   const activeProtectedPaths = [...protection.paths, ...credentialProtectedPaths(config)];
-  const privateTmp = credential || name === "git" ? undefined : await session.temporaryStorage();
+  const privateTmp =
+    credential || containerJob || name === "git" ? undefined : await session.temporaryStorage();
 
   stage("workspace validation");
 
   const mode = isWebTool(name)
     ? "web"
-    : credential && !request.sandbox?.projectFiles
+    : (credential || containerJob) && !request.sandbox?.projectFiles
       ? "credential"
       : "project";
   const workspace = await validateWorkspace(
     ctx.cwd,
     config.sandbox,
     activeProtectedPaths,
-    request.sandbox,
+    containerJob ? { ...request.sandbox, limits: undefined } : request.sandbox,
     privateTmp,
     mode,
   );
+
+  if (containerJob) {
+    if (config.sandbox.backend !== "bwrap")
+      throw new Error("Container jobs currently require the native Linux Lubox transport");
+
+    const route = sessionServices(ctx).containers;
+
+    if (!route)
+      throw new Error("Container tools are unavailable; restart Pi through ~/.local/bin/pi");
+
+    if (mode === "credential") {
+      workspace.path = ctx.cwd;
+      workspace.cwd = ctx.cwd;
+    }
+
+    stage("container job preparation");
+
+    const container = await route.prepare(
+      request,
+      workspace,
+      containerFileReader(workspace, config, signal),
+    );
+
+    return {
+      request,
+      config,
+      workspace,
+      credentialPlan: undefined,
+      sandboxPlan: container.plan,
+      remote: undefined as RemotePrepared | undefined,
+      container,
+      localGitWorkspace: undefined as Workspace | undefined,
+    };
+  }
 
   if (sessionServices(ctx).delegationMode === "review")
     workspace.readOnlyBindings = [
@@ -169,6 +209,7 @@ export async function prepareAction(
     credentialPlan,
     sandboxPlan,
     remote: undefined as RemotePrepared | undefined,
+    container: undefined as ContainerPrepared | undefined,
     localGitWorkspace: undefined as Workspace | undefined,
   };
 }
