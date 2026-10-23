@@ -9,6 +9,7 @@ import {
 } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { QuestionStore, QUESTION_ENTRY } from "../../conversations/questions/store.ts";
 import { QuestionEditor } from "../../conversations/questions/editor.ts";
+import { installQueueEditor } from "../../conversations/queue-input.ts";
 import { registerQuestions } from "../../conversations/questions/index.ts";
 import { registerOperatorInputs } from "../../conversations/operator-input.ts";
 import { sessionServices } from "../../shared/session/services.ts";
@@ -25,7 +26,7 @@ const input: QuestionInput = {
   ],
 };
 
-function fixture(mode = "tui") {
+function fixture(mode = "tui", queue = false) {
   initTheme("dark", false);
 
   const entries: any[] = [
@@ -99,7 +100,7 @@ function fixture(mode = "tui") {
     }
   };
 
-  registerQuestions(api);
+  registerQuestions(api, queue ? installQueueEditor : undefined);
   registerOperatorInputs(api);
   fire("session_start");
   sessionServices(ctx).broadcastOperatorInput = (text) => broadcast.push(text);
@@ -471,4 +472,39 @@ test("long option descriptions wrap with indentation and short terminals retain 
   expect(compact.join("\n")).toContain("Second choice");
   expect(compact.join("\n")).not.toContain("Change the scope");
   expect(compact.length).toBeLessThan(20);
+});
+
+test("question panels suspend Tab queuing and restore the normal queue composer and original draft", () => {
+  const state = fixture("tui", true);
+  let queued = 0;
+  const normal = state.factory();
+
+  state.editor().addToHistory("Previous submitted prompt");
+
+  state.editor().onAction("app.message.followUp", () => {
+    queued++;
+  });
+  state.editor().handleInput("\t");
+  expect(queued).toBe(1);
+
+  const [question] = state.client().ask([input]);
+
+  state.editor().onAction("app.message.followUp", () => {
+    queued++;
+  });
+  state.editor().handleInput("\t");
+  expect(queued).toBe(1);
+  state.client().withdraw([question.id]);
+  expect(state.factory()).toBe(normal);
+  expect(state.editor().getText()).toBe("An unfinished prompt draft");
+  state.editor().setText("");
+  state.editor().handleInput("\x1b[A");
+  expect(state.editor().getText()).toBe("Previous submitted prompt");
+  state.editor().onAction("app.message.followUp", () => {
+    queued++;
+  });
+  state.editor().handleInput("\t");
+  expect(queued).toBe(2);
+  state.fire("session_shutdown");
+  expect(state.factory()).toBeUndefined();
 });

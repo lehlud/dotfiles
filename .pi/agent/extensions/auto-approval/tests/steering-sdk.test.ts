@@ -1,3 +1,5 @@
+import { KeybindingsManager } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/keybindings.js";
+import { getEditorTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -12,6 +14,10 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { installQueueEditor } from "../../conversations/queue-input.ts";
+import { operatorPromptRecords } from "../../shared/review/prompts.ts";
+import { CustomEditor, initTheme } from "@earendil-works/pi-coding-agent";
+import { InteractiveMode } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js";
 import { registerSteering, STEERING_TYPE } from "../../conversations/steering.ts";
 import { textContent } from "../../shared/review/protocol.ts";
 import { registerContinue } from "../../conversations/continue.ts";
@@ -292,3 +298,77 @@ test("real Pi /continue recovers a provider-interrupted task without a synthetic
     await rm(directory, { recursive: true, force: true });
   }
 }, 10000);
+
+test("Tab reaches Pi's actual follow-up queue and delivers an ordinary user task after the active reply", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-tab-queue-sdk-"));
+  const state = await fixture(directory);
+  let run: Promise<void> | undefined;
+
+  try {
+    await state.session.bindExtensions({
+      mode: "tui",
+      uiContext: { setStatus() {}, notify() {} } as any,
+    });
+    initTheme("dark", false);
+
+    let editor: CustomEditor;
+    let factory: any;
+    const tui: any = { terminal: { rows: 30, columns: 80 }, requestRender() {} };
+    const ctx: any = {
+      mode: "tui",
+      isIdle: () => !state.session.isStreaming,
+      ui: {
+        getEditorComponent: () => factory,
+        setEditorComponent: (value: any) => {
+          factory = value;
+
+          if (value) editor = value(tui, getEditorTheme(), new KeybindingsManager());
+        },
+      },
+    };
+    const restore = installQueueEditor(ctx);
+    const view = Object.assign(Object.create(InteractiveMode.prototype), {
+      runtimeHost: { session: state.session },
+      editor: editor!,
+      ui: tui,
+      updatePendingMessagesDisplay() {},
+    });
+    let queued: Promise<void> | undefined;
+
+    editor!.onAction("app.message.followUp", () => {
+      queued = view.handleFollowUp();
+    });
+    run = state.session.prompt("Finish the current task before taking the next one.");
+
+    while (!state.contexts.length) await new Promise((resolve) => setTimeout(resolve, 1));
+
+    editor!.setText("Then perform the follow-up task.");
+    editor!.handleInput("\t");
+    await queued;
+    expect(state.session.getFollowUpMessages()).toEqual(["Then perform the follow-up task."]);
+    expect(state.session.getSteeringMessages()).toEqual([]);
+    expect(editor!.getText()).toBe("");
+    expect(state.contexts).toHaveLength(1);
+    state.release();
+    await run;
+    expect(state.contexts.length).toBeGreaterThan(1);
+    expect(JSON.stringify(state.contexts[0])).not.toContain("Then perform the follow-up task.");
+    expect(JSON.stringify(state.contexts[1])).toContain("Then perform the follow-up task.");
+    expect(state.contexts[1].some((message: any) => message.customType === STEERING_TYPE)).toBe(
+      false,
+    );
+
+    const records = operatorPromptRecords(state.session.sessionManager.getBranch());
+
+    expect(records.find((record) => record.text === "Then perform the follow-up task.")?.kind).toBe(
+      "task",
+    );
+    restore();
+  } finally {
+    state.release();
+    await state.session.abort();
+    await run?.catch(() => {});
+    state.session.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

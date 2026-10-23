@@ -4,6 +4,20 @@ For module ownership, lifecycle and development checks, see the [architecture gu
 
 This extension owns conversation control: `/continue`, `/goal`, `/side`, asynchronous clarification questions and steering. It has no executor and cannot approve actions. Action review uses a session service supplied by the goal controller; the actual conversation history remains the source of user instructions.
 
+## Queueing a prompt
+
+While the main agent is running, **Tab** queues a nonempty draft as a native follow-up. It runs
+after the current reply finishes; **Enter** still supplies steering at the next model boundary.
+Pi's existing pending-message display, prompt history, pasted-text expansion and dequeue
+controls remain in use. The existing follow-up shortcut also continues to work.
+
+Tab retains ordinary completion when idle or when a completion menu is already open.
+**Shift+Tab** invokes completion while busy. Pending clarification questions keep their own Tab
+controls; answering or dismissing them restores the normal draft and its history. Session changes
+and shutdown restore the preceding editor. RPC and print modes have no new keyboard handling.
+Queued text is an ordinary operator prompt, with the same independent action approval as any
+other request. Slash commands retain Pi's native command-dispatch semantics.
+
 ## Clarification questions during a run
 
 The model uses `ask_user` with one to three questions, each containing a short `header`, a `question` and optional `options` (`label` and optional `description`). It returns question IDs immediately; the model keeps working on independent tasks. Models should ask only necessary questions, avoid secrets and withdraw questions that become irrelevant. They must not treat silence or dismissal as an answer or permission, and should not poll for responses.

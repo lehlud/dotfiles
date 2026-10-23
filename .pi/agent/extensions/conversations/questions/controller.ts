@@ -14,8 +14,12 @@ export class QuestionController {
   private editor?: QuestionEditor;
   private previousEditor?: EditorFactory;
   private replaced = false;
+  private restoreComposer?: () => void;
 
-  constructor(private pi: ExtensionAPI) {}
+  constructor(
+    private pi: ExtensionAPI,
+    private installComposer?: (ctx: ExtensionContext) => () => void,
+  ) {}
 
   bind(ctx: ExtensionContext) {
     this.close();
@@ -29,6 +33,7 @@ export class QuestionController {
         ),
     );
     sessionServices(ctx).questions = (owner) => this.client(owner);
+    this.restoreComposer = this.installComposer?.(ctx);
     this.update();
   }
 
@@ -42,6 +47,8 @@ export class QuestionController {
       if (this.replaced) this.ctx.ui.setEditorComponent(this.previousEditor);
     }
 
+    this.restoreComposer?.();
+    this.restoreComposer = undefined;
     this.replaced = false;
     this.editor = undefined;
     this.previousEditor = undefined;
