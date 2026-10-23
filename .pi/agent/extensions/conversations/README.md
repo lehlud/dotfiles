@@ -1,167 +1,162 @@
 # Pi Conversations
 
-For module ownership, lifecycle and development checks, see the [architecture guide](../README.md).
-
-This extension owns conversation control: `/continue`, `/goal`, `/side`, asynchronous clarification questions and steering. It has no executor and cannot approve actions. Action review uses a session service supplied by the goal controller; the actual conversation history remains the source of user instructions.
+This extension owns continuation, goals, steering, questions, side chats and progress
+tracking. It cannot execute or approve actions. Actual user history remains authoritative;
+review context is supplied through the session service. See the [architecture guide](../README.md).
 
 ## Queueing a prompt
 
-While the main agent is running, **Tab** queues a nonempty draft as a native follow-up. It runs
-after the current reply finishes; **Enter** still supplies steering at the next model boundary.
-Pi's existing pending-message display, prompt history, pasted-text expansion and dequeue
-controls remain in use. The existing follow-up shortcut also continues to work.
-
-Tab retains ordinary completion when idle or when a completion menu is already open.
-**Shift+Tab** invokes completion while busy. Pending clarification questions keep their own Tab
-controls; answering or dismissing them restores the normal draft and its history. Session changes
-and shutdown restore the preceding editor. RPC and print modes have no new keyboard handling.
-Queued text is an ordinary operator prompt, with the same independent action approval as any
-other request. Slash commands retain Pi's native command-dispatch semantics.
+While busy, **Tab** queues a nonempty draft as a native follow-up after the current reply;
+**Enter** steers at the next model boundary. Existing pending-message display, history,
+pasted-text expansion, dequeue and follow-up shortcuts remain. Tab completes when idle or
+with an open completion menu; **Shift+Tab** completes while busy. Slash commands keep native
+dispatch. Queued input is ordinary operator input, not steering or approval bypass.
+Questions keep their own Tab controls; finishing them restores the normal draft/history.
+Session changes/shutdown restore the preceding editor. RPC/print keyboard handling is unchanged.
 
 ## Clarification questions during a run
 
-The model uses `ask_user` with one to three questions, each containing a short `header`, a `question` and optional `options` (`label` and optional `description`). It returns question IDs immediately; the model keeps working on independent tasks. Models should ask only necessary questions, avoid secrets and withdraw questions that become irrelevant. They must not treat silence or dismissal as an answer or permission, and should not poll for responses.
+`ask_user` accepts 1–3 questions: short `header`, `question`, optional `options` with
+`label`/optional `description`. IDs return immediately; continue independent work. Ask
+necessary decisions only, never secrets; withdraw obsolete questions. Silence/dismissal
+is not permission or an answer. Do not poll.
 
-While any question is pending, a compact question editor replaces the normal prompt field. Use arrow keys and Enter to select a choice, or Tab to write a free-text answer. Ctrl+X discards the current question; the menu also offers discard-all when several questions are open. Ctrl+O expands activity output containing the full question and choice descriptions. Escape still interrupts work. New ordinary prompts are blocked until all pending questions have been answered, discarded or withdrawn. The previous prompt draft and custom editor are restored afterward; an existing draft is never submitted as a question answer.
+Pending questions replace the prompt editor until answered, discarded or withdrawn.
+Arrows/Enter select; Tab enters free text; Ctrl+X discards one, with discard-all for several.
+Ctrl+O expands full descriptions; Escape still interrupts. Existing drafts are preserved,
+never submitted as answers. Blank lines separate questions/options/guidance; accent marks
+selection, muted text marks descriptions. Narrow terminals show compact selected details.
 
-Question panels separate the prompt, choices and keyboard guidance with blank lines. The active
-answer uses the current theme’s accent; descriptions and guidance use muted colors. Descriptions
-wrap underneath their labels, with a compact selected-detail view on short terminals.
+`user_questions` lists owned questions or withdraws `ids` with `operation: withdraw`.
+Identical pending questions reuse IDs. Limits: 12 pending, 128 retained; session journaling
+restores state on reload/branch selection and rejects stale-session callbacks.
+Answers become genuine operator steering, quoting the question; answer prose sets language.
+Dismissal is a notification, not an invented user answer. Neither tool needs action review
+or grants external access. Multiplex shares the panel and broadcasts answers/dismissals to
+all members regardless of view; runtime-bound requesters cannot withdraw others' questions.
 
-`user_questions` lists the model's own questions or withdraws pending IDs with `operation: "withdraw"` and `ids: [...]`. Repeating the same pending question reuses its ID. Up to twelve questions can be pending; the in-memory list retains the latest 128 records. State is journaled in the session and restored on reload or branch selection. Old clients and editor callbacks cannot act on another session.
-
-Answers are delivered as real operator steering, with the agent's question quoted as context. The answer's own prose remains the language reference. Discarding sends a conversation notification rather than inventing an operator answer. Neither tool executes actions or grants sandbox access, and neither goes through action approval. All subsequent external operations still require their own review.
-
-Multiplex members share the same question panel. Requester names come from their session bindings; a peer cannot withdraw another member's questions. Answers reach every member as operator input, even in an individual agent view. Dismissal notifications reach every member without becoming user authorization.
-
-For RPC or command-driven use: `/questions` lists open questions, `/questions answer <id> <text>` answers one, and `/questions discard <id|all>` dismisses them. The interactive editor is available only in TUI mode.
+RPC/command interface: `/questions`, `/questions answer <id> <text>`,
+`/questions discard <id|all>`. The editor itself requires TUI mode.
 
 ## Resume interrupted work
 
-`/continue` resumes the current task from its existing conversation context, including the latest
-corrections and constraints. Use it after an interrupted run or temporary provider outage. It takes
-no arguments; send changes to the task as ordinary messages. A continuing outage still needs to be
-resolved; the command does not change providers, authentication, cooldowns or action permissions.
+`/continue` takes no arguments and resumes saved work with current corrections/constraints.
+It sends a hidden instruction, never a synthetic user prompt or raw slash command. Existing
+operator intent/language and action concerns remain; the local progress guard resets.
+Paused goals use the `/goal resume` controller and independent checks. It changes no provider,
+login or action permissions; explicit resume may trigger the bounded early availability probe
+in [Provider Recovery](../provider-recovery/README.md).
 
-A paused `/goal` resumes through the same controller and independent completion checks as
-`/goal resume`. Ordinary tasks receive a hidden continuation instruction, with no synthetic user
-prompt and no raw slash command in model context. The original operator prompts remain authoritative,
-including their language and prior action denials. The command resets the local progress guard.
-
-An active Multiplex team receives the continuation in every member's session, even when viewing one
-member. Existing ownership and action review remain in force. Busy members, pending input and
-concurrent continuation requests cannot start duplicate runs. If a provider failure stopped the
-team, enable `/multiplex <n>` again before continuing as a team; `/continue` does not recreate peers.
-An empty conversation needs a task before it can continue.
+Active Multiplex receives continuation in every session, including in individual views.
+Busy members/pending input/concurrent requests cannot start duplicate runs. A failed team
+must be recreated with `/multiplex <n>`; continuation does not recreate peers. Empty history
+needs a task first.
 
 ## Continue until the goal is verified
 
-`/goal <objective>` sets or replaces the session objective, including while the model or its tools are active. It updates the footer immediately after validation and steers the existing run at its next safe boundary; it does not abort work or start a second run. Superseded completion checks cannot settle the replacement goal. When the model finishes its response, the configured reviewer checks completion using the answer and recorded results of approved actions. A claim by the working model alone is insufficient for code changes or runtime checks.
+| Command                   | Effect                                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `/goal <objective>`       | Set/replace even during work; update footer and steer at the next safe boundary, without aborting or duplicating runs    |
+| `/goal` or `/goal status` | Objective, state, reason and review count                                                                                |
+| `/goal resume`            | Resume a paused goal, including during ongoing work                                                                      |
+| `/goal stop`              | Operator cancellation, never completion; interrupts remain available                                                     |
+| `/goal drop`              | Remove target/verification/automatic goal continuation without stopping model, team or children; absent goal is harmless |
 
-The goal and its current state appear in the bottom status bar, including during completion review and while paused. Team size, when present, appears once before the goal; approval status follows it only during action review. Long or multiline goals are shortened to one display line. Review counts and the full objective remain available through `/goal status`; they are omitted from the compact footer. Confirmed completion removes the tracked goal, its footer and current context instruction. Its review evidence remains in history. Exit and session replacement clear the status; only unfinished or explicitly stopped goals can be restored from the selected session.
+After a response, the configured reviewer checks the whole goal and applicable later
+constraints against answers and recorded approved results. Code/runtime completion needs
+concrete evidence, not working-model claims. An actionable negative verdict feeds missing
+work back for continuation. Positive review removes the goal/footer/current instruction;
+historical evidence remains. A denial never tries another reviewer; technical unavailability
+uses the configured model's recovery only. External actions retain separate approval.
 
-When work remains and is still actionable, the working model receives the reviewer's reason and continues automatically. An external blocker pauses the goal instead. Only a positive review marks the goal complete. A negative goal verdict does not try another reviewer; fallbacks apply only to technical unavailability. Every external action still requires its own approval and sandbox execution.
+Completion requires boolean `blocked`: false for actionable work; true only when no useful
+authorized work remains without named external input/change. True pauses as `Goal waiting`
+once, without another work/review loop; resume after resolving it. Missing/contradictory
+metadata pauses verification. This flag belongs only to completion, not action/compression
+verdicts. Neither a blocker nor a goal verdict clears an action denial.
 
-- `/goal` or `/goal status` shows the objective, state, reason and review count.
-- `/goal <objective>` replaces the tracked target without requiring a prior stop.
-- `/goal resume` continues a paused goal, including during ongoing work.
-- `/goal stop` is an explicit operator cancellation and never claims completion. Escape, Ctrl+C and exit remain available.
-- `/goal drop` removes the tracked goal without interrupting ongoing model, team or
-  subagent work. It cancels pending goal verification and disables automatic
-  goal-driven continuation. The removal survives reload; `/goal resume` cannot
-  resurrect it. Dropping an absent goal is harmless. Previous instructions and
-  reviews remain historical evidence, while obsolete runtime goal controls are
-  removed from the active main, peer and subagent contexts on their next request.
+One current goal instruction appears per request; obsolete runtime copies are filtered,
+not deleted from saved history. Resume includes objective and latest valid review feedback,
+not UI commands/pause hints. Superseded checks cannot settle replacements. Dropping persists
+and cannot be undone by resume; main/peer/child instructions update next request. Review
+failure, invalid verdict or interrupted work pauses. Restart/reload/branch selection restores
+unfinished/stopped goals paused, never auto-running; session shutdown deletes private `/tmp`.
 
-On resume, the model receives the saved objective and latest valid independent completion feedback. Pause reasons and interface hints such as `/goal resume` remain operator status information. Each model request during an active goal contains exactly one current goal control message; older control messages are removed only from that request context. The saved transcript, actual user text and other extensions' messages remain intact. This also applies to existing sessions.
-
-Review failures, invalid verdicts and interrupted model runs pause the goal. Restart, reload or session replacement restore a saved incomplete goal as paused. It resumes only with `/goal resume`; session shutdown has deleted its private `/tmp`. Session-tree navigation adopts the selected branch's goal state without restarting it automatically.
-
-Completion reviews also require a boolean `blocked` flag. An incomplete but actionable goal
-continues with `blocked: false`. If no useful authorized work remains without operator input
-or an external change, the reviewer returns `deny` with `blocked: true` and names the enabling
-input. The controller then records the goal as paused and displays `Goal waiting` once,
-without scheduling another work or review turn. Resume with `/goal resume` or `/continue`
-after resolving the dependency. This never completes the goal or lifts an action denial.
-Action approval and prompt compression reject this extra flag; it belongs only to completion
-reviews. Missing or contradictory blocker metadata pauses verification instead of restarting it.
-
-The session log records the objective, review attempts, deciding model, request ID, evidence fingerprint and usage. The original `/goal` instruction remains an operator instruction for action reviewers even when subsequent model turns have no new user prompt. Later user corrections still apply. Goals have no fixed turn count or total runtime limit; model costs can accumulate until verification or interruption.
+The compact footer shows team size once, shortened single-line goal/state and approval only
+during review; full text/counts remain in status. Shutdown clears it. Audits retain objective,
+reviewer, request ID, fingerprint, attempts and usage. Operator goals remain authorization
+through automatic continuation, subject to later corrections. No fixed turn/runtime cap
+limits goal costs; interruption remains available.
 
 ## Agent-assigned goals
 
-Working models can call `set_goal({goal: "..."})` directly. This changes session metadata only and
-requires no action approval. The target appears in the same footer and uses the same independent
-completion reviewer. Agents need an existing real operator task; a self-assigned target grants no
-additional authority. It is stored with `source: "agent"`, excluded from operator-prompt history and
-`operatorGoal` authorization, and labeled as self-assigned in model and completion-review context.
-Legacy goals retain operator provenance.
+`set_goal({goal: "..."})` updates metadata without action review, using the same footer and
+completion checks. An existing real operator task is required. `source: agent` labels the
+self-assigned target as DATA, excludes it from genuine-user history/`operatorGoal`, and grants
+no authority. Legacy goals retain operator provenance.
 
-An agent cannot replace an active operator goal or switch an unfinished agent goal to an easier
-target. Repeating the same agent target is idempotent while running and resumes it when paused,
-preserving its ID, check count and reviewer feedback. Only the operator can replace an unfinished
-target, stop it, or impose new scope. Every external operation still needs `approved_action`.
-
-Multiplex members share this session target. Any member can use the internal tool through the
-parent controller; no peer gains authority over another. The shared completion snapshot waits for
-all peer work and unread deliveries, including for agent-assigned goals. Interrupts and session
-changes invalidate pending setters; a late tool cannot recreate a cancelled goal.
+Agents cannot replace an active operator goal or simplify an unfinished agent target.
+Repeating the same target is idempotent when running, resumes when paused, and retains ID,
+checks and feedback. Only operators replace unfinished targets, stop them or impose scope.
+Multiplex shares the target through the parent controller without peer privilege. Completion
+waits for peer work/unread deliveries. Interrupt/session changes invalidate late setters.
 
 ## Corrections during ongoing work
 
-Operator input mode is captured from Pi's actual input event and bound to the accepted user entry
-by its branch ID and content hash. It is not inferred from a `steering:` prefix, model summaries,
-tool output or peer letters. Multiplex forwards the same operator mode to every peer, including
-queued input; a peer's busy state cannot reclassify a new operator task as a correction.
+Actual Pi input events bind delivery mode to branch entry ID/content hash, never quoted
+`steering:` labels, summaries, outputs or peer letters. Multiplex preserves the mode even
+across busy/queued delivery. Legacy inputs remain unclassified.
 
-Action reviews receive `userPromptInfo.inputKind` and `taskContext`. A recorded steering frame keeps
-the original task and every later operator correction in chronological order, even beyond the
-ordinary recent-prompt window. Pinning the task must not drop an older restriction and resurrect
-broader permission. Large retained prompts use the existing compression cache and authoritative
-original-lookup tools; capacity failures still fail closed rather than silently omitting constraints.
-An active `/goal` remains a separate explicit objective.
+Reviewers receive `userPromptInfo.inputKind`, tri-state `isSteering` and `taskContext`.
+The retained task plus every later instruction may exceed the recent-prompt window; compression
+keeps original lookup available and capacity failures fail closed. An active operator goal
+remains explicit. Delivery mode alone sets no priority: ordinary/steering input can add,
+replace, restrict or cancel work. Consider all applicable instructions; latest actual prose
+sets verdict language.
 
-Delivery mode does not determine semantic priority. Steering can add details, replace the task,
-withdraw permission or stop work; later explicit restrictions and cancellations override earlier
-scope. Reviewers consider the original task and applicable corrections together. The latest actual
-prompt remains the language reference. Saved metadata survives continuation, reload and branch
-selection. Older input without reliable metadata stays unclassified; no legacy role is invented.
-
-A user message queued as steering supplements the ongoing task. Subsequent model requests remind the model to apply the correction and continue the remaining main work and validation. For ordinary tasks, the original request is recalled as quoted text of up to 4,000 characters; longer requests are explicitly labeled as excerpts. An active `/goal` remains the authoritative objective.
-
-Actual user messages and their saved history remain unchanged. The reminder appears once in model context, is not stored as an additional user message and grants no tool permission. It applies only to the current task and resets on a new task or session. Explicit cancellation or task replacement remains possible. Follow-up messages are not automatically treated as steering.
-
-Ordinary tasks receive this reminder without additional model turns or completion reviews. For `/goal`, the independent reviewer still checks the entire task, including subsequent corrections. Completing an intermediate correction is insufficient while main work remains.
+Steering reminds the model to apply corrections and continue remaining work/validation.
+Ordinary-task reminders quote up to 4,000 characters of the request, labeling excerpts;
+active goals retain their objective. The transient reminder appears once, changes no user
+history/permissions, resets on a new task/session and adds no model turns or completion
+checks. Follow-ups are not automatically steering. Goal review still covers the whole task,
+not merely the intermediate correction.
 
 ## Side conversations with `/side`
 
-`/side` opens a temporary conversation about the main conversation's contents. `/side <question>` immediately starts the first question. It works while the main model is busy without pausing it or switching sessions. The active goal, approved commands and private session `/tmp` remain in place. The window shows whether the main conversation is working or ready.
+`/side [question]` opens a temporary TUI chat while main work continues. Each question copies
+fresh text from current main context: users, replies, tool calls/results and summaries.
+Separate in-memory side history neither assigns main work nor changes goals, approvals or
+private `/tmp`. Model/thinking are captured on open; no files, shell, web or mutations are
+available. The window shows main working/ready state.
 
-Before each side question, a fresh text snapshot is copied from the main conversation's current compacted context. It includes user and model text, tool calls and outputs, and summaries. Follow-up questions can therefore see work completed since the side chat opened. The side chat has its own in-memory history; its questions and answers are not written to the main history and grant the main model no additional assignments.
+Enter sends; PgUp/PgDn scroll. Escape cancels a running side response, otherwise closes;
+Ctrl+C or `/back` closes immediately. `/new` clears side history before the next snapshot.
+Close/reload/session replacement discards it; nested `/side` is rejected.
 
-The side chat uses the model and thinking setting active when it opens. It has no file, shell or web tools and cannot make changes. It can explain existing results and answer questions about them. New work belongs in the main conversation.
-
-- Enter sends a side question; subsequent questions remain in the same side chat.
-- During a response, Escape cancels only the side request. Otherwise Escape closes the window. Ctrl+C or `/back` closes it immediately.
-- PgUp/PgDn scroll through side history.
-- `/new` inside the window clears only side history; the next question copies fresh main context.
-
-Closing, session replacement or reload ends the side chat. It is not saved as a session file. Nested `/side` is rejected. This feature requires the interactive terminal interface.
-
-The snapshot contains at most 40 complete text items and 24,000 UTF-8 bytes, or less for small model windows. Original task context and recent items are preferred; the window counts omitted items. Images and hidden main-model reasoning are not copied. A side question allows up to 8,000 characters; a response allows at most 4,096 tokens and three minutes. When conversation capacity is exhausted, Pi requests a fresh side history. The complete main history remains intact. Displayed side tokens and costs use provider-reported values and remain separate from main usage.
-
-The behavior follows the [official Codex description of `/side`](https://learn.chatgpt.com/docs/developer-commands#start-a-side-chat-with-side).
-
-## Loading and dependencies
-
-The Pi launcher loads this extension independently of Auto-Approval. Startup links `node_modules` to Auto-Approval's pinned SDK dependencies. Regression tests currently run in the shared `../auto-approval` integration package: `bun run check` and `bun run test`.
+Limits: 40 complete text items/24,000 UTF-8 snapshot bytes (less for small windows), preferring
+original task/recent text and counting omissions; no images or hidden reasoning. Questions:
+8,000 characters. Responses: 4,096 tokens/three minutes. Exhaustion requests fresh side
+history without altering main history; provider-reported side usage is counted separately.
+See the [Codex interface reference](https://learn.chatgpt.com/docs/developer-commands#start-a-side-chat-with-side).
 
 ## Repeated inspections without new evidence
 
-A local progress guard observes completed approved actions separately from action approval. It does not ask the approval reviewer to assess productivity. Four consecutive inspection results containing only already observed evidence add one transient reminder to the working model's context. At eight repetitions the runtime aborts the run and pauses a running goal with completion explicitly unconfirmed. Automatic goal continuations do not reset that budget. A peer reaching the limit stops the whole Multiplex team, closes action leases and cancels its other members.
+A local guard, separate from approval, warns after four unchanged inspections and aborts at
+eight, pausing goals with completion unconfirmed. Automatic goal continuation does not reset
+it; a spinning peer stops the team and invalidates leases. Mailbox chatter is not evidence.
 
-The guard recognizes read/search/list/web tools and conservative batches of ordinary shell inspection commands, such as Git status/diff/log, checksums, file excerpts and tool lookup. For shell batches it tracks hashes of output lines, catching reordered commands and subsets of earlier output. For other inspection tools it retains argument identity and the complete output hash, so new source targets and reordered file contents are fresh evidence. Approval display text, durations and reviewer prose are excluded; webpage-only tools retain their complete page text. No shell command is executed, rewritten or granted permission by this detector.
+Read/search/list/web and conservative shell inspection batches are tracked. Shell output-line
+hashes catch reorderings/subsets; other tools use argument identity plus complete output hash,
+so new targets/reordered source are fresh. Approval prose/timing are excluded; page-only output
+is retained. This detector executes/rewrites/authorizes nothing.
 
-New evidence clears the repetition count. Writes, edits, builds and other actions outside the conservative inspection set reset the cache; they are not subject to a fixed work budget. Actual operator input, explicit `/goal resume` and session changes also reset it. Mailbox chatter neither counts as evidence nor requests approval. Warnings and halts are recorded with counts and reasons, while output hashes remain in bounded session-local memory (at most 4,096 entries and 64 KiB processed per observation).
+New evidence, non-inspection work (edits/builds), actual user input, explicit resume and session
+changes reset it. Counts/reasons are logged; hashes stay bounded in memory (4,096 entries,
+64 KiB/observation). Complex programs/large outputs are excluded. This heuristic can pause
+legitimate monitoring: prefer bounded foreground waits/new guidance. It creates no denial,
+completion, fallback model or sandbox exception.
 
-This is a bounded heuristic for unchanged inspection loops, not a proof of semantic progress or a universal loop detector. Complex shell programs and large results are excluded. Legitimate repeated monitoring can trigger a pause; use a bounded foreground wait or provide new operator guidance rather than repeatedly re-establishing the same baseline. The pause creates no denial, completion claim, fallback model or exception to sandbox/action approval.
+## Loading and dependencies
+
+The launcher loads Conversations separately; startup links the shared pinned SDK.
+Run `bun run check` and `bun run test` in `../auto-approval`.

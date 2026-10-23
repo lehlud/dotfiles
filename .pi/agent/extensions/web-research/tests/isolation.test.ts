@@ -210,7 +210,14 @@ nativeTest(
       ),
     ).rejects.toThrow("uses no project files");
     await expect(
-      validateWorkspace(project, config, [], { limits: { memoryMiB: 64 } }, privateTmp, "web"),
-    ).rejects.toThrow("cgroup limits");
+      validateWorkspace(
+        project,
+        { ...config, cgroupRoot: join(root, "missing-cgroup") },
+        [],
+        { limits: { memoryMiB: 64 } },
+        privateTmp,
+        "web",
+      ),
+    ).rejects.toThrow("delegated cgroup v2 subtree");
   },
 );

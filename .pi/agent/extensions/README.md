@@ -1,114 +1,85 @@
 # Pi extensions
 
-Each feature has one SDK entry point (`index.ts`). The launcher loads these entry points explicitly;
-`shared/` is a library, not an extension. Feature controllers own session state. Pure contracts and
-review infrastructure never import a feature entry point.
+Each feature has one launcher-loaded `index.ts` and owns its session state. `shared/`
+is a library, not an extension; its contracts/infrastructure never import feature code.
 
-| Module             | Responsibility                                                                                       | Main entry                    |
-| ------------------ | ---------------------------------------------------------------------------------------------------- | ----------------------------- |
-| Auto-Approval      | Authorize and execute one exact operation under its reviewed execution boundary                      | `auto-approval/index.ts`      |
-| Conversations      | Goals, completion checks, steering, clarification questions, side conversations, progress detection  | `conversations/index.ts`      |
-| Multiplex          | Equal peer sessions, coordination, authenticated mailboxes, shared activity                          | `multiplex/index.ts`          |
-| Subagents          | Bounded delegated sessions, parent-only mailboxes, read-only reviews, kill and explicit resurrection | `subagents/index.ts`          |
-| Context management | Request budgets, original-history retrieval, working notes, append-only eviction and rotation        | `context-management/index.ts` |
-| Fast mode          | Session speed preference for working and review models on OpenAI/Codex and OpenRouter                | `fast-mode/index.ts`          |
-| Model selection    | Persistent model/thinking pairs, single reviewer selection and live request-boundary changes         | `model-selection/index.ts`    |
-| Provider recovery  | Attach bounded transport recovery to the working model                                               | `provider-recovery/index.ts`  |
-| Code quality       | Standing multilingual code readability rules on every working-model request                          | `code-quality/index.ts`       |
-| Public writing     | Frozen editorial policy and an independently reviewed prose receipt                                  | `public-writing/index.ts`     |
-| Web research       | DDGS queries and public URL text extraction through the isolated worker                              | `web-research/index.ts`       |
-| Remote workspaces  | Operator selection, SSH transport, remote tools and bounded forwarding                               | `remote/index.ts`             |
-| Container jobs     | Privately bridged, independently reviewed Docker/Podman project workloads                            | `container-tools/index.ts`    |
-| Shared library     | Settings, immutable action contracts, provider transport, review evidence, session services          | `shared/`                     |
-
-Remote workspaces are owned by [`remote/index.ts`](remote/README.md). The operator selects and
-confirms the target; Auto-Approval reviews each exact remote action before SSH dispatch.
+| Module                                             | Responsibility                                                       |
+| -------------------------------------------------- | -------------------------------------------------------------------- |
+| [Auto-Approval](auto-approval/README.md)           | Exact-action review, audit and isolated execution                    |
+| [Conversations](conversations/README.md)           | Goals, continuation, steering, questions, side chats, progress guard |
+| [Multiplex](multiplex/README.md)                   | Equal peers, coordination, authenticated mailboxes, shared feed      |
+| [Subagents](subagents/README.md)                   | Bounded delegates, parent mailbox, review mode, kill/resurrection    |
+| [Context management](context-management/README.md) | Budgets, history, notes, eviction and rotation                       |
+| [Fast mode](fast-mode/README.md)                   | Session speed preference for working/review requests                 |
+| [Model selection](model-selection/README.md)       | Persistent model/thinking pairs and live selections                  |
+| [Provider recovery](provider-recovery/README.md)   | Bounded retries and availability tracking                            |
+| [Code quality](code-quality/README.md)             | Standing multilingual readability instruction                        |
+| [Public writing](public-writing/README.md)         | Frozen editorial rules and explicit draft checks                     |
+| [Web research](web-research/README.md)             | DDGS and public-page text extraction                                 |
+| [Remote](remote/README.md)                         | Operator-selected SSH workspace and bounded forwarding               |
+| [Container tools](container-tools/README.md)       | Reviewed Docker/Podman workloads through a private bridge            |
+| `shared/`                                          | Settings, contracts, provider/review transport and session services  |
 
 ## Boundaries
 
-- `shared/` imports only other shared modules and pinned third-party libraries. It has no feature
-  dependencies, action executor or default action-approval policy.
-- Conversations uses shared settings and the verdict client for completion checks. It supplies its
-  own completion policy; it cannot authorize actions. Side conversations also consume the public
-  writing rule data, without registering the public writing extension.
-- Multiplex's `peer.ts` is the explicit composition root for child sessions. It attaches Auto-Approval,
-  public writing, code quality, progress detection and steering to each child. Other Multiplex modules use shared
-  contracts, not approval internals.
-- Subagents has a separate composition root in `subagents/child.ts`. Each delegated
-  session has its own action gate, and Multiplex includes this feature in its members.
-  Shared child-session transport, provider setup, names and interrupt observation serve both
-  features without a reverse dependency from `shared/` into either feature.
-  The shared cache-affinity hook passes compatible OpenAI cache hints across
-  family sessions without sharing transport identity or changing retention.
-  Subagent presentation collapses reports and hides routine successful actions;
-  the append-only activity log retains bounded results for operator inspection.
-  `shared/presentation/text-result.ts` supplies screen-line-bounded, expandable
-  output for memory tools and tools without a native result renderer.
-- Context management owns the active conversation projection and session-memory
-  tools. Main, Multiplex and delegated sessions get separate instances. Original
-  user evidence and action receipts remain in the append-only log; the extension
-  cannot authorize actions. Native provider features are route-scoped and opt-in.
-- Fast mode owns its operator toggle and status; shared request hooks apply it to the working model, peers, subagents and side conversations. The review client applies the same preference to approval, completion, editorial and compression requests. Reviewer policy, model selection and sandbox access remain independent.
-- Model selection owns operator preferences and the footer. Native working-model commands persist
-  one model/thinking pair; `/reviewer` persists one reviewer pair outside the security configuration.
-  Shared session bindings snapshot reviewer choices at turn boundaries and pass parent selections
-  to peers without sharing write authority. An active review retains its own configuration.
-- Code quality has no feature dependencies, tools or reviewer. Its transient context instruction
-  reaches every working-model request without changing the saved transcript or authorization.
-- Auto-Approval consumes public writing and web tool definitions. It owns action policy, preflight,
-  verdict persistence and isolated execution. Neither a provider retry nor a completion verdict can
-  bypass this action pipeline.
-- The isolated `runner.ts` imports only tool definitions and their sandbox-side implementations.
-  Host credential resolution, host settings loading and action review are excluded from its graph.
+- Feature controllers own lifecycle. Completion reviews cannot authorize actions;
+  context projections, metadata and presentation cannot create authorization.
+- `multiplex/peer.ts` and `subagents/child.ts` are explicit composition roots. Each
+  child gets its own gate, policies and session storage; shared child transport,
+  provider setup, names and cancellation serve both without reverse imports.
+- Model selection snapshots reviewers at turn boundaries. Fast-mode hooks apply to
+  working, peer, child, side and review requests without changing policy or grants.
+- Context management owns separate projections per actor; original evidence remains
+  append-only. Code-quality instructions are transient and change no saved history.
+- Auto-Approval consumes web/writing tool definitions and owns action authorization.
+  The sandbox runner imports only tool definitions/implementations, never host
+  credential resolution, settings loading or review code.
+- Shared presentation bounds expandable output; subagent presentation hides routine
+  successes while retaining activity records and confirmed diffs. Cache-affinity hints
+  never share transport identity or alter retention.
 
-`auto-approval/tests/architecture.test.ts` enforces these import boundaries, rejects runtime cycles,
-and checks native executor fingerprint and Docker build coverage. Type-only contract references
-are allowed. The shared test harness remains under `auto-approval/tests/` so SDK versions, native
-fixtures and Bun module mocks have one pinned dependency installation.
+`auto-approval/tests/architecture.test.ts` checks imports, runtime cycles, executor
+fingerprints and Docker build coverage. Type-only contract references are allowed.
+The shared test harness/dependencies remain under `auto-approval/`.
 
 ## Action pipeline
 
-`index.ts` registers SDK hooks and the tool. `tool-catalog.ts` owns the portable wire schema and the
-strict selected-tool validator. `ActionSession` serializes the entire action and owns private session
-storage. `ActionRun` preserves this sequence:
+`index.ts` registers hooks/tools; `tool-catalog.ts` owns the portable schema and strict
+selected-tool validator. `ActionSession` serializes actions and owns private storage.
+`ActionRun` preserves this order:
 
-1. Acquire the current team assignment lease, when Multiplex is active.
-2. Snapshot and validate the exact request; normalize requested network scope.
-3. Load settings and validate sandbox paths, tools, workspace and protected storage.
-4. Build bounded operator evidence and request an independent verdict.
-5. Persist the exact verdict before any approved operation executes.
-6. Recheck the lease and cancellation, then execute under the reviewed local or remote boundary.
-7. Release the lease and finish review presentation on every exit path.
+1. Acquire any Multiplex assignment lease.
+2. Snapshot/validate the exact request and normalize networking.
+3. Preflight settings, paths, tools, workspace and protected storage.
+4. Build bounded operator evidence and obtain an independent verdict.
+5. Persist that verdict before execution.
+6. Recheck lease/cancellation; execute within the reviewed local/remote boundary.
+7. Release the lease and finish presentation on every exit.
 
-`prepare-action.ts` performs preflight. `sandbox-plan.ts` describes the reviewed scope without
-resolving credentials. `review-display.ts` owns review callbacks and presentation. `sandbox/` separates
-workspace discovery and grants, inode boundary checks, temporary mount scaffolding, pure backend
-argument builders and process execution. Local applications execute original read-only
-`~/.local/bin` entry points and necessary public helpers; Pi never copies those launchers or
-implements their application behavior. Caches/state remain private, and application-owned sandbox
-modes prepare platform runtimes where needed. The small `isolation.ts` facade keeps test doubles and
-callers on one stable interface.
+`prepare-action.ts` handles preflight; `sandbox-plan.ts` describes scope without resolving
+credentials; `review-display.ts` handles callbacks. `sandbox/` separates discovery,
+grants, inode checks, temporary mounts, backend arguments and execution; `isolation.ts`
+is the stable facade. Local apps execute original read-only launchers/helpers, not Pi
+copies. Application runtimes own setup; mutable caches/state remain private.
 
-## State and lifecycle
+## Lifecycle
 
-The goal controller owns goal transitions and persistence. `goal-review.ts` captures and checks one
-completion snapshot; the controller discards a verdict superseded by operator input or peer work.
-The team controller owns startup, global cancellation and peer cleanup. Mailbox, coordination and
-activity modules own their respective state.
+Goal controllers discard completion snapshots superseded by user input or peer work.
+Team controllers own startup, global cancellation and cleanup; mailbox/coordination/
+activity modules own their respective state. Session services and availability retain
+`Symbol.for` registries: compiled Pi loads extensions through separate module caches,
+so module-local replacements would split identity. Registries contain internal callbacks,
+not model-facing execution tools.
 
-Session services and provider availability retain their existing `Symbol.for` registry keys.
-Compiled Pi loads extensions through independent module caches, so replacing these registries with
-module-local singletons would split session identity. The registry contains extension-owned
-callbacks only; it is never a model-facing tool.
-
-Bootstrap installs pinned dependencies and links the shared SDK into companion modules before loading
-runtime settings. Frozen executors include every reachable local runtime source in their fingerprint.
-No running Pi session is restarted by source changes. Start a new Pi process through the launcher to
-pick them up; session-private temporary artifacts must be regenerated after shutdown or reload.
+Bootstrap installs pinned dependencies and SDK links before settings load. Executor
+fingerprints cover every reachable runtime source. Source changes never restart running
+Pi; start a new process through the launcher. Shutdown/reload removes private `/tmp`.
+Home work uses narrow grants; requested [Pi maintenance](auto-approval/README.md#pi-maintenance)
+excludes private runtime/credentials and pins security settings until restart.
 
 ## Development
 
-Run from `auto-approval/`:
+From `auto-approval/`:
 
 ```sh
 bun run check
@@ -116,33 +87,18 @@ bun run check:format
 bun run test
 ```
 
-The test script deliberately uses separate Bun processes. Extension tests mock the sandbox facade;
-putting native or compiled-Pi tests in that same process would replace real isolation with a mock.
-The 15-second default test bound accommodates native process startup; integration cases with explicit
-longer bounds retain them. Provider fixtures use synthetic authentication and do not contact live
-models. Live reviewer evaluations remain separate, operator-configured commands.
+Keep the test script's separate Bun processes: extension mocks must not replace native
+isolation in integration tests. Default timeout is 15 seconds; explicit longer bounds
+remain. Synthetic providers need no real credentials. Live reviewer evaluations are
+separate opt-in commands. Web/writing have their own checks; the Python worker uses
+`unittest`. Static Docker checks do not prove a live image build.
 
-Web research and public writing keep their own type checks and tests. The Python worker has a separate
-`unittest` suite. Docker sources and build context are checked statically; an actual Docker build
-requires the operator's container engine and pinned image availability.
-
-Use `bun run format` for the shared TypeScript, JSON and Markdown style. Prettier normalizes
-syntax first; the syntax-aware layout pass then separates setup, effects and exits and inserts a
-blank line after completed control-flow constructs before another statement. Consecutive closing
-braces and enclosing closing delimiters stay together, including after nested control flow. Callback and
-closure endings, class bodies and object/collection literals do not trigger brace-only spacing;
-normal formatter layout applies between arguments, properties and closing delimiters. Standalone
-declarations still use semantic separation.
-Connected `else`, `catch`, `finally` and `do`/`while` clauses stay attached. Leading comments remain
-with their statements; literal prompt text is never rewritten. `bun run check:format` applies the
-same pipeline without writing. Python and shell sources use equivalent logical block spacing.
-A completed control-flow construct at the end of a file also keeps its trailing blank line. Use
-`git -c core.whitespace=-blank-at-eof diff --check` to allow that deliberate layout while still
-checking trailing spaces and other whitespace errors.
-
-Add behavior tests in the appropriate existing suite, and update architecture checks when
-deliberately adding a dependency.
-
-Home-directory actions use narrow per-action grants without a mandatory device view. Operator-requested
-Pi setup/source work uses `sandbox.maintenance`; private runtime/credential data stays excluded and
-active security settings remain pinned until restart. See [Auto-Approval](auto-approval/README.md#pi-maintenance).
+`bun run format` applies Prettier, then syntax-aware semantic grouping. Add a blank line
+after completed control flow before another statement; keep consecutive closing
+braces/delimiters and attached `else/catch/finally/do-while` together. Callback, class,
+object/collection and argument endings alone require no gap. Separate declarations by
+meaning; keep leading comments attached. Prompt literals remain untouched. Python/shell
+use equivalent grouping. `check:format` checks the same pipeline without writing.
+A completed top-level control construct retains its final blank line; use
+`git -c core.whitespace=-blank-at-eof diff --check` for the intended layout.
+Add behavior tests to existing suites; update architecture checks for deliberate dependencies.

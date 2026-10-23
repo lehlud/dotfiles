@@ -1,90 +1,137 @@
 # Pi Multiplex
 
-For module ownership, lifecycle and development checks, see the [architecture guide](../README.md).
+`/multiplex <n>` starts 1–16 equal agents: one terminal SDK session and n−1 concurrent
+sessions, all in the shared feed. No leader. Cryptographically random English word names
+are unique per team, reusable across teams. Members inherit branch/system/model/thinking,
+receive all actual user prompts/corrections and share project files, not histories or `/tmp`.
 
-`/multiplex <n>` starts a team of `n` equal working agents, currently 1–16 members. One Pi SDK session hosts the terminal connection; `n - 1` additional sessions run concurrently. All `n` members participate in the same shared feed by default. There is no lead agent or privileged messaging role. Names are single English words such as `otter`, `maple` or `comet`, selected using cryptographic randomness without replacement within each team. Different teams may reuse words; a name is a team-local address, not a globally unique identifier. All members start with the active conversation branch, system context, working model and thinking level.
+The aim is independent parallel work and review, not more conversation. Send only needed
+questions, blockers, conflicts, findings and evidenced deliverables to relevant peers;
+broadcast only team-wide information. Avoid duplicate work/status/acknowledgements/polling.
+Speed/quality are not guaranteed and each active member incurs model usage.
 
-The next actual user prompt and subsequent corrections reach every member. Members share the project workspace and prioritize inspecting, implementing and validating independent parts. They agree ownership where overlap requires it and send only questions, blockers, conflicts or findings that another member needs. Routine status, acknowledgements, repeated context and polling are discouraged. Messages go to the relevant recipient; broadcasts are reserved for information that affects the whole team. The purpose is to parallelize independent work and improve review of complex results. Faster or better results are not guaranteed; agents must coordinate to avoid duplicate work and conflicts. Each active member incurs its own model usage.
+| Command                  | Effect                                  |
+| ------------------------ | --------------------------------------- |
+| `/multiplex <n>`         | Start/resize; resize only when all idle |
+| `/multiplex [status]`    | Names, size, states                     |
+| `/multiplex interrupt`   | Cancel everyone; pause running goal     |
+| `/multiplex off` or `0`  | Stop team/work                          |
+| `/multiplex-view <name>` | Individual feed                         |
+| `/multiplex-view [all]`  | Shared feed (default)                   |
 
-- `/multiplex 4`: four equal members in total.
-- `/multiplex` or `/multiplex status`: show names, team size and peer states.
-- `/multiplex interrupt`: cancel every member and pause its running goal.
-- `/multiplex off` or `/multiplex 0`: stop the team and cancel peer work.
-- Change the team size only while all members are idle.
-
-The status bar shows `multiplex: n` once, before the goal when present, so team size remains visible on narrow terminals. Member names are shown in the live overview and `/multiplex status`. `/side` remains a separate explanatory conversation; side questions do not become team assignments.
+Footer size appears once before any goal. The aligned Agent/State/Activity table shows
+all members regardless of view. Views change no sessions/context/routing: user input
+still reaches everyone. `/side` questions remain explanatory, not assignments.
 
 ## Watching the whole team
 
-The default display is one shared feed for every agent. There is no main-transcript view. Replies, tool calls, output, failures and confirmed edits use an automatically bound `Agent · name` header. Each member has a distinct color in both the feed and overview; colors remain stable within the team and are saved with activity records. Working, thinking and ready states appear only in the overview, including after restoring older logs; reasoning blocks are not duplicated in the feed. Native backend-session output is replaced by its attributed feed records without changing model messages or tool execution. Native assistant rows whose content is entirely replaced by the feed, and feed anchors hidden by a view filter, reserve zero height when empty. Their host spacing cannot accumulate into a gap above the activity table. Visible paragraphs, code blocks, error warnings, unrelated messages and the input dock retain their original rendering. The display hook uses guarded component shapes across the compiled host and SDK loader copies, restores its own bindings on session shutdown/reload and leaves unknown host layouts unchanged.
+Runtime-bound `Agent · name` headers/color identify replies, actions, output, failures and
+diffs. Colors persist in records. Working/thinking/ready states stay in the table, without
+reasoning in the feed. Streaming refresh coalesces over 80 ms; starts/completions/ready update
+immediately. Native rows wholly replaced by feed records reserve zero height, preventing
+bottom gaps. Guarded hooks support compiled/SDK loader copies, restore on reload/shutdown and
+leave unknown layouts, unrelated text/errors and input dock intact.
 
-The compact overview aligns the Agent, State and Activity columns. It uses one header and one row per member, as before, and clips to the terminal width. Every member remains in the table even when filtering the feed. Rows show ready, working, thinking, writing or running states and a short reply/tool preview. Streaming refreshes are coalesced over 80 ms; tool starts, completions and ready states update immediately. Approval explanations stay in the activity log.
+A send appears once with sender/recipients/plain text; a broadcast is one entry. Incoming
+receipts/raw JSON IDs are hidden; inbox queries show counts. Confirmed approved edits/writes
+use padded native numbered diffs: red removals, green additions, word highlights; writes
+show full frozen contents as additions. Ten-line previews expand normally. No host prereads
+or success diffs for failed/denied actions; arbitrary shell writes do not fabricate diffs.
+Approval explanations remain separate log entries.
 
-- `/multiplex-view <name>` shows the chosen member's feed.
-- `/multiplex-view all` returns to the shared feed; `/multiplex-view` does the same.
-- Views can change while agents work. They do not switch sessions, alter context, cancel work or reroute operator input. Actual user prompts and steering still reach every member.
-
-Each accepted message send appears once, with its bound sender, actual recipients and plain message text. A broadcast is one entry. Incoming deliveries and successful transport receipts are hidden; UUIDs, team IDs and JSON envelopes remain implementation metadata. Inbox queries show a count instead of repeating already logged letters. Message contents remain unchanged and need no approval.
-
-Confirmed `edit` and `write` results from every actor use a padded success block with the attributed file header and Pi's regular diff renderer. Edits retain line numbers, red removals, green additions and word-level highlighting; writes show the confirmed complete contents as green additions. Long diffs collapse to ten lines and can be expanded. Approval explanations remain outside the block. Diffs come only from successful independently approved executor results. Denials and failed operations never become successful diff previews, and display performs no additional filesystem reads. Other shell output remains ordinary tool output; a shell script's arbitrary file writes do not fabricate an edit-tool diff.
-
-Long text bodies collapse by default and expand with `ctrl+o`; individual activity previews are bounded to 64 KiB. Tool-output snapshots are coalesced to at most one per second per call. Complete original output remains in the corresponding agent session. Tool argument previews copy only commands, paths, URLs and queries, never credential profiles or environment values.
-
-Activity uses custom session entries saved in the session log, exposed to JSON/RPC consumers as `entry_appended` events. Rendered feed segments keep individual filtering free of gaps and retain hidden actors' activity for switching back to all. Observations never enter model context or mailboxes, grant operator authorization or request approval. Final peer results reach the shared task context through the separate peer-data channel without duplicate visible answers. Names come from runtime session bindings, not identity claims in prose. Reload restores saved feed records and colors. Stopping, replacing or closing a team removes its live overview, timers and subscriptions; saved activity remains available.
+Long text collapses with Ctrl+O; previews are bounded to 64 KiB. Tool snapshots coalesce to
+one/second/call; originals stay in actor sessions. Arguments preview command/path/URL/query,
+not credential profiles/environment. Custom activity emits RPC entry_appended; filtering
+reserves no gaps and retains hidden actors. Observations never enter model/mail context or
+authorize actions. Separate peer-data delivery shares final results without duplicate answers.
+Reload restores activity/colors; stopping/replacing removes live table/timers/subscriptions.
 
 ## Agreeing work before actions
 
-A team must agree one work split before any external action, including initial reads and directory listings. Any equal member can propose the split through `mailbox plan`; the proposer accepts automatically, and every other member accepts the exact plan ID or withdraws a conflict. Each assignment contains its bound member name, a distinct concrete task, explicit resource ownership and optional `waiting: true`. Assign shared repository/roadmap discovery and each expensive shared check to one member. When existing context is insufficient for independent work, other members wait for that discovery instead of inspecting the same files again.
-
-Resources identify owned files/subtrees or named discovery/validation work. Duplicate tasks and overlapping resource scopes are rejected. These declarations describe coordination; they do not create filesystem mounts, grants or operator authorization. Acceptance of the work split is checked locally; assignment metadata is not sent to the approval reviewer. Members must keep commands and edits within their agreed tasks. Action approval evaluates the exact operation, requested sandbox access and actual operator constraints independently of team topology. Any member can propose an updated split after current actions finish. A new split needs everyone's acceptance again. There is no permanent coordinator or privileged proposer.
-
-The runtime blocks external review/execution until all members accept and blocks actions by waiting members. It pins the accepted assignment through review and checks it again before execution; a closed team cannot execute an earlier approval. Proposals and final acceptance wake participants for the necessary planning work; intermediate acceptances do not broadcast acknowledgements. Mailbox transport and planning remain outside approval. Independent task execution begins after agreement.
+Before **any external action**, including initial ls/read, unanimously accept one split.
+Any peer proposes mailbox plan; proposer auto-accepts, others accept that exact ID or withdraw
+conflicts. Each name gets a distinct concrete task, resources and optional waiting:true.
+Resources name owned files/subtrees or discovery/check scopes; overlap/duplicate tasks fail.
+Assign shared discovery/expensive checks to one owner; insufficient context means others wait
+for findings, not repeat investigation under cosmetic labels.
 
 ```json
-{"operation":"plan","assignments":[{"name":"otter","task":"Inspect roadmap and repository once","resources":["discovery"]},{"name":"maple","task":"Wait for discovery findings","resources":[],"waiting":true}]}
-{"operation":"accept","planId":"ID from the proposed split"}
-{"operation":"withdraw","planId":"ID of a conflicting split"}
+{"operation":"plan","assignments":[{"name":"otter","task":"Inspect repository/roadmap once","resources":["discovery"]},{"name":"maple","task":"Wait for findings","resources":[],"waiting":true}]}
+{"operation":"accept","planId":"proposed ID"}
+{"operation":"withdraw","planId":"conflicting ID"}
 ```
 
-`peers` includes the current split and pending acceptances. Every model request also receives the current coordination state, so members need not poll the inbox or repeat status messages.
+Work within assigned scope, preserve edits, and update splits unanimously after current
+actions finish. Plans coordinate locally, never grant mounts/authority or enter reviewer
+assignment metadata. External work waits for agreement/non-waiting status; leases pin
+assignments through review and recheck before execution. Closed teams cannot use old approvals.
+Proposals/final acceptance wake needed planning; intermediate acceptance sends no acknowledgement
+broadcast. peers and model requests supply coordination state without polling.
 
 ## Messageboxes
 
-The `mailbox` tool provides planning plus these internal messaging operations:
-
 ```json
 {"operation":"peers"}
-{"operation":"send","to":"otter","text":"Please review the error paths in parser.ts; my implementation and tests are ready.","wake":true}
-{"operation":"send","to":"*","text":"Parser changes and local checks are complete; evidence is in the action log."}
+{"operation":"send","to":"otter","text":"Parser tests are ready; please review error paths.","wake":true}
+{"operation":"send","to":"*","text":"Shared checks passed; evidence is in the action log."}
 {"operation":"inbox"}
 ```
 
-`*` addresses every other member. Delivery and sequence numbers follow send order. Routine messages deliver data immediately without starting a model turn or waking an idle member. Working members receive them at the next safe turn boundary; idle members see them when work next resumes. Optional `wake: true` starts work for an idle recipient or steers a working recipient. Use it for actionable questions, requests or deliverables that unblock dependent work; a dependency-ready report is actionable. Keep routine status and acknowledgements passive. This scheduling choice does not filter message contents or invoke approval. The policy asks members to work, avoid receipt loops and let finished peers rest. Real operator input is broadcast independently of the selected view, including SDK compaction/idle boundaries where streamingBehavior is absent. A compacting peer retains inputs until compaction ends; it does not replay accepted model requests or actions. Operator input is not rejected by mailbox backpressure. Shutdown cancels retained inputs before they can start a late request. A tool result confirms handoff, not processing by the receiving model. The inbox archive retains the last 128 received messages. Each message is limited to 16 KiB; each recipient can have up to 256 messages not yet observed in its model context. Full queues apply backpressure without partially accepting a broadcast. Message contents are neither edited nor submitted to a reviewer for approval. Auto-Approval returns immediately for `mailbox` without inspecting arguments or session services, creating an approval request or recording an approval audit. Multiplex alone owns sender binding, schema validation and delivery. Handoff is synchronous in memory and does not wait for another model's response. Pi may schedule internal messaging alongside a pending action review or sandbox command; external actions still run through their own serial approval/executor queue. A separate internal team ID prevents messages in an older transcript from acknowledging a new team's queue when word names are reused.
+`*` addresses other members. Synchronous in-memory handoff confirms delivery, not processing,
+and proceeds alongside review/execution. Routine sends start no turn; busy recipients see
+messages at safe boundaries, idle ones on next work. wake:true is for actionable requests,
+findings/deliverables and dependency-ready reports, never status/receipts. Let finished peers rest.
 
-The extension binds the sender to the session and automatically fills `from`, `teamId`, `id` and `sequence` in the envelope and send receipt. The sender header in the single send entry uses this binding. A `from` tool argument is rejected; an identity claim inside `text` cannot override the actual sender. This authenticates the sending Pi session, not the truth of its message. Peer messages are explicitly peer data and never become actual user instructions or authorization. A member cannot configure the team or grant approvals to other members. A successful receipt confirms handoff; repeating the same status to seek another acknowledgement is unnecessary.
+Limits: 16 KiB/message, 256 unobserved/recipient, 128 received in archive. Full queues apply
+backpressure without partial broadcast. Runtime fills from/teamId/id/sequence; forged from
+arguments fail, prose claims cannot change sender. Old team IDs cannot acknowledge new queues
+with reused names. Authenticity proves session origin, not truth. Unedited/unreviewed peer DATA
+is never operator instruction, permission, execution proof or denial override. Members cannot
+resize teams/grant approvals. Missing bindings report nondelivery, not a reason to use
+approved_action or retry communication. Auto-Approval returns immediately without examining
+mail arguments/services, creating review requests or audits.
+
+Actual operator input broadcasts independently of view/backpressure, including idle/compaction
+boundaries. Compacting peers retain input until done without replaying actions; shutdown cancels
+late starts. Busy state cannot reclassify the user's delivery mode.
 
 ## Isolation, goals and lifecycle
 
-Every external action by every member passes through the same Auto-Approval extension and mandatory sandbox executor. Network, additional path, Git configuration and credential permissions remain scoped to the reviewed action. Other external tools and nested external tool calls remain blocked. Internal messagebox operations are outside action review.
+Each external action uses mandatory review/isolation; grants for network/path/Git/credentials
+remain per-action, direct/nested routes blocked. Broker-transferred results/decisions retain actor,
+request ID and fingerprint, separate from arbitrary letters; reviewers see relevant peer denials.
+This prevents equal tool-call IDs across sessions confusing evidence.
 
-Members share project files but have independent conversation histories and private sandbox `/tmp` directories. Action decisions and result evidence transferred by the trusted broker remain separate from arbitrary message text. Action reviewers see peer denials as well; messages cannot override a denial. Evidence retains the original actor name, request ID and fingerprint so identical tool-call IDs from different sessions are not confused.
+Running goals recover unread mail eventfully when any member settles, once per new batch and
+only for recipients with unobserved data. Outside goals passive mail stays passive. Settled
+checkpoints use shared mailbox/action progress, not final-reply counts, without polling. Paused/
+stopped/closed teams never revive. Shared goals/feedback reach all peers; permissible set_goal
+creates self-assigned metadata, never authority/replacement. Completion waits for peer work/mail;
+new work/messages/results invalidate older verdicts. No member gains power over another.
 
-During a running goal, an event-driven idle-team check recovers unread mailbox deliveries even if the sender omitted `wake: true`. Only recipients with unobserved messages resume, once per new batch, using the already-delivered messages. Repeated idle events do not repeat the wake or letter. This check runs when any member settles, including the terminal-connected member. Once no unread deliveries remain, a checkpoint lets the independent goal reviewer assess current evidence. Deduplication tracks shared mailbox/action progress rather than the number of final replies, so tool work without a final reply still counts. Paused/stopped goals and closed teams do not recover or restart work. Ordinary passive messages outside a running goal remain passive. The checkpoint creates no permissions, bypasses no approvals and introduces no polling timer.
-
-A shared `/goal` and feedback from its independent reviewer also reach peers. Targets can change during work without stopping the team. Members may also call `set_goal` for a shared self-assigned target when no unfinished target exists; it grants no operator authorization and cannot replace an active operator goal. Completion review waits for ongoing peer work to settle. New peer work, messages or action results during goal review invalidate its older verdict; completion is reviewed again using current evidence. Goal review includes the recorded action results of every member; no working agent gains authority over another. `/goal stop` also stops working peers when the terminal connection's agent is already idle.
-
-Exit, reload, session replacement or session-tree navigation stop the team and delete peer temporary data. The default Escape interrupt cancels the whole team from either shared or individual views, even if the terminal-session member is already idle. The RPC `abort` command also cancels all peers. A running goal pauses for explicit `/goal resume`; queued starts are cancelled before resuming can create new work. RPC cancellation observes its JSON-lines transport without consuming or logging other commands, and the observer detaches on shutdown/reload. Aborting the terminal connection's active model run also stops the team. `/multiplex off` cancels work even when only peers are busy. Multiplex does not restart automatically after a session change. Peer transcripts live in memory; transferred results and decisions remain in the normal session log.
-
-The launcher loads this extension separately. Startup links its SDK dependencies to Auto-Approval's pinned dependencies. Tests use synthetic providers in the `../auto-approval` integration package without contacting real model providers.
-
-The compiled Pi loader can instantiate shared modules separately for each extension. Session services therefore use a process-wide registry keyed by session-manager identity so tool activation, goals and external-action evidence retain their bindings across loader copies. The regression suite also launches the installed compiled Pi through RPC with synthetic authentication and a local test provider. It checks actual peer delivery, automatically bound senders, rejection of forged `from` arguments, and continued blocking of direct external tools. A separate SDK test holds an external action reviewer open and verifies that a mailbox handoff completes before review is released. No reviewer is needed for internal messages. If the mailbox binding is unavailable, Multiplex itself reports that nothing was delivered and directs the model to report the runtime problem rather than retry or use `approved_action` for communication.
+Escape, Ctrl+C, RPC abort, /goal stop, off, reload, exit and session replacement/tree navigation
+cancel all peers/descendants/queued starts even with idle terminal actor or individual view.
+Goals pause for explicit resume. RPC observation reads no unrelated commands and detaches on
+reload/shutdown. Teams never restore automatically. Peer transcripts stay in memory; transferred
+results/decisions/activity persist. Shutdown removes peer temporary data.
 
 ## Failed model requests and malformed actions
 
-A failed model run by any member stops the entire team, closes message transport, invalidates outstanding action leases and cancels other members. A running goal pauses with the failure reason; partial replies from failed or aborted peers are not forwarded as completed results. Failure is recorded once, and cleanup finishes before another team starts. This also applies during work-split acceptance: the remaining members cannot be left waiting for an acceptance that will never arrive. Automatic mailbox and goal checkpoints do not revive the failed team.
+Any member's model failure closes team/mail/leases, cancels peers and pauses goals. Partial
+failed replies are not completed results. Failure records once; cleanup precedes a new team,
+including during plan acceptance, preventing missing-member deadlocks. Checkpoints cannot revive it.
+Three consecutive malformed approved_action calls by one member also stop the team. Count SDK/
+strict preflight failures; valid requests reset, reviewer denials/command failures do not count.
+Encoded argument objects decode before strict review; bare commands are never repaired/executed.
+Resolve problems, recreate `/multiplex <n>`, then explicitly resume goals. Provider refusals
+are final, never rephrased/rerouted to evade safeguards.
 
-After three consecutive malformed `approved_action` calls by one member, the team stops and the goal pauses instead of repeating invalid calls indefinitely. This counts SDK argument-validation failures and strict action preflight failures. Valid requests reset that member's count; reviewer denials and command exit failures do not count. The cap does not reroute or execute an invalid request. JSON-encoded arguments objects are decoded before strict validation and independent approval; ordinary command strings are not converted into executable actions.
+Each member's Conversations progress guard warns then stops the team for unchanged inspections,
+including while others work/wait. This is separate from approval and does not censor mail.
+See [guard details](../conversations/README.md#repeated-inspections-without-new-evidence).
 
-Resolve the reported provider or runtime problem before starting a new `/multiplex <n>` team and explicitly using `/goal resume`. Provider safety refusals are final for the request; the runtime neither switches models nor changes prompts to evade them.
-
-Each member also has the Conversations progress guard. Repeated unchanged inspection results first produce a private model-context reminder and then stop the entire team with the goal paused. This includes a spinning peer while other members are working or waiting; automatic mailbox/goal checkpoints do not restart the stopped team. The guard does not review or censor messages, and action approval remains separate from productivity checks.
+The launcher loads Multiplex separately with shared pinned SDK links. Process-wide registries
+preserve bindings across compiled loader copies. Synthetic provider/compiled-Pi RPC tests cover
+concurrent prompts/steering, authenticated FIFO/forgery checks, real isolated files/private tmp,
+direct-route denial, interrupt/reload/goals, and mail while an external review is held. No real
+model auth is needed. See the [architecture guide](../README.md).

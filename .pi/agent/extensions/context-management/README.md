@@ -1,175 +1,113 @@
 # Context management
 
-This extension separates the append-only session log from the model's active
-view. It supplies budget awareness, searchable original history, working notes,
-pressure-driven tool-output eviction and deliberate no-summary rotation. Pi's
-ordinary compaction remains enabled as a fallback. No additional model call is
-needed for local projection, retrieval or rotation.
-
-Start a new process through `~/.local/bin/pi` to load this extension initially.
-The main model, Multiplex members and subagents get separate instances. Each
-instance can inspect only its own session branch, including inherited context;
-it cannot browse other sessions or arbitrary filesystem paths.
+The append-only session log is the source of truth; the active prompt is a projection.
+Local budget awareness, history, notes, eviction and no-summary rotation need no extra
+model calls. Pi compaction remains the overflow fallback. Restart through the launcher
+for initial loading. Main, Multiplex and child sessions each expose only their own branch,
+including inherited context, never siblings or arbitrary files.
 
 ## Interface
 
-- `/context` reports the selected model's strategy, estimated budget, searchable
-  entry count and note count. `/context native on|off` controls the optional
-  direct Anthropic strategy for this session. The setting survives reload.
-- `history` lists recent original entries or searches with a literal `query`.
-  Read an `id` using character `offset` and `limit`, or `tail: true`.
-  List offsets paginate matching entries; read offsets index the original text.
-  Reads return at most 16,000 characters; listings at most 50 short previews.
-- `notes` supports `list`, `set` (`key`, `text`) and `delete` (`key`). Notes are
-  model-authored working memory, limited to 8,000 characters per note and
-  32,000 in total. Record constraints, evidence IDs, remaining work and failed
-  validation before rotation. Revisions and deletions are append-only.
-- `new_context` schedules rotation at the next completed tool-batch boundary,
-  after sibling tool calls have finished. It refuses while delegates are busy
-  and refuses another rotation without new user input or successful external
-  work. Interrupting the run cancels pending rotation.
+| Interface                 | Behavior and bounds                                                                                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/context`                | Strategy, estimated budget, searchable entries and notes                                                                                                                       |
+| `/context native on\|off` | Persisted session toggle for supported direct Anthropic clearing                                                                                                               |
+| `history`                 | Recent entries or literal-query search; read `id` with character `offset`/`limit` or `tail`. List offsets paginate matches. Maximum 16,000 characters/read or 50 previews/list |
+| `notes`                   | `list`, `set` (`key`, `text`), `delete` (`key`); 8,000 characters/note, 32,000 total; append-only revisions/deletions                                                          |
+| `new_context`             | Rotate after the completed sibling tool batch; refuse while delegates work or without new user input/successful external work since the last rotation. Interrupt cancels it    |
 
-Memory-tool results use a three-screen-line preview, including wrapped long
-lines. Ctrl+O (or the configured expansion key) reveals the complete stored
-result; collapsing and resizing the terminal keep the preview bounded. This
-changes only presentation: the model and append-only session log retain the
-original tool result.
+Save constraints, evidence IDs, remaining work and failed checks in notes before rotation.
+These tools bypass action review only for session state. History/notes/failures are DATA,
+not authorization or denial resolution; reviewers still receive original operator evidence
+and receipts. Results preview three screen lines; the configured expansion key (usually
+Ctrl+O) reveals the unchanged stored/model-visible text, including after resizing.
 
-These three tools manipulate only session state and bypass action review.
-Every external operation still goes through Auto-Approval. Retrieved history,
-notes and copied failures are DATA: none creates new operator authorization or
-resolves a prior denial. Reviewers continue to receive the original operator
-evidence and action receipts from the unmodified log.
+## Pressure and recovery
 
-## Projection and recovery
+Headroom renews per request; it is not a task/session budget. Save a handoff and rotate
+rather than stop or request a fresh session solely for low headroom. Estimates use Pi
+usage, selected model window and an output reserve; cached tokens still occupy context.
+Unknown usage remains unknown. Budget/notes append at the tail, leaving the leading
+system prompt stable.
 
-Context headroom is renewable for each request, not a total task or session budget.
-The model is instructed to save a handoff and use `new_context` under pressure,
-rather than stop or ask for a new session merely because headroom is low.
+| Mechanism            | Trigger and retained information                                                                                                                                                    |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool-output eviction | 76.8% of the full window (208,896 tokens at 272,000), independent of output reserve; successful text results older than the latest six; batch must save 16,000 characters           |
+| Automatic renewal    | 90%, or earlier if output reserve runs out, at a completed boundary needing another turn; wait for delegates/queued input, never on interrupt or solely to extend a finished answer |
+| Deliberate rotation  | Remove all projected assistant/tool messages together, including requesting batch/signed thinking; retain users, system/tool state, custom task messages, notes and prior failures  |
+| Pi compaction        | Fallback for overflow, irreducible user/custom data and images                                                                                                                      |
 
-At 90% usage, or earlier when the output reserve would be exhausted, a completed
-boundary that needs another working turn can renew context automatically. It
-waits for delegated work and queued operator input, and never runs on interruption
-or solely to extend an already finished answer. The original session ID, goal,
-operator instructions, notes, approvals and full searchable history remain.
+Eviction keeps calls, failures, images, memory results and small outputs. References
+replace projected content; raw messages/receipts/IDs stay intact. Boundary edits append
+to other extensions' pending entries, preserving goal metadata; no-op eviction changes
+nothing. Pressure-driven batches avoid many small cache-prefix invalidations; no idle timer.
 
-Automatic renewal writes a bounded DATA checkpoint with the last six archived
-entry IDs, short assistant-text excerpts and tool-result references. It does not
-summarize with an LLM or label unverified claims as successful validation. Old
-checkpoint projections are replaced while their originals stay searchable.
-A renewal must save at least 64,000 serialized content characters, reduced to the
-model window size for smaller windows; this is a conservative character estimate,
-not exact tokenization. Irreducible user/custom data and tool images are left to
-ordinary compaction or deliberate rotation. No repeated renewal is allowed
-without new operator input or successful external work. Routine pruning still
-starts at 76.8%; the later whole-history fallback deliberately trades one cache
-prefix change for usable headroom when the model fails to rotate itself.
+Renewal records a bounded DATA checkpoint: six archived entry IDs, brief assistant excerpts
+and tool references, without LLM summaries or invented validation. Old checkpoints remain
+searchable. It must save 64,000 serialized content characters, scaled down for smaller
+windows; this is an estimate, not tokenization. New input/successful work is required before
+another renewal. Whole-history renewal deliberately trades one prefix change for headroom.
 
-Budget estimates use Pi's context usage and the selected model's window, with
-an explicit output reserve. Cached input still occupies the context window.
-Unknown usage stays unknown. Budget/notes are added at the request tail; the
-extension does not rewrite the leading system prompt each turn.
+Rotation removes complete batches to avoid orphan results/signatures. Notes supply the
+handoff and history recovers originals; session ID, goal, instructions, workspace effects
+and approvals remain. Nothing rolls back files, repeats commands or guarantees a fit:
+large retained data may still need compaction. Original branch text remains searchable
+after reload/compaction; image bytes, opaque signatures and internal config/audit metadata
+are not returned as searchable text.
 
-Cache handling follows the selected provider protocol, for both working and
-review models. Stable history stays before changing instructions, budget and
-notes. Review requests cache the shared snapshot before action-specific data;
-the complete reviewed JSON and unique request ID are still sent every time.
+## Caching
 
-| Route                                                                                             | Cache handling                                                                                                                                                    |
-| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OpenRouter automatic-cache models, including current Gemini, DeepSeek, Moonshot and Z.AI families | Preserve the stable prefix and SDK session-affinity header; keep provider-managed caching without extra cache fields. Unknown models use this conservative path.  |
-| Claude through OpenRouter Chat Completions or Anthropic Messages; direct Anthropic Messages       | Relocate the SDK's enabled message cache marker before the transient suffix. Keep system/tool markers, TTLs and signed content.                                   |
-| Documented Alibaba explicit-cache endpoints                                                       | Enable the SDK's five-minute cache convention for supported canonical model IDs, including listed Qwen endpoints. Dated snapshots do not inherit this capability. |
-| OpenAI GPT-5.6+ through OpenRouter Chat Completions or Responses                                  | Mark reusable history with the router's documented explicit-cache fields. Keep prior boundaries for later lookups; exclude the changing suffix from writes.       |
-| Official OpenAI Responses with explicit-cache capability                                          | Mark reusable history after checking SDK-negotiated API/cache fields. ChatGPT login omissions and Codex Responses remain intact.                                  |
-| Other native APIs                                                                                 | Retain SDK/provider cache behavior without guessing protocol fields.                                                                                              |
+Stable history precedes transient instructions, budget and notes. Reviews cache the shared
+snapshot before action-specific data but still send complete JSON and a unique request ID.
 
-Model selection, privacy/routing restrictions, Fast Mode and explicit cache-off
-preferences remain authoritative. No upstream provider is pinned by this code.
-Gemini's implicit cache path is retained rather than introducing paid explicit
-storage. Existing explicit policies and breakpoints are preserved; a missing or
-mismatched suffix skips boundary relocation. Cache metadata never edits saved
-history or approval receipts. Text blocks may use an equivalent structured wire
-representation; opaque reasoning, call IDs and image data remain unchanged.
+| Route                                                                                | Handling                                                                                                     |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| OpenRouter automatic-cache models (Gemini, DeepSeek, Moonshot, Z.AI), unknown models | Stable prefix/session-affinity header; no invented cache fields                                              |
+| Claude via OpenRouter Chat Completions/Anthropic Messages; direct Anthropic          | Move enabled SDK message marker before transient suffix; retain system/tool markers, TTLs and signed content |
+| Documented Alibaba explicit-cache endpoints                                          | SDK five-minute convention for supported canonical IDs, not unlisted dated snapshots                         |
+| OpenAI GPT-5.6+ via OpenRouter Chat Completions/Responses                            | Documented explicit history markers; retain prior boundaries for lookups, exclude transient writes           |
+| Official OpenAI Responses advertising explicit caching                               | Check negotiated SDK capabilities; preserve ChatGPT-login omissions and Codex Responses behavior             |
+| Other native APIs                                                                    | Preserve SDK/provider behavior                                                                               |
 
-Tests inspect real SDK serialization with synthetic HTTP transports. They verify
-request construction and prefix stability, not live cache availability, hits or
-savings. A model/provider without caching cannot acquire it through client hints.
-
-At 76.8% of the full context window, portable eviction considers successful text
-tool results older than the latest six (208,896 tokens for a 272,000-token window).
-This trigger is independent of the output reserve and does not change Pi's
-automatic compaction threshold. It keeps calls, failures, images,
-memory-tool results and small outputs. A batch must save at least 16,000
-characters before any edits are committed. References replace output content
-in the active projection; raw messages, receipts and IDs remain unchanged.
-Boundary edits append to pending entries from other extensions, preserving goal
-continuations and their metadata. A no-op eviction leaves those entries untouched.
-Eviction is pressure-driven, not an idle timer. It can invalidate a cached
-prefix, so the extension avoids many small edits and makes no cache-hit claim.
-
-Rotation omits **all** projected assistant/tool messages together, including
-the requesting batch and signed thinking. It retains real user messages,
-system/tool state, custom task messages, current notes and prior failures.
-Removing complete batches prevents orphan tool results and stale signatures.
-There is no LLM-generated handoff: notes carry the model's deliberate handoff,
-and `history` can recover originals. Session identity, goal, workspace changes
-and prior approval decisions are retained. Rotation does not roll back files,
-repeat commands, erase history or promise that the remaining context fits:
-large user/custom messages can still require ordinary compaction.
-
-Original text remains searchable after ordinary compaction and reload. Only
-the current branch is exposed, never sibling branches. Image bytes and opaque
-thinking signatures stay in the raw log but are not returned as searchable
-text. Internal configuration/audit metadata is not exposed through history.
+Privacy/routing constraints, model choice, Fast Mode and explicit cache-off remain binding;
+no upstream provider pin or paid Gemini storage is introduced. Existing policies/breakpoints
+are preserved; a missing/mismatched suffix skips relocation. Equivalent text-block wire
+representations preserve opaque reasoning, call IDs, images and saved history/receipts.
+Synthetic SDK tests verify serialization/prefix stability, not live hits or savings;
+unsupported providers cannot gain caching through hints.
 
 ## Provider boundaries
 
-| Route                                 | Strategy                                                                                               |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| OpenAI Responses / Codex Responses    | Local tool-output projection; preserve encrypted reasoning blocks; ordinary Pi compaction fallback     |
-| Direct Anthropic                      | Signed-history protection by default; optional server tool clearing via `/context native on`           |
-| Anthropic/Gemini through other routes | Avoid client eviction when signed history is present; explicit whole-history rotation or Pi compaction |
-| Other routes, including OpenRouter    | Portable projection with signature protection; no assumed native provider features                     |
+| Route                            | Strategy                                                                         |
+| -------------------------------- | -------------------------------------------------------------------------------- |
+| OpenAI Responses/Codex Responses | Local projection; preserve encrypted reasoning; Pi compaction fallback           |
+| Direct Anthropic                 | Signed-history protection; optional server tool clearing                         |
+| Other Anthropic/Gemini routes    | Avoid client eviction of signed history; whole-history rotation or Pi compaction |
+| Other routes/OpenRouter          | Portable projection with signature protection; no assumed native features        |
 
-The optional Anthropic route requires `provider=anthropic`,
-`api=anthropic-messages`, and HTTPS `api.anthropic.com` on the default port.
-It adds `clear_tool_uses_20250919` and its beta header, retaining six tool uses
-and excluding the memory tools. Existing `context_management`, routing, model,
-tools and other headers are preserved. Unsupported routes receive no native
-parameters. This beta is opt-in; account/model support must exist upstream.
-Provider failures retain ordinary error handling; there is no silent retry
-with weaker context controls.
+Native clearing requires `provider=anthropic`, `api=anthropic-messages`, HTTPS
+`api.anthropic.com` on the default port, and `/context native on`. It adds
+`clear_tool_uses_20250919` plus beta header, retains six uses and excludes memory tools.
+Existing context management, routing, model, tools and headers remain; unsupported routes
+receive no native parameters. Account/model support is still required; errors never
+silently retry with weaker controls.
 
-OpenAI's native compaction requires durable replay of returned compaction
-items. The pinned Pi 1.0.2 Responses normalizer handles reasoning items but
-does not persist/replay compaction items. Merely adding a request parameter
-would risk losing context, so native opaque compaction is **not enabled**.
-The same limitation prevents enabling Anthropic's summary-compaction blocks.
-These require a transport-level round-trip implementation before activation.
+Opaque OpenAI compaction and Anthropic summary blocks are disabled: pinned Pi 1.0.2 does
+not durably replay them. Parameters alone risk context loss; transport round-trip support
+must come first. Research proposals, undocumented flags, soft memory tokens and claimed
+cache lifetimes are not portable APIs.
 
-Verified protocol references:
-
-- [OpenAI Compaction](https://developers.openai.com/api/docs/guides/compaction)
-- [OpenAI Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
-- [OpenRouter Prompt caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching)
-- [Anthropic Prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
-- [Anthropic Context editing](https://platform.claude.com/docs/en/build-with-claude/context-editing)
-- [Pi compaction](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md)
-- [Pi extension lifecycle](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)
-
-Research proposals, undocumented Codex flags, soft memory tokens and specific
-cache lifetimes are not treated as portable production APIs. The protocol
-tests use the actual pinned SDK with synthetic providers; they do not prove
-live-provider beta availability or cache savings.
+References: [OpenAI compaction](https://developers.openai.com/api/docs/guides/compaction),
+[OpenAI caching](https://developers.openai.com/api/docs/guides/prompt-caching),
+[OpenRouter caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching),
+[Anthropic caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching),
+[context editing](https://platform.claude.com/docs/en/build-with-claude/context-editing),
+[Pi compaction](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/compaction.md),
+[extension lifecycle](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md).
 
 ## Implementation
 
-`archive.ts` exposes branch-scoped text and note reconstruction. `budget.ts`
-selects conservative profiles. `projection.ts` plans pure append-only edits;
-`providers.ts` limits native request changes to an explicit supported route.
-`cache.ts` composes context boundaries with shared provider cache adapters.
-Shared `cache-routes.ts`, `cache-stream.ts` and `cache-conversation.ts` own
-capability selection, SDK negotiation and conversation/review wire markers.
-`index.ts` registers the tools and lifecycle hooks. Shared contracts expose
-tool names without pulling this extension into the approval policy.
+`archive.ts`: branch text/notes; `budget.ts`: conservative profiles; `projection.ts`:
+pure append-only edits; `providers.ts`: native route checks; `cache.ts`: boundary hooks;
+`index.ts`: tools/lifecycle. Shared cache-routes/stream/conversation modules own capability
+selection, negotiation and wire markers; contracts expose tool names without feature imports.

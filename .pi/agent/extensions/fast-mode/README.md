@@ -1,36 +1,27 @@
 # Fast mode
 
-`/fast` toggles faster processing for the current Pi session. `/fast on`, `/fast off` and
-`/fast status` set or inspect it explicitly. The default is off. The status bar shows `fast`
-beside the selected model and thinking level while enabled, and nothing while disabled.
-The toggle also applies while a run is active: its next provider request uses the new preference.
-Unsupported working models receive no speed override; compatible reviewers still receive theirs.
+`/fast` toggles speed preference; `/fast on|off|status` sets or inspects it.
+Fresh sessions start off; reload and branch navigation restore that branch's setting.
+The footer adds `fast` beside model/thinking only while enabled. Commands stay local.
 
-OpenAI Responses, Codex Responses and Chat Completions requests use `service_tier: "priority"`,
-the documented alias for Fast mode. OpenRouter sorts eligible providers by `throughput` for the
-selected model. Existing provider allowlists, exclusions, privacy controls, ordered pins and
-fallback settings remain intact; these restrictions can limit eligible routes. Neither mode
-changes the selected model or reasoning effort. Other providers retain their existing behavior.
+| Route                                               | Override                                |
+| --------------------------------------------------- | --------------------------------------- |
+| OpenAI Responses, Codex Responses, Chat Completions | `service_tier: "priority"`              |
+| OpenRouter                                          | Sort eligible providers by `throughput` |
+| Unsupported providers/models                        | None                                    |
 
-The setting applies to subsequent main-agent, Multiplex peer, subagent and side-conversation
-requests, and to independent action, public-writing and goal-completion reviews. Prompt
-compression and original-prompt lookup requests through the reviewer use it too. Each review
-candidate uses its own provider/API route; model choice, thinking level, verdict constraints,
-cache options and fallback rules are preserved. An explicit denial remains final.
-Already-submitted requests retain their speed settings; later reviewer lookup rounds consult
-the live session preference. Each session restores its own toggle from extension-owned
-branch entries after reload or tree navigation; a fresh session starts off. The command is handled
-locally and is not sent to the model as a user prompt. Peer requests consult the live parent setting.
+The preference applies before the next request by the main model, peers, subagents,
+side chats, and action/completion/editorial/compression reviewers, including later
+original-prompt lookup rounds. Submitted requests retain their settings; peers consult
+the live parent preference. Model, reasoning, cache options, privacy controls,
+allowlists, exclusions, ordered pins and fallback rules remain unchanged. Off restores
+the existing provider configuration. Denials remain final.
 
-Fast processing can increase billing or subscription usage. Provider/model/account availability
-still applies; this is a speed preference, not a guarantee that the server supplies a faster tier.
-Off removes this extension's override and restores the existing provider configuration.
+Availability and billing still depend on provider/model/account; this preference can
+increase cost and cannot guarantee faster service. It grants no tools, permissions or
+approval authority. The extension owns commands, branch state and display; shared
+provider hooks and the review client apply the override while preserving recovery.
 
-This feature has no tools, sandbox grants or action-approval authority. It preserves normal provider
-recovery, request hooks and the independent action gate. Request hooks live in the shared provider
-library; the shared review client composes the same speed preference after its verdict-schema
-and cache transforms. The extension owns only operator commands, branch state and its status display.
-
-Provider references: [OpenAI Fast mode](https://developers.openai.com/api/docs/guides/fast-mode),
+References: [OpenAI Fast mode](https://developers.openai.com/api/docs/guides/fast-mode),
 [Codex speed](https://developers.openai.com/codex/speed),
-[OpenRouter provider sorting](https://openrouter.ai/docs/guides/routing/provider-selection#provider-sorting).
+[OpenRouter sorting](https://openrouter.ai/docs/guides/routing/provider-selection#provider-sorting).
