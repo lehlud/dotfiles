@@ -4,7 +4,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { loadSessionConfig } from "../shared/session/config.ts";
-import { preparePromptContext } from "../shared/review/compression.ts";
+import { compressionJournal, preparePromptContext } from "../shared/review/compression.ts";
 import { sessionServices } from "../shared/session/services.ts";
 import type { Goal } from "../shared/contracts/goal.ts";
 
@@ -24,23 +24,7 @@ export async function prepareGoalEvidence(
     config,
     ctx.modelRegistry,
     getAgentDir(),
-    {
-      start: () => display("compressing"),
-      saved: (record) => {
-        if (
-          !branch.some(
-            (entry) =>
-              entry.type === "custom" &&
-              entry.customType === "auto-approval-prompt-compression" &&
-              (entry.data as any)?.promptId === record.promptId &&
-              (entry.data as any)?.text === record.text,
-          )
-        )
-          pi.appendEntry("auto-approval-prompt-compression", record);
-      },
-      failed: (attempt) =>
-        pi.appendEntry("auto-approval-compressor-failure", { goalId: target.id, attempt }),
-    },
+    compressionJournal(pi, branch, { goalId: target.id }, () => display("compressing")),
     signal,
     target.source === "agent" ? undefined : target.text,
     processing,

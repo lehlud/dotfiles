@@ -67,6 +67,12 @@ grants, inode checks, temporary mounts, backend arguments and execution; `isolat
 is the stable facade. Local apps execute original read-only launchers/helpers, not Pi
 copies. Application runtimes own setup; mutable caches/state remain private.
 
+Shared review contracts describe envelopes, registries and observers. `review/client.ts`
+owns verdict validation; one `ReviewExchange` in `review/transport.ts` owns the request's
+deadline, original-prompt lookup transcript, cache hooks and usage. Compression journaling
+is shared by action and goal reviews. Execution dispatch uses explicit branches; Git
+execution takes named options for identity sources, cancellation and remote dispatch.
+
 ## Lifecycle
 
 Goal controllers discard completion snapshots superseded by user input or peer work.
@@ -75,6 +81,8 @@ activity modules own their respective state. Session services and availability r
 `Symbol.for` registries: compiled Pi loads extensions through separate module caches,
 so module-local replacements would split identity. Registries contain internal callbacks,
 not model-facing execution tools.
+`shared/contracts/session-services.ts` groups these callbacks by feature owner; the
+registry composes those contracts without adding a second service layer.
 
 Bootstrap installs pinned dependencies and SDK links before settings load. Executor
 fingerprints cover every reachable runtime source. Source changes never restart running

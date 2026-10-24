@@ -194,7 +194,7 @@ export function resilientStream(
 
 /** Wrap public provider objects while preserving authentication and request hooks. */
 export function installProviderStreams(
-  registry: Pick<ModelRegistry, "getAll" | "getProvider">,
+  registry: Partial<Pick<ModelRegistry, "getAll" | "getProvider">>,
   availability = providerAvailability,
   notice?: (event: AvailabilityNotice) => void,
   finish?: (model: Model<any>) => void,

@@ -182,9 +182,7 @@ nativeTest(
       action(["commit", "-m", "Reviewed identity fixture"]),
       workspace,
       config,
-      undefined,
-      home,
-      xdg,
+      { home, xdg },
     );
 
     expect(committed.isError).not.toBe(true);
@@ -246,16 +244,8 @@ nativeTest("the public snapshot is read-only, and disappears from later commands
   );
 
   expect(
-    (
-      await executeWithGitConfig(
-        action(["status", "--short"]),
-        workspace,
-        config,
-        undefined,
-        home,
-        xdg,
-      )
-    ).isError,
+    (await executeWithGitConfig(action(["status", "--short"]), workspace, config, { home, xdg }))
+      .isError,
   ).not.toBe(true);
   expect(
     new Set((await readdir(tmpdir())).filter((name) => name.startsWith("pi-git-config-"))),
@@ -277,25 +267,29 @@ nativeTest(
     const status = action(["status", "--short"]);
 
     expect(
-      (await executeWithGitConfig(status, workspace, config, undefined, alternate, alternateXdg))
-        .isError,
+      (
+        await executeWithGitConfig(status, workspace, config, {
+          home: alternate,
+          xdg: alternateXdg,
+        })
+      ).isError,
     ).not.toBe(true);
     await symlink(join(alternateXdg, "git", "config"), join(alternate, ".gitconfig"));
     expect(
-      (await executeWithGitConfig(status, workspace, config, undefined, alternate, alternateXdg))
-        .isError,
+      (
+        await executeWithGitConfig(status, workspace, config, {
+          home: alternate,
+          xdg: alternateXdg,
+        })
+      ).isError,
     ).not.toBe(true);
     expect(
       (
-        await executeWithGitConfig(
-          status,
-          workspace,
-          config,
-          undefined,
-          alternate,
-          alternateXdg,
-          join(alternate, ".gitconfig"),
-        )
+        await executeWithGitConfig(status, workspace, config, {
+          home: alternate,
+          xdg: alternateXdg,
+          global: join(alternate, ".gitconfig"),
+        })
       ).isError,
     ).not.toBe(true);
   },
@@ -329,14 +323,10 @@ nativeTest(
 
     await mkdir(emptyHome);
 
-    const result = await executeWithGitConfig(
-      action(["status", "--short"]),
-      workspace,
-      config,
-      undefined,
-      emptyHome,
-      join(emptyHome, ".config"),
-    );
+    const result = await executeWithGitConfig(action(["status", "--short"]), workspace, config, {
+      home: emptyHome,
+      xdg: join(emptyHome, ".config"),
+    });
 
     expect(result.isError).not.toBe(true);
   },
@@ -353,14 +343,18 @@ nativeTest(
     );
 
     await expect(
-      executeWithGitConfig(action(["status"]), workspace, config, undefined, home, xdg, invalid),
+      executeWithGitConfig(action(["status"]), workspace, config, { home, xdg, global: invalid }),
     ).rejects.toThrow("Global Git configuration could not be parsed");
 
     const controller = new AbortController();
 
     controller.abort();
     await expect(
-      executeWithGitConfig(action(["status"]), workspace, config, controller.signal, home, xdg),
+      executeWithGitConfig(action(["status"]), workspace, config, {
+        signal: controller.signal,
+        home,
+        xdg,
+      }),
     ).rejects.toThrow();
     expect(
       new Set((await readdir(tmpdir())).filter((name) => name.startsWith("pi-git-config-"))),
@@ -372,20 +366,15 @@ nativeTest(
   "remote dispatch receives only approved public settings, with private sources unchanged",
   async () => {
     let received = "";
-    const result = await executeWithGitConfig(
-      action(["status"]),
-      workspace,
-      config,
-      undefined,
+    const result = await executeWithGitConfig(action(["status"]), workspace, config, {
       home,
       xdg,
-      undefined,
-      async (publicConfig) => {
+      dispatch: async (publicConfig) => {
         received = publicConfig;
 
         return { content: [{ type: "text", text: "Remote dispatch" }], details: {} };
       },
-    );
+    });
 
     expect(received).toContain("Ada Grüße 雪");
     expect(received).not.toContain("synthetic-private-token");

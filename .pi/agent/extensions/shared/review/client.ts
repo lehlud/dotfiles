@@ -1,51 +1,34 @@
-import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
+import { parseVerdict, textContent, type ReviewSettings, type Reviewer } from "./protocol.ts";
+import { reviewCapacityIssue } from "./context.ts";
+import { promptOriginalTool } from "./originals.ts";
+import { ReviewerToolError } from "./original-turn.ts";
 import {
-  constrainReviewPayload,
-  parseVerdict,
-  textContent,
-  withWatchdog,
-  type ReviewSettings,
-  type Reviewer,
-} from "./protocol.ts";
-import type { ReviewEnvelope } from "./contracts.ts";
-import { reviewCapacityIssue, REVIEW_OUTPUT_TOKENS } from "./context.ts";
-import { promptOriginalTool, type PromptLookup } from "./originals.ts";
-import { originalLookupTurn, ReviewerToolError, type LookupObserver } from "./original-turn.ts";
-import { sumUsage } from "../providers/usage.ts";
-import {
-  ProviderAvailability,
   providerAvailability,
   isProviderHeldError,
   isRecoveryAuditError,
   RecoveryAuditError,
   providerRefusal,
   transientProviderError,
-  type AvailabilityNotice,
 } from "../providers/availability.ts";
-import { installProviderStreams, unavailableResponse } from "../providers/stream.ts";
-import { cacheReviewPayload, reviewCacheKey, reviewCacheRetention } from "./cache.ts";
-import { fastPayload } from "../providers/fast.ts";
 
-export type ReviewRegistry = Pick<ModelRegistry, "find" | "hasConfiguredAuth" | "streamSimple">;
+import type {
+  ReviewEnvelope,
+  ReviewRegistry,
+  ReviewProcessing,
+  ReviewAttempt,
+  ReviewObserver,
+  Usage,
+} from "./contracts.ts";
+import { ReviewExchange, originalLookupBudget } from "./transport.ts";
 
-export type ReviewProcessing = { fastMode?: () => boolean };
-
-type Usage = AssistantMessage["usage"];
-
+export type {
+  ReviewRegistry,
+  ReviewProcessing,
+  ReviewAttempt,
+  ReviewObserver,
+} from "./contracts.ts";
 export type { PromptLookup } from "./originals.ts";
-
-export type ReviewAttempt = Reviewer & {
-  status: "failed" | "invalid" | "approve" | "deny";
-  reason: string;
-};
-
-export type ReviewObserver = LookupObserver & {
-  start(candidate: Reviewer): void;
-  finish(): void;
-  failed(attempt: ReviewAttempt): void;
-  retry?(event: AvailabilityNotice): void;
-};
 
 export const reviewerLabel = (candidate: Reviewer) =>
   `${candidate.provider}/${candidate.model} (${candidate.thinking})`;
@@ -152,149 +135,6 @@ function reviewContext(envelope: ReviewEnvelope, systemPrompt: string): Context 
   };
 }
 
-function originalLookupBudget(envelope: ReviewEnvelope): number {
-  // Every compressed prompt must fit, with room for targeted follow-up reads.
-  // The shared deadline and model-context checks bound the total work.
-  return Math.max(8, (envelope.promptSources?.size ?? 0) + 4);
-}
-
-async function requestReview(
-  registry: ReviewRegistry,
-  candidate: Reviewer,
-  model: NonNullable<ReturnType<ReviewRegistry["find"]>>,
-  envelope: ReviewEnvelope,
-  timeoutMs: number,
-  signal: AbortSignal | undefined,
-  context: Context,
-  state: ReviewState,
-  availability: ProviderAvailability,
-  observer: ReviewObserver,
-) {
-  const managed = installProviderStreams(registry as any, availability, observer.retry);
-
-  return await withWatchdog(
-    async (reviewSignal) => {
-      const work = async () => {
-        const fast = state.processing.fastMode?.() ?? false;
-        const response = await registry
-          .streamSimple(model, structuredClone(context), {
-            reasoning: candidate.thinking === "off" ? undefined : candidate.thinking,
-            signal: reviewSignal,
-            maxTokens: REVIEW_OUTPUT_TOKENS,
-            cacheRetention: reviewCacheRetention(model),
-            sessionId: reviewCacheKey(envelope, context),
-            onPayload: (payload, providerModel) => {
-              const cached = cacheReviewPayload(
-                constrainReviewPayload(payload, providerModel, envelope.goalCheck) ?? payload,
-                providerModel,
-                envelope,
-              );
-
-              return fastPayload(cached, providerModel, fast) ?? cached;
-            },
-          })
-          .result();
-
-        state.usage = sumUsage(state.usage, response.usage);
-
-        return response;
-      };
-
-      return managed
-        ? await work()
-        : await availability.run(
-            model,
-            work,
-            (response) => unavailableResponse(response, context),
-            reviewSignal,
-            observer.retry,
-          );
-    },
-
-    timeoutMs,
-    signal,
-  );
-}
-
-type ReviewState = {
-  usage?: Usage;
-  promptLookups: PromptLookup[];
-  consulted: Set<string>;
-  processing: ReviewProcessing;
-};
-
-async function requestCandidate(
-  registry: ReviewRegistry,
-  candidate: Reviewer,
-  model: NonNullable<ReturnType<ReviewRegistry["find"]>>,
-  envelope: ReviewEnvelope,
-  timeoutMs: number,
-  signal: AbortSignal | undefined,
-  initial: Context,
-  observer: ReviewObserver,
-  state: ReviewState,
-  availability: ProviderAvailability,
-) {
-  const context = structuredClone(initial);
-  const started = Date.now();
-  const lookupBudget = originalLookupBudget(envelope);
-  const lookups = {
-    attempts: 0,
-    failures: 0,
-    limit: lookupBudget,
-    promptLookups: state.promptLookups,
-    consulted: state.consulted,
-  };
-
-  for (let round = 0; round <= lookupBudget; round++) {
-    const remaining = timeoutMs - (Date.now() - started);
-
-    if (remaining <= 0) throw new Error("Reviewer request timed out");
-
-    if (reviewCapacityIssue(context, model))
-      throw new ReviewerToolError("Reviewer lookup context exceeds model capacity");
-
-    const response = await requestReview(
-      registry,
-      candidate,
-      model,
-      envelope,
-      remaining,
-      signal,
-      context,
-      state,
-      availability,
-      observer,
-    );
-    const calls = response.content.filter((block) => block.type === "toolCall");
-
-    if (!calls.length) return response;
-
-    try {
-      if (
-        parseVerdict(textContent(response.content), envelope.requestId, envelope.goalCheck)
-          .decision === "deny"
-      )
-        return response;
-    } catch {
-      /* A tool turn need not contain a verdict yet. */
-    }
-
-    const sources = envelope.promptSources;
-
-    if (response.stopReason !== "toolUse" || !sources?.size)
-      throw new ReviewerToolError("Invalid reviewer tool response");
-
-    context.messages.push(response);
-
-    for (const call of calls) {
-      context.messages.push(originalLookupTurn(call, sources, lookups, observer));
-    }
-  }
-
-  throw new ReviewerToolError("Reviewer original-prompt lookup rounds exceeded");
-}
-
 export async function requestVerdict(
   config: ReviewSettings,
   registry: ReviewRegistry,
@@ -312,16 +152,22 @@ export async function requestVerdict(
 
   const context = reviewContext(envelope, systemPrompt);
   const attempts: ReviewAttempt[] = [];
-  const state: ReviewState = {
-    usage: envelope.compressionUsage,
-    promptLookups: [],
-    consulted: new Set(),
-    processing,
-  };
 
   const candidate = config.reviewer;
 
   if (!candidate) throw new ReviewError("No reviewer selected; use /reviewer to choose one", []);
+
+  const exchange = new ReviewExchange({
+    registry,
+    candidate,
+    envelope,
+    context,
+    timeoutMs: config.requestTimeoutMs,
+    signal,
+    observer,
+    availability,
+    processing,
+  });
 
   signal?.throwIfAborted();
   observer.start(candidate);
@@ -333,22 +179,9 @@ export async function requestVerdict(
 
   let response: AssistantMessage | undefined;
 
-  state.consulted.clear();
-
   try {
     if (!reason && model) {
-      response = await requestCandidate(
-        registry,
-        candidate,
-        model,
-        envelope,
-        config.requestTimeoutMs,
-        signal,
-        context,
-        observer,
-        state,
-        availability,
-      );
+      response = await exchange.run(model);
     }
   } catch (error) {
     signal?.throwIfAborted();
@@ -359,7 +192,7 @@ export async function requestVerdict(
 
       attempts.push({ ...candidate, status: "invalid", reason });
 
-      throw new ReviewError(reason, attempts, state.usage);
+      throw new ReviewError(reason, attempts, exchange.usage);
     }
 
     if (error instanceof Error && providerRefusal(error.message)) {
@@ -367,7 +200,7 @@ export async function requestVerdict(
 
       attempts.push({ ...candidate, status: "invalid", reason });
 
-      throw new ReviewError(reason, attempts, state.usage);
+      throw new ReviewError(reason, attempts, exchange.usage);
     }
 
     reason = isProviderHeldError(error)
@@ -394,15 +227,15 @@ export async function requestVerdict(
           verdict: stopped.denial,
           selectedReviewer: candidate,
           attempts,
-          usage: state.usage,
-          promptLookups: state.promptLookups,
+          usage: exchange.usage,
+          promptLookups: exchange.promptLookups,
         };
       }
 
       if (stopped.blocked) {
         attempts.push({ ...candidate, status: "invalid", reason: stopped.blocked });
 
-        throw new ReviewError(stopped.blocked, attempts, state.usage);
+        throw new ReviewError(stopped.blocked, attempts, exchange.usage);
       }
 
       reason = stopped.failure;
@@ -419,7 +252,7 @@ export async function requestVerdict(
     throw new ReviewError(
       `Reviewer check failed: ${reviewerLabel(candidate)}: ${reason}`,
       attempts,
-      state.usage,
+      exchange.usage,
     );
   }
 
@@ -432,19 +265,19 @@ export async function requestVerdict(
 
     attempts.push({ ...candidate, status: "invalid", reason });
 
-    throw new ReviewError(reason, attempts, state.usage);
+    throw new ReviewError(reason, attempts, exchange.usage);
   }
 
   if (
     verdict.decision === "approve" &&
-    [...(envelope.promptSources?.keys() ?? [])].some((id) => !state.consulted.has(id))
+    [...(envelope.promptSources?.keys() ?? [])].some((id) => !exchange.consulted.has(id))
   ) {
     const reason =
       "Reviewer must inspect every compressed original before approval; no fallback, nothing executed";
 
     attempts.push({ ...candidate, status: "invalid", reason });
 
-    throw new ReviewError(reason, attempts, state.usage);
+    throw new ReviewError(reason, attempts, exchange.usage);
   }
 
   attempts.push({ ...candidate, status: verdict.decision, reason: verdict.reason });
@@ -454,7 +287,7 @@ export async function requestVerdict(
     verdict,
     selectedReviewer: candidate,
     attempts,
-    usage: state.usage,
-    promptLookups: state.promptLookups,
+    usage: exchange.usage,
+    promptLookups: exchange.promptLookups,
   };
 }

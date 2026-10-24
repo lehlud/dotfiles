@@ -5,7 +5,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { sessionServices, type ActionLease } from "../shared/session/services.ts";
-import { preparePromptContext } from "../shared/review/compression.ts";
+import { compressionJournal, preparePromptContext } from "../shared/review/compression.ts";
 import { reviewerLabel, ReviewError } from "../shared/review/client.ts";
 import { buildReview, reviewAction } from "./review.ts";
 import { reviewSummary } from "./display.ts";
@@ -122,29 +122,12 @@ class ActionRun {
       config,
       this.ctx.modelRegistry,
       getAgentDir(),
-      {
-        start: (label) =>
-          this.update?.({
-            content: [{ type: "text", text: `Prompt compression · ${label}` }],
-            details: { phase: "compressing" },
-          }),
-        saved: (record) => {
-          if (
-            !branch.some(
-              (entry) =>
-                entry.type === "custom" &&
-                entry.customType === "auto-approval-prompt-compression" &&
-                (entry.data as { promptId?: string; text?: string })?.promptId ===
-                  record.promptId &&
-                (entry.data as { text?: string })?.text === record.text,
-            )
-          )
-            this.pi.appendEntry("auto-approval-prompt-compression", record);
-        },
-
-        failed: (attempt) =>
-          this.pi.appendEntry("auto-approval-compressor-failure", { toolCallId: this.id, attempt }),
-      },
+      compressionJournal(this.pi, branch, { toolCallId: this.id }, (label) =>
+        this.update?.({
+          content: [{ type: "text", text: `Prompt compression · ${label}` }],
+          details: { phase: "compressing" },
+        }),
+      ),
       this.signal,
       operatorGoal,
       processing,
@@ -221,35 +204,34 @@ class ActionRun {
     return checked.verdict;
   }
 
-  private async execute({
-    request,
-    workspace,
-    config,
-    credentialPlan,
-    remote,
-    localGitWorkspace,
-    container,
-  }: PreparedAction) {
-    const result = container
-      ? await container.execute(this.signal)
-      : remote
-        ? request.sandbox?.gitConfig === true
-          ? await executeWithGitConfig(
-              request,
-              localGitWorkspace!,
-              config,
-              this.signal,
-              undefined,
-              undefined,
-              undefined,
-              (text) => remote.execute(this.signal, text),
-            )
-          : await remote.execute(this.signal)
-        : credentialPlan
-          ? await executeWithCredentials(request, credentialPlan, config, this.signal, workspace)
-          : request.sandbox?.gitConfig === true
-            ? await executeWithGitConfig(request, workspace, config, this.signal)
-            : await executeIsolated(request, workspace, config.sandbox, this.signal);
+  private dispatch(prepared: PreparedAction) {
+    const { request, workspace, config, credentialPlan, remote, localGitWorkspace, container } =
+      prepared;
+
+    if (container) return container.execute(this.signal);
+
+    if (remote) {
+      if (request.sandbox?.gitConfig === true)
+        return executeWithGitConfig(request, localGitWorkspace!, config, {
+          signal: this.signal,
+          dispatch: (text) => remote.execute(this.signal, text),
+        });
+
+      return remote.execute(this.signal);
+    }
+
+    if (credentialPlan)
+      return executeWithCredentials(request, credentialPlan, config, this.signal, workspace);
+
+    if (request.sandbox?.gitConfig === true)
+      return executeWithGitConfig(request, workspace, config, { signal: this.signal });
+
+    return executeIsolated(request, workspace, config.sandbox, this.signal);
+  }
+
+  private async execute(prepared: PreparedAction) {
+    const { request } = prepared;
+    const result = await this.dispatch(prepared);
 
     if (isWebTool(request.tool))
       return {

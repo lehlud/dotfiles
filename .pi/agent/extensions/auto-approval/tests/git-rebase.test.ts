@@ -91,7 +91,7 @@ function run(repo: Repository, argv: string[], grant = true) {
   const request = action(argv, grant);
 
   return grant
-    ? executeWithGitConfig(request, repo.workspace, config, undefined, home, xdg)
+    ? executeWithGitConfig(request, repo.workspace, config, { home, xdg })
     : executeIsolated(request, repo.workspace, config.sandbox);
 }
 

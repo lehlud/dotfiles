@@ -97,16 +97,26 @@ function entries(text: string): [string, string][] {
     });
 }
 
+type GitExecutionOptions = {
+  signal?: AbortSignal;
+  home?: string;
+  xdg?: string;
+  global?: string;
+  dispatch?: (publicConfig: string) => ReturnType<typeof executeIsolated>;
+};
+
 // After approval, read originals privately and delegate only public values to Git.
 export async function executeWithGitConfig(
   request: Request,
   workspace: Workspace,
   config: Config,
-  signal?: AbortSignal,
-  home = homedir(),
-  xdg = process.env.XDG_CONFIG_HOME ?? join(home, ".config"),
-  global = process.env.GIT_CONFIG_GLOBAL,
-  dispatch?: (publicConfig: string) => ReturnType<typeof executeIsolated>,
+  {
+    signal,
+    home = homedir(),
+    xdg = process.env.XDG_CONFIG_HOME ?? join(home, ".config"),
+    global = process.env.GIT_CONFIG_GLOBAL,
+    dispatch,
+  }: GitExecutionOptions = {},
 ) {
   validateGitRequest(request, config);
 
