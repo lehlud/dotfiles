@@ -1,23 +1,802 @@
 #!/usr/bin/env bash
+#
+# Standalone cmatrix-compatible screensaver: plain bash, no ncurses and no
+# container runtime.
+#
+# Rendering follows upstream cmatrix: one stream per even column, a white
+# head, a solid body, random stream length and gaps. Each frame is assembled
+# as one string from precomputed cursor prefixes and written in a single
+# call, so the terminal wakes once per frame instead of once per cell.
 
-_helper="${AUTO_UPDATE_APP_HELPER:-$HOME/.local/bin/auto-update-app.bash}"
-if [ ! -r "$_helper" ]; then
-    printf 'cmatrix: missing auto-update helper: %s\n' "$_helper" >&2
+set -uo pipefail
+
+VERSION='cmatrix (bash clone) 2.0'
+DEFAULT_UPDATE=4
+DEFAULT_COLOR='green'
+
+# Glyph ranges used by upstream cmatrix: printable ASCII by default, and
+# half-width kana U+FF66 to U+FF9D with -c.
+LATIN_BASE=33
+KANA_BASE=$((0xFF66))
+LATIN_GLYPHS='!"#$%&'\''()*+,-./0123456789:;<=>?@'
+LATIN_GLYPHS+='ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`'
+LATIN_GLYPHS+='abcdefghijklmnopqrstuvwxyz'
+KANA_GLYPHS='ｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ'
+KANA_COUNT=56
+
+# Cell kinds for the old style scrolling mode.
+KIND_MARKER=0
+KIND_PIPE=1
+KIND_BLANK=2
+KIND_GLYPH=3
+
+update=$DEFAULT_UPDATE
+color_name=$DEFAULT_COLOR
+classic=0
+async_mode=0
+bold_mode=0
+screensaver=0
+paused=0
+lock=0
+rainbow=0
+lambda=0
+morph=0
+old_style=0
+message=''
+tty_path=''
+out_fd=1
+in_fd=0
+frame_count=0
+resized=0
+
+usage() {
+  cat <<'EOF'
+cmatrix compatible subset (standalone, no ncurses, no container)
+
+Usage:
+  cmatrix [-abBcfhklLmnorsx] [-C color] [-M text] [-t tty]
+          [-u delay] [-h] [-V]
+
+Options:
+  -a              Asynchronous scroll, one pace per column
+  -b              Bold characters, alternating
+  -B              All characters bold
+  -c              Half-width kana glyphs, as in the film
+  -C color        green, red, blue, white, yellow, cyan, magenta, black
+  -f              Accepted, no linux console forcing
+  -h, --help      Show this help
+  -k              Characters change while scrolling
+  -l              Accepted, no console font switching
+  -L              Lock mode, q and signals are ignored
+  -m              Lambda mode
+  -M text         Print text in the middle of the screen
+  -n              No bold characters (default)
+  -o              Old style scrolling
+  -r              Rainbow mode
+  -s              Screensaver mode, any key exits
+  -t tty          Render on the given terminal device
+  -u delay        Update delay 0 to 10 (default 4)
+  -V, --version   Show version
+  -x              Accepted, no xterm font handling
+
+Notes:
+  -a has no effect with -o, the whole field scrolls as one.
+  -L also ignores SIGINT and SIGTERM, as upstream does.
+
+Keys while running:
+  q quit, a async, b/B/n bold, p pause, r rainbow, m lambda,
+  L lock, 0-9 speed, ! @ # $ % ^ & select colours
+EOF
+}
+
+parse_args() {
+  local arg cluster letter value
+
+  while (($# > 0)); do
+    arg="$1"
+
+    case "$arg" in
+      --help)
+        usage
+        exit 0
+        ;;
+
+      --version)
+        echo "$VERSION"
+        exit 0
+        ;;
+
+      --)
+        shift
+        break
+        ;;
+    esac
+
+    if [[ "$arg" != -?* ]]; then
+      echo "cmatrix: unexpected operand: $arg" >&2
+      exit 2
+    fi
+
+    cluster="${arg#-}"
+
+    while [[ -n "$cluster" ]]; do
+      letter="${cluster:0:1}"
+      cluster="${cluster:1}"
+
+      case "$letter" in
+        a)
+          async_mode=1
+          ;;
+
+        b)
+          bold_mode=1
+          ;;
+
+        B)
+          bold_mode=2
+          ;;
+
+        c)
+          classic=1
+          ;;
+
+        f|l|x)
+          # Accepted for compatibility, no console or xterm font handling.
+          ;;
+
+        h)
+          usage
+          exit 0
+          ;;
+
+        k)
+          morph=1
+          ;;
+
+        L)
+          lock=1
+          ;;
+
+        m)
+          lambda=1
+          ;;
+
+        n)
+          bold_mode=0
+          ;;
+
+        o)
+          old_style=1
+          ;;
+
+        r)
+          rainbow=1
+          ;;
+
+        s)
+          screensaver=1
+          ;;
+
+        V)
+          echo "$VERSION"
+          exit 0
+          ;;
+
+        C|M|t|u)
+          if [[ -n "$cluster" ]]; then
+            value="$cluster"
+            cluster=''
+          else
+            shift
+
+            if (($# == 0)); then
+              echo "cmatrix: option -$letter requires an argument" >&2
+              exit 2
+            fi
+
+            value="$1"
+          fi
+
+          if [[ "$letter" == C ]]; then
+            color_name="$value"
+          elif [[ "$letter" == M ]]; then
+            message="$value"
+          elif [[ "$letter" == t ]]; then
+            tty_path="$value"
+          else
+            update="$value"
+          fi
+          ;;
+
+        *)
+          echo "cmatrix: unknown option: -$letter" >&2
+          usage >&2
+          exit 2
+          ;;
+      esac
+    done
+
+    shift
+  done
+}
+
+load_palette() {
+  local base shade
+
+  case "$color_name" in
+    black)
+      base=30
+      ;;
+    blue)
+      base=34
+      ;;
+    cyan)
+      base=36
+      ;;
+    green)
+      base=32
+      ;;
+    magenta)
+      base=35
+      ;;
+    red)
+      base=31
+      ;;
+    white)
+      base=37
+      ;;
+    yellow)
+      base=33
+      ;;
+    *)
+      echo "cmatrix: unknown color: $color_name" >&2
+      echo 'cmatrix: colors are green, red, blue, white, yellow,' >&2
+      echo 'cmatrix: cyan, magenta and black' >&2
+      exit 2
+      ;;
+  esac
+
+  reset_color="$(printf '\033[0m')"
+  head_plain="$(printf '\033[0;37m')"
+  head_bold="$(printf '\033[1;37m')"
+  body_plain="$(printf '\033[0;%sm' "$base")"
+  body_bold="$(printf '\033[1;%sm' "$base")"
+
+  # Rainbow mode cycles the same six colours as upstream.
+  RAINBOW_PLAIN=()
+  RAINBOW_BOLD=()
+
+  for shade in 32 34 30 33 36 35; do
+    RAINBOW_PLAIN+=("$(printf '\033[0;%sm' "$shade")")
+    RAINBOW_BOLD+=("$(printf '\033[1;%sm' "$shade")")
+  done
+
+  rainbow_count=${#RAINBOW_PLAIN[@]}
+
+  apply_bold
+}
+
+# Upstream bolds alternating glyphs with -b, all glyphs with -B, none by
+# default. The head follows the same bold setting.
+apply_bold() {
+  head_color="$head_plain"
+
+  if ((bold_mode != 0)); then
+    head_color="$head_bold"
+  fi
+
+  if ((bold_mode == 2)); then
+    body_even_color="$body_bold"
+    body_odd_color="$body_bold"
+  elif ((bold_mode == 1)); then
+    body_even_color="$body_bold"
+    body_odd_color="$body_plain"
+  else
+    body_even_color="$body_plain"
+    body_odd_color="$body_plain"
+  fi
+}
+
+build_glyphs() {
+  local base source index
+
+  GLYPHS=()
+  PARITY=()
+
+  if ((lambda)); then
+    GLYPHS+=('λ')
+    PARITY+=(1)
+
+    glyph_count=1
+    return 0
+  fi
+
+  base=$LATIN_BASE
+  source=$LATIN_GLYPHS
+
+  if ((classic)); then
+    base=$KANA_BASE
+    source=$KANA_GLYPHS
+
+    # Kana slicing only works when the locale counts characters.
+    if ((${#source} != KANA_COUNT)); then
+      echo 'cmatrix: -c needs a UTF-8 locale for half-width kana' >&2
+      exit 1
+    fi
+  fi
+
+  for ((index = 0; index < ${#source}; index++)); do
+    GLYPHS+=("${source:index:1}")
+    PARITY+=($(((base + index) % 2)))
+  done
+
+  glyph_count=${#GLYPHS[@]}
+}
+
+terminal_size() {
+  local reported rows columns
+
+  reported="$(stty size 2>/dev/null || true)"
+
+  if [[ "$reported" =~ ^([0-9]+)\ ([0-9]+)$ ]]; then
+    lines="${BASH_REMATCH[1]}"
+    cols="${BASH_REMATCH[2]}"
+    return 0
+  fi
+
+  rows="$(tput lines 2>/dev/null || printf '24')"
+  columns="$(tput cols 2>/dev/null || printf '80')"
+
+  [[ "$rows" =~ ^[0-9]+$ ]] || rows=24
+  [[ "$columns" =~ ^[0-9]+$ ]] || columns=80
+
+  lines=$rows
+  cols=$columns
+}
+
+open_target() {
+  if [[ -z "$tty_path" ]]; then
+    return 0
+  fi
+
+  if ! exec 3<>"$tty_path"; then
+    echo "cmatrix: cannot open tty: $tty_path" >&2
     exit 1
-fi
-source "$_helper"
+  fi
 
-_image=dotfiles/terminal-toys:latest
-_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/terminal-toys")"
-if ! auto_update_ensure_docker_build cmatrix "$_image" "$_cache_dir" \
-    "$HOME/.local/scripts/terminal-toys.Dockerfile" 3; then
+  out_fd=3
+  in_fd=3
+}
+
+# Cursor prefixes are constant per row and column, so each cell costs one
+# concatenation instead of a printf call.
+build_escapes() {
+  local row c
+
+  ROW_PREFIX=()
+  COL_POS=()
+  HEAD_TOP=()
+
+  for ((row = 1; row <= lines; row++)); do
+    ROW_PREFIX[row]="$(printf '\033[%d;' "$row")"
+  done
+
+  for ((c = 0; c < column_count; c++)); do
+    COL_POS[c]="$(printf '%dH' "$((2 * c + 1))")"
+    HEAD_TOP[c]="${ROW_PREFIX[1]}${COL_POS[c]}"
+  done
+}
+
+build_message() {
+  local row column width blank top middle bottom
+
+  MSG_BLOCK=''
+
+  if [[ -z "$message" ]]; then
+    return 0
+  fi
+
+  row=$((lines / 2))
+  width=$((${#message} + 4))
+  column=$((cols / 2 - ${#message} / 2 - 2))
+
+  if ((column < 1)); then
+    column=1
+  fi
+
+  if ((row < 2)) || ((row >= lines)); then
+    return 0
+  fi
+
+  blank="$(printf '%*s' "$width" '')"
+  top="${ROW_PREFIX[row - 1]}${column}H${body_plain}${blank}"
+  middle="${ROW_PREFIX[row]}${column}H${body_plain}  ${message}  "
+  bottom="${ROW_PREFIX[row + 1]}${column}H${body_plain}${blank}"
+
+  MSG_BLOCK="${top}${middle}${bottom}"
+}
+
+# Column state is reset on start and after a resize, as upstream does.
+setup_columns() {
+  local c
+
+  terminal_size
+
+  if ((lines < 10)) || ((cols < 10)); then
+    echo 'cmatrix: terminal must be at least 10x10' >&2
     exit 1
+  fi
+
+  column_count=$(((cols + 1) / 2))
+
+  active=()
+  heads=()
+  lengths=()
+  gaps=()
+  paces=()
+  last_glyph=()
+  last_parity=()
+  old_kind=()
+  old_parity=()
+  old_spaces=()
+
+  for ((c = 0; c < column_count; c++)); do
+    active[c]=0
+    heads[c]=0
+    lengths[c]=$((RANDOM % (lines - 3) + 3))
+    gaps[c]=$((RANDOM % lines + 1))
+    paces[c]=$((RANDOM % 3 + 1))
+    last_glyph[c]=${GLYPHS[0]}
+    last_parity[c]=0
+    old_kind[c]=$KIND_BLANK
+    old_parity[c]=0
+    old_spaces[c]=$((RANDOM % lines + 1))
+  done
+}
+
+render_streams() {
+  local c pos head previous erase idx glyph body fragment buffer=''
+
+  for ((c = 0; c < column_count; c++)); do
+    if ((async_mode)); then
+      if ((frame_count <= paces[c])); then
+        continue
+      fi
+    fi
+
+    pos=${COL_POS[c]}
+
+    if ((active[c] == 0)); then
+      gaps[c]=$((gaps[c] - 1))
+
+      if ((gaps[c] > 0)); then
+        continue
+      fi
+
+      active[c]=1
+      heads[c]=0
+      lengths[c]=$((RANDOM % (lines - 3) + 3))
+    fi
+
+    head=$((heads[c] + 1))
+    heads[c]=$head
+
+    previous=$((head - 1))
+    erase=$((head - lengths[c]))
+    fragment=''
+
+    if ((erase >= 1)) && ((erase <= lines)); then
+      fragment+="${ROW_PREFIX[erase]}${pos} "
+    fi
+
+    if ((previous >= 1)) && ((previous <= lines)); then
+      glyph=${last_glyph[c]}
+
+      if ((morph)); then
+        if ((RANDOM % 8 == 0)); then
+          idx=$((RANDOM % glyph_count))
+          glyph=${GLYPHS[idx]}
+          last_glyph[c]=$glyph
+          last_parity[c]=${PARITY[idx]}
+        fi
+      fi
+
+      if ((rainbow)); then
+        body=${RAINBOW_PLAIN[RANDOM % rainbow_count]}
+      elif ((last_parity[c] == 0)); then
+        body=$body_even_color
+      else
+        body=$body_odd_color
+      fi
+
+      fragment+="${ROW_PREFIX[previous]}${pos}${body}${glyph}"
+    fi
+
+    if ((head <= lines)); then
+      idx=$((RANDOM % glyph_count))
+      glyph=${GLYPHS[idx]}
+      last_glyph[c]=$glyph
+      last_parity[c]=${PARITY[idx]}
+
+      if ((rainbow)); then
+        body=${RAINBOW_PLAIN[RANDOM % rainbow_count]}
+        fragment+="${ROW_PREFIX[head]}${pos}${body}${glyph}"
+      else
+        fragment+="${ROW_PREFIX[head]}${pos}${head_color}${glyph}"
+      fi
+    fi
+
+    if ((erase > lines)); then
+      active[c]=0
+      gaps[c]=$((RANDOM % lines + 1))
+    fi
+
+    buffer+=$fragment
+  done
+
+  printf '%s' "$buffer" >&"$out_fd"
+}
+
+# Old style scrolls the field down one row per frame, then decides the new
+# top cell per column, following the upstream state machine.
+render_old_style() {
+  local c kind idx glyph body fragment buffer=$'\033[1H\033M'
+
+  for ((c = 0; c < column_count; c++)); do
+    kind=${old_kind[c]}
+
+    case "$kind" in
+      "$KIND_MARKER")
+        kind=$KIND_PIPE
+        ;;
+
+      "$KIND_PIPE")
+        kind=$KIND_GLYPH
+        ;;
+
+      "$KIND_BLANK")
+        if ((old_spaces[c] > 0)); then
+          old_spaces[c]=$((old_spaces[c] - 1))
+        else
+          if ((RANDOM % 3 == 1)); then
+            kind=$KIND_MARKER
+          else
+            kind=$KIND_GLYPH
+          fi
+
+          old_spaces[c]=$((RANDOM % lines + 1))
+        fi
+        ;;
+
+      *)
+        if ((RANDOM % 97 < 7)); then
+          kind=$KIND_BLANK
+        else
+          kind=$KIND_GLYPH
+        fi
+        ;;
+    esac
+
+    old_kind[c]=$kind
+    fragment=''
+
+    case "$kind" in
+      "$KIND_MARKER")
+        fragment="${HEAD_TOP[c]}${head_color}&"
+        ;;
+
+      "$KIND_PIPE")
+        fragment="${HEAD_TOP[c]}${body_plain}|"
+        ;;
+
+      "$KIND_GLYPH")
+        idx=$((RANDOM % glyph_count))
+        glyph=${GLYPHS[idx]}
+        old_parity[c]=${PARITY[idx]}
+
+        if ((rainbow)); then
+          body=${RAINBOW_PLAIN[RANDOM % rainbow_count]}
+        elif ((old_parity[c] == 0)); then
+          body=$body_even_color
+        else
+          body=$body_odd_color
+        fi
+
+        fragment="${HEAD_TOP[c]}${body}${glyph}"
+        ;;
+    esac
+
+    buffer+=$fragment
+  done
+
+  printf '%s' "$buffer" >&"$out_fd"
+}
+
+set_delay() {
+  local milliseconds
+
+  milliseconds=$((update * 10))
+
+  if ((milliseconds < 1)); then
+    milliseconds=1
+  fi
+
+  delay="$(printf '0.%03d' "$milliseconds")"
+}
+
+handle_key() {
+  local key="$1"
+
+  if ((screensaver)); then
+    exit 0
+  fi
+
+  case "$key" in
+    q|Q)
+      if ((lock == 0)); then
+        exit 0
+      fi
+      ;;
+
+    a)
+      async_mode=$((1 - async_mode))
+      ;;
+
+    b)
+      bold_mode=1
+      apply_bold
+      ;;
+
+    B)
+      bold_mode=2
+      apply_bold
+      ;;
+
+    n)
+      bold_mode=0
+      apply_bold
+      ;;
+
+    L)
+      lock=1
+      ;;
+
+    m)
+      lambda=$((1 - lambda))
+      build_glyphs
+      ;;
+
+    p|P)
+      paused=$((1 - paused))
+      ;;
+
+    r)
+      rainbow=$((1 - rainbow))
+      ;;
+
+    [0-9])
+      update=$key
+      set_delay
+      ;;
+
+    '!')
+      color_name=red
+      rainbow=0
+      load_palette
+      ;;
+
+    '@')
+      color_name=green
+      rainbow=0
+      load_palette
+      ;;
+
+    '#')
+      color_name=yellow
+      rainbow=0
+      load_palette
+      ;;
+
+    '$')
+      color_name=blue
+      rainbow=0
+      load_palette
+      ;;
+
+    '%')
+      color_name=magenta
+      rainbow=0
+      load_palette
+      ;;
+
+    '^')
+      color_name=cyan
+      rainbow=0
+      load_palette
+      ;;
+
+    '&')
+      color_name=white
+      rainbow=0
+      load_palette
+      ;;
+  esac
+}
+
+on_interrupt() {
+  if ((lock)); then
+    return 0
+  fi
+
+  exit 0
+}
+
+cleanup() {
+  trap - EXIT INT TERM WINCH
+
+  printf '%s\033[?25h\033[r\033[2J\033[H' "$reset_color" >&"$out_fd"
+}
+
+main() {
+  local key
+
+  load_palette
+  build_glyphs
+  open_target
+  setup_columns
+  set_delay
+  build_escapes
+  build_message
+
+  trap cleanup EXIT
+  trap 'on_interrupt' INT TERM
+  trap 'resized=1' WINCH
+
+  printf '\033[?25l\033[2J' >&"$out_fd"
+
+  while :; do
+    if ((resized)); then
+      resized=0
+      setup_columns
+      build_escapes
+      build_message
+      printf '\033[r\033[2J' >&"$out_fd"
+    fi
+
+    # Upstream cycles this counter through one to four each frame.
+    frame_count=$((frame_count % 4 + 1))
+
+    if ((paused == 0)); then
+      if ((old_style)); then
+        render_old_style
+      else
+        render_streams
+      fi
+    fi
+
+    if [[ -n "$MSG_BLOCK" ]]; then
+      printf '%s' "$MSG_BLOCK" >&"$out_fd"
+    fi
+
+    if [[ -t $in_fd ]]; then
+      if IFS= read -r -s -n 1 -t "$delay" -u "$in_fd" key; then
+        handle_key "$key"
+      fi
+    else
+      sleep "$delay"
+    fi
+  done
+}
+
+parse_args "$@"
+
+if ! [[ "$update" =~ ^[0-9]+$ ]] || ((update > 10)); then
+  echo 'cmatrix: -u requires an integer between 0 and 10' >&2
+  exit 2
 fi
 
-_tty=(-i)
-if [ -t 0 ] && [ -t 1 ]; then
-    _tty=(-it)
+if ((lock)) && [[ -z "$message" ]]; then
+  message='Computer locked.'
 fi
-exec docker run "${_tty[@]}" --rm --init \
-    --env "TERM=${TERM:-xterm-256color}" --entrypoint /usr/bin/cmatrix \
-    "$_image" "$@"
+
+main
