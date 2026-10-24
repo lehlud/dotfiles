@@ -106,7 +106,9 @@ Running goals recover unread mail eventfully when any member settles, once per n
 only for recipients with unobserved data. Outside goals passive mail stays passive. Settled
 checkpoints use shared mailbox/action progress, not final-reply counts, without polling. Paused/
 stopped/closed teams never revive. Shared goals/feedback reach all peers; permissible set_goal
-creates self-assigned metadata, never authority/replacement. Completion waits for peer work/mail;
+requires independent goal-proposal approval before creating self-assigned metadata, never
+authority/replacement. Peer calls use the same parent-owned gate; mailbox messages cannot approve
+a goal. Completion waits for peer work/mail;
 new work/messages/results invalidate older verdicts. No member gains power over another.
 
 Escape, Ctrl+C, RPC abort, /goal stop, off, reload, exit and session replacement/tree navigation

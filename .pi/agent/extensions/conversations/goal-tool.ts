@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { GOAL_TOOL } from "../shared/contracts/goal.ts";
 import { sessionServices } from "../shared/session/services.ts";
 
-/** Session metadata only: goals never confer user authorization or execute actions. */
+/** The controller independently approves each proposal before changing goal metadata. */
 export function registerGoalTool(pi: ExtensionAPI) {
   pi.registerTool({
     name: GOAL_TOOL,
@@ -11,21 +11,26 @@ export function registerGoalTool(pi: ExtensionAPI) {
     exposure: "model-only",
     executionMode: "parallel",
     description:
-      "Set a self-assigned session goal within the user's task. Cannot replace an active goal; repeating your own goal resumes it without resetting review feedback. Completion is independently verified. Grants no action permission.",
+      "Request independent approval for a goal faithful to the full user task, without weakening outcomes or validation. Every call is reviewed, including repeats/resumes. Cannot replace an active goal or reset review feedback. Approval grants no external-action permission; completion is separately verified.",
     parameters: Type.Object(
       { goal: Type.String({ minLength: 1, maxLength: 8000 }) },
       {
         additionalProperties: false,
       },
     ),
-    async execute(_id, args, signal, _update, ctx) {
+    async execute(_id, args, signal, update, ctx) {
       const set = sessionServices(ctx).setAgentGoal;
 
       if (!set) {
         throw new Error("Session goal controller unavailable");
       }
 
-      const goal = await set(args.goal, signal);
+      const goal = await set(args.goal, signal, (text) =>
+        update?.({
+          content: [{ type: "text", text }],
+          details: { phase: "reviewing" },
+        }),
+      );
 
       return {
         content: [{ type: "text", text: `Agent goal: ${goal.text} · ${goal.status}` }],

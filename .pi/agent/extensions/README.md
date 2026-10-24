@@ -24,6 +24,8 @@ is a library, not an extension; its contracts/infrastructure never import featur
 
 - Feature controllers own lifecycle. Completion reviews cannot authorize actions;
   context projections, metadata and presentation cannot create authorization.
+  Conversations independently reviews model-proposed goals before activation, sharing operator
+  evidence preparation with completion checks. Goal approval grants no external permissions.
 - `multiplex/peer.ts` and `subagents/child.ts` are explicit composition roots. Each
   child gets its own gate, policies and session storage; shared child transport,
   provider setup, names and cancellation serve both without reverse imports.

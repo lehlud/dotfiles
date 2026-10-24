@@ -48,11 +48,15 @@ builder/tmp guarantees fail closed. No new profile/local cgroupRoot is needed fo
 
 [Conversations](../conversations/README.md) owns goals, continuation, steering and questions;
 [Multiplex](../multiplex/README.md) owns equal peers, coordination and mail. Internal mailbox,
-question and set_goal tools bypass action review only for metadata, never external execution
+question tools bypass action review only for metadata, never external execution
 or authorization. The gate returns immediately for mailbox without inspecting content/services
 or creating an approval audit; messages may proceed alongside the serialized external-action queue.
 Questions cannot answer themselves for users; self-assigned goals cannot replace unfinished goals
 or enter genuine-user evidence. Pending questions replace the editor until resolved.
+
+Every `set_goal` call instead runs its own mandatory independent goal-proposal approval through
+the configured reviewer, including repeats/resumes. It must retain the user task's outcomes and
+validation bar; approval is persisted before activation and grants no external permissions.
 
 Multiplex enforces/pins assignment leases locally before review/execution. Reviewers see exact
 actions, access and genuine user constraints/evidence, not names, team size, plans or assignments.

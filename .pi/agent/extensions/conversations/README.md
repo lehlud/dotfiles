@@ -90,8 +90,16 @@ limits goal costs; interruption remains available.
 
 ## Agent-assigned goals
 
-`set_goal({goal: "..."})` updates metadata without action review, using the same footer and
-completion checks. An existing real operator task is required. `source: agent` labels the
+Every `set_goal({goal: "..."})` call requires independent approval before changing metadata,
+including repeats and resumes. The configured reviewer checks the full user task: omitted
+outcomes, weaker validation or trivial substitute goals are rejected. Only an explicitly requested
+bounded target may become a subgoal. This goal-integrity check does not impose implementation
+preferences on ordinary action approval. Operator `/goal` commands remain authoritative.
+
+Approval and its exact request/fingerprint are recorded before activation. Denial, invalid output,
+missing reviewer access, audit failure, cancellation or changed instructions leave the goal
+unchanged. Completion is still reviewed separately using the same footer/checks.
+An existing real operator task is required. `source: agent` labels the
 self-assigned target as DATA, excludes it from genuine-user history/`operatorGoal`, and grants
 no authority. Legacy goals retain operator provenance.
 
@@ -100,6 +108,12 @@ Repeating the same target is idempotent when running, resumes when paused, and r
 checks and feedback. Only operators replace unfinished targets, stop them or impose scope.
 Multiplex shares the target through the parent controller without peer privilege. Completion
 waits for peer work/unread deliveries. Interrupt/session changes invalidate late setters.
+After an operator stop/drop, an agent cannot recreate tracking from old instructions alone.
+Later actual user instructions are reviewed in context rather than treated as automatic permission.
+
+`bun run eval:goal-proposals` in `../auto-approval` runs five paid, review-only cases against
+the configured reviewer: faithful/full and explicitly bounded targets, trivial substitutes,
+weakened validation and invented user permission. No goal or external action is applied.
 
 ## Corrections during ongoing work
 

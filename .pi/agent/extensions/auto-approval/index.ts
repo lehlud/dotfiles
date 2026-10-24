@@ -78,7 +78,8 @@ export default function autoApproval(pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", (event) => {
-    // Internal mailbox, goal and question metadata grant no external-action permissions.
+    // Goal proposals have their own mandatory independent review in the controller.
+    // Other internal metadata tools grant no external-action permissions.
     if (
       event.toolName === "mailbox" ||
       event.toolName === GOAL_TOOL ||

@@ -100,7 +100,7 @@ async function fixture(
         ? JSON.stringify({
             requestId: data.requestId,
             decision: incomplete ? "deny" : "approve",
-            blocked: externalBlocker,
+            ...(!data.action ? { blocked: externalBlocker } : {}),
             reason: incomplete
               ? "Die ursprüngliche Validierung fehlt noch."
               : "Das Ergebnis liegt vor.",
@@ -537,7 +537,7 @@ test("real Pi drops a goal during streaming without stopping work or restoring t
   }
 });
 
-test("a real working model can set its own goal without an action review or forged operator intent", async () => {
+test("a real working model needs independent proposal approval without forging operator intent", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-agent-goal-sdk-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
 
@@ -569,10 +569,26 @@ test("a real working model can set its own goal without an action review or forg
 
     const reviews = contexts.filter((context) => context.model === "reviewer");
 
-    expect(reviews).toHaveLength(1);
+    expect(reviews).toHaveLength(2);
+
+    const proposal = JSON.parse(
+      textContent(reviews[0].messages.find((entry: any) => entry.role === "user").content),
+    );
+
+    expect(proposal.action).toEqual({
+      tool: "set_goal",
+      arguments: { goal: "Explain the supplied result" },
+    });
+    expect(
+      branch.some(
+        (entry: any) =>
+          entry.customType === "auto-approval-goal-proposal-review" &&
+          entry.data.verdict.decision === "approve",
+      ),
+    ).toBe(true);
 
     const data = JSON.parse(
-      textContent(reviews[0].messages.find((entry: any) => entry.role === "user").content),
+      textContent(reviews[1].messages.find((entry: any) => entry.role === "user").content),
     );
 
     expect(data.operatorGoal).toBeUndefined();

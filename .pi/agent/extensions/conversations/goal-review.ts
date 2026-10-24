@@ -1,11 +1,5 @@
-import {
-  getAgentDir,
-  type ExtensionAPI,
-  type ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
-import { loadSessionConfig } from "../shared/session/config.ts";
+import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { requestVerdict } from "../shared/review/client.ts";
-import { preparePromptContext } from "../shared/review/compression.ts";
 import type { GoalSource } from "../shared/contracts/goal.ts";
 import type { Goal } from "./goal-state.ts";
 import { createHash } from "node:crypto";
@@ -15,7 +9,7 @@ import type { ReviewSettings } from "../shared/review/protocol.ts";
 import { type Entry } from "../shared/review/evidence.ts";
 import { checkReviewSize } from "../shared/review/context.ts";
 import type { PreparedPrompts } from "../shared/review/compression.ts";
-import { sessionServices } from "../shared/session/services.ts";
+import { prepareGoalEvidence } from "./goal-evidence.ts";
 
 export const GOAL_REVIEW_SYSTEM = `You independently verify whether the session goal is fully achieved.
 ${REVIEW_LANGUAGE}
@@ -121,35 +115,12 @@ export async function verifyGoal(
   display: (status: string) => void,
   onPrepared: (review: ReturnType<typeof buildGoalReview>) => void,
 ) {
-  const config = await loadSessionConfig(ctx);
-  const processing = { fastMode: () => sessionServices(ctx).fastMode?.() ?? false };
-  const branch = ctx.sessionManager.getBranch();
-  const prepared = await preparePromptContext(
-    branch,
-    config,
-    ctx.modelRegistry,
-    getAgentDir(),
-    {
-      start: () => display("compressing"),
-      saved: (record) => {
-        if (
-          !branch.some(
-            (entry) =>
-              entry.type === "custom" &&
-              entry.customType === "auto-approval-prompt-compression" &&
-              (entry.data as any)?.promptId === record.promptId &&
-              (entry.data as any)?.text === record.text,
-          )
-        )
-          pi.appendEntry("auto-approval-prompt-compression", record);
-      },
-
-      failed: (attempt) =>
-        pi.appendEntry("auto-approval-compressor-failure", { goalId: current.id, attempt }),
-    },
+  const { config, processing, branch, prepared } = await prepareGoalEvidence(
+    pi,
+    ctx,
+    current,
     signal,
-    current.source === "agent" ? undefined : current.text,
-    processing,
+    display,
   );
   const envelope = buildGoalReview(
     current.text,

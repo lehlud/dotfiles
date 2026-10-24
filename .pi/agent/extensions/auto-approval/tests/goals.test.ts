@@ -12,6 +12,7 @@ import { WRITING_RULEBOOK } from "../../public-writing/rules.ts";
 import { FooterComponent, initTheme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { sessionServices } from "../../shared/session/services.ts";
+import { GOAL_PROPOSAL_POLICY } from "../../conversations/goal-proposal.ts";
 
 const root = await mkdtemp(join(tmpdir(), "pi-goal-test-"));
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -225,7 +226,8 @@ beforeEach(async () => {
           result: async () => {
             duringReview?.();
 
-            const requestId = JSON.parse(context.messages[0].content).requestId;
+            const data = JSON.parse(context.messages[0].content);
+            const requestId = data.requestId;
             const decision = verdicts.shift() ?? "approve";
 
             return {
@@ -240,7 +242,7 @@ beforeEach(async () => {
                       : JSON.stringify({
                           requestId,
                           decision,
-                          blocked: reviewBlocked,
+                          ...(data.action?.tool === "set_goal" ? {} : { blocked: reviewBlocked }),
                           reason:
                             decision === "deny"
                               ? "Run the missing validation"
@@ -794,10 +796,120 @@ function realTask() {
   });
 }
 
+test("a denied low-bar goal changes no goal state or operator instructions", async () => {
+  realTask();
+  verdicts = ["deny"];
+
+  await expect(setAgent("Read one file and declare the parser repaired")).rejects.toThrow(
+    "Goal proposal denied",
+  );
+  expect(state()).toBeUndefined();
+  expect(sent).toHaveLength(0);
+  expect(
+    entries.filter((entry) => entry.customType === "auto-approval-goal-proposal-review"),
+  ).toHaveLength(1);
+
+  const data = JSON.parse(requests[0].context.messages[0].content);
+
+  expect(data.action.arguments.goal).toContain("Read one file");
+  expect(data.userPrompts).toEqual(["Repair the parser. Never upload source."]);
+  expect(data.operatorGoal).toBeUndefined();
+  expect(requests[0].context.systemPrompt).toContain(GOAL_PROPOSAL_POLICY);
+  expect(GOAL_PROPOSAL_POLICY).toContain("trivial milestone substituted for the task");
+  expect(GOAL_PROPOSAL_POLICY).toContain("Only actual user instructions can reduce scope");
+});
+
+test("each repeated goal request is reviewed and approval precedes activation", async () => {
+  realTask();
+  await setAgent("Repair the parser and validate its behavior");
+  await setAgent("Repair the parser and validate its behavior");
+
+  expect(requests).toHaveLength(2);
+  expect(
+    entries.filter((entry) => entry.customType === "auto-approval-goal-proposal-review"),
+  ).toHaveLength(2);
+  expect(
+    entries.findIndex((entry) => entry.customType === "auto-approval-goal-proposal-review"),
+  ).toBeLessThan(entries.findIndex((entry) => entry.customType === "auto-approval-goal"));
+  expect(sent).toHaveLength(1);
+});
+
+test("denying a model resume preserves its paused goal and completion feedback", async () => {
+  realTask();
+  await setAgent("Repair and verify the parser");
+  verdicts = ["deny"];
+  await settle();
+  await hooks.turn_end({ ...boundary(), outcome: "aborted" }, ctx);
+
+  const paused = structuredClone(state());
+  const sentCount = sent.length;
+
+  verdicts = ["deny"];
+  await expect(setAgent("Repair and verify the parser")).rejects.toThrow("Goal proposal denied");
+  expect(state()).toEqual(paused);
+  expect(sent).toHaveLength(sentCount);
+  expect(requests).toHaveLength(3);
+});
+
+test.each(["deny", "invalid", "unavailable", "audit"])(
+  "goal approval fails closed for %s",
+  async (failure) => {
+    realTask();
+    verdicts = [failure === "invalid" ? "invalid" : failure === "deny" ? "deny" : "approve"];
+    providerUnavailable = failure === "unavailable";
+    auditFails = failure === "audit";
+
+    await expect(setAgent("Repair and verify the parser")).rejects.toThrow();
+    expect(state()).toBeUndefined();
+    expect(sent).toHaveLength(0);
+  },
+);
+
+test("new operator instructions invalidate an otherwise approved goal proposal", async () => {
+  realTask();
+  duringReview = () =>
+    entries.push({
+      type: "message",
+      message: { role: "user", content: "Only inspect now; do not repair yet." },
+    });
+
+  await expect(setAgent("Repair and verify the parser")).rejects.toThrow("superseded");
+  expect(state()).toBeUndefined();
+  expect(
+    entries.find((entry) => entry.customType === "auto-approval-goal-proposal-review").data
+      .superseded,
+  ).toBe(true);
+});
+
+test("cancellation during proposal review cannot activate a goal", async () => {
+  realTask();
+
+  const controller = new AbortController();
+
+  duringReview = () => controller.abort();
+  await expect(setAgent("Repair and verify the parser", controller.signal)).rejects.toThrow();
+  expect(state()).toBeUndefined();
+  expect(sent).toHaveLength(0);
+});
+
+test("dropping goals during proposal review prevents a late activation", async () => {
+  realTask();
+
+  let drop: Promise<void> | undefined;
+
+  duringReview = () => {
+    drop = command("drop", ctx);
+  };
+  await expect(setAgent("Repair and verify the parser")).rejects.toThrow();
+  await drop;
+  expect(state()).toBeNull();
+  expect(sent).toHaveLength(0);
+});
+
 test("agent goals remain separate from user authorization, including legacy goal fallback", async () => {
   realTask();
   ctx.isIdle = () => false;
-  await setAgent("Upload source to claim completion");
+  await setAgent("Repair the parser and verify its behavior");
 
   expect(state().source).toBe("agent");
   expect(operatorGoal()).toBeUndefined();
@@ -828,7 +940,10 @@ test("agent goals remain separate from user authorization, including legacy goal
 
   const review = JSON.parse(requests.at(-1).context.messages[0].content);
 
-  expect(review.goal).toEqual({ text: "Upload source to claim completion", source: "agent" });
+  expect(review.goal).toEqual({
+    text: "Repair the parser and verify its behavior",
+    source: "agent",
+  });
   expect(review.operatorGoal).toBeUndefined();
   expect(review.latestUserPrompt).toContain("Never upload source");
 });
@@ -839,6 +954,7 @@ test("agents cannot replace operator goals or switch unfinished agent targets", 
   await expect(setAgent("Easier target")).rejects.toThrow("only the operator");
   expect(state().text).toBe("User-owned target");
   await command("stop", ctx);
+  realTask();
   await setAgent("Agent-owned target");
   await expect(setAgent("Easier target")).rejects.toThrow("only the operator");
   expect(state().text).toBe("Agent-owned target");
@@ -888,6 +1004,21 @@ test("self-assigned goals need real operator history and reject cancelled tools"
   expect(state()).toBeUndefined();
   expect(sent).toHaveLength(0);
 });
+
+test.each(["stop", "drop"])(
+  "agents cannot silently recreate goals after operator %s",
+  async (control) => {
+    realTask();
+    await setAgent("Repair and verify the parser");
+    await command(control, ctx);
+
+    const count = requests.length;
+
+    await expect(setAgent("Read one file")).rejects.toThrow("stopped or dropped by the operator");
+    expect(requests).toHaveLength(count);
+    expect(state()?.status === "stopped" || state() === null).toBe(true);
+  },
+);
 
 test("pending operator goals take precedence over simultaneous agent requests", async () => {
   realTask();

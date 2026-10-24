@@ -22,12 +22,14 @@ import { ReviewError } from "../shared/review/client.ts";
 import { operatorPromptRecords } from "../shared/review/prompts.ts";
 import type { GoalSource } from "../shared/contracts/goal.ts";
 import { sessionServices } from "../shared/session/services.ts";
+import { approveGoalProposal, latestGoalControl } from "./goal-proposal.ts";
 
 export class GoalController {
   goal: Goal | undefined;
   private revision = 0;
   private pendingOperator?: number;
   private reviewController: AbortController | undefined;
+  private proposalController?: AbortController;
   constructor(private pi: ExtensionAPI) {}
 
   display = (ctx: ExtensionContext, status?: string) =>
@@ -43,8 +45,8 @@ export class GoalController {
   }
 
   private bindServices(ctx: ExtensionContext) {
-    sessionServices(ctx).setAgentGoal = (text, signal) =>
-      this.activate(text, "agent", ctx, false, signal);
+    sessionServices(ctx).setAgentGoal = (text, signal, update) =>
+      this.activate(text, "agent", ctx, false, signal, update);
 
     sessionServices(ctx).resumeGoal = async (commandContext) => {
       if (this.goal?.status !== "paused") return false;
@@ -58,6 +60,7 @@ export class GoalController {
       this.goal?.status === "running" && this.goal.source !== "agent" ? this.goal.text : undefined;
     sessionServices(ctx).interruptGoal = (reason) => {
       this.reviewController?.abort();
+      this.proposalController?.abort();
       this.pause(ctx, reason ?? "Interrupted by operator; use /goal resume");
     };
 
@@ -71,6 +74,7 @@ export class GoalController {
     this.pendingOperator = undefined;
     sessionServices(ctx).setAgentGoal = undefined;
     this.reviewController?.abort();
+    this.proposalController?.abort();
     this.goal = undefined;
     this.display(ctx);
   }
@@ -89,6 +93,7 @@ export class GoalController {
     this.pendingOperator = undefined;
     this.bindServices(ctx);
     this.reviewController?.abort();
+    this.proposalController?.abort();
     ctx.ui.setStatus("goal", undefined); // Clear the old status key after reload.
     ctx.ui.setStatus("00-goal", undefined);
 
@@ -161,6 +166,7 @@ export class GoalController {
       this.revision++;
       this.pendingOperator = undefined;
       this.reviewController?.abort();
+      this.proposalController?.abort();
       this.record(null, ctx);
       ctx.ui.notify("Goal dropped; work can continue without automatic goal checks.", "info");
 
@@ -171,6 +177,7 @@ export class GoalController {
       this.revision++;
       this.pendingOperator = undefined;
       this.reviewController?.abort();
+      this.proposalController?.abort();
 
       if (this.goal && ["running", "paused"].includes(this.goal.status)) {
         const stopped = {
@@ -236,7 +243,19 @@ export class GoalController {
       throw new Error("An existing goal takes precedence; only the operator may replace it");
     }
 
-    if (!operatorPromptRecords(ctx.sessionManager.getBranch()).length) {
+    const branch = ctx.sessionManager.getBranch();
+    const control = latestGoalControl(branch);
+
+    if (
+      control &&
+      (control.state === null || control.state?.status === "stopped") &&
+      !control.laterOperatorPromptIds.length
+    )
+      throw new Error(
+        "Goal tracking was stopped or dropped by the operator; a later user instruction is required",
+      );
+
+    if (!operatorPromptRecords(branch).length) {
       throw new Error("An agent goal needs an existing operator task");
     }
 
@@ -255,12 +274,48 @@ export class GoalController {
     this.pi.sendMessage(message(instruction(next)), { triggerTurn: true, deliverAs: "steer" });
   }
 
+  private async reviewAgentTarget(
+    text: string,
+    ctx: ExtensionContext,
+    current: Goal | undefined,
+    revision: number,
+    signal: AbortSignal | undefined,
+    update: (text: string) => void,
+  ) {
+    const controller = new AbortController();
+    const signals = [controller.signal, signal, ctx.signal].filter(Boolean) as AbortSignal[];
+    const combined = AbortSignal.any(signals);
+    const intent = () => JSON.stringify(operatorPromptRecords(ctx.sessionManager.getBranch()));
+    const originalIntent = intent();
+    const assertCurrent = () => {
+      combined.throwIfAborted();
+
+      if (
+        revision !== this.revision ||
+        this.goal !== current ||
+        ctx.hasPendingMessages() ||
+        intent() !== originalIntent
+      )
+        throw new Error("Goal proposal superseded by changed instructions or goal state");
+    };
+
+    this.proposalController = controller;
+
+    try {
+      await approveGoalProposal(this.pi, ctx, text, current, combined, update, assertCurrent);
+      assertCurrent();
+    } finally {
+      if (this.proposalController === controller) this.proposalController = undefined;
+    }
+  }
+
   private async activate(
     input: string,
     source: GoalSource,
     ctx: ExtensionContext,
     resume = false,
     signal?: AbortSignal,
+    update: (text: string) => void = () => {},
   ): Promise<Goal> {
     signal?.throwIfAborted();
 
@@ -268,13 +323,12 @@ export class GoalController {
     const current = this.goal;
 
     if (source === "agent") {
+      if (this.proposalController)
+        throw new Error("Another goal proposal is already being reviewed");
+
       const existing = this.agentTarget(text, ctx);
 
-      if (existing?.status === "running") {
-        return existing;
-      }
-
-      resume = !!existing;
+      resume = existing?.status === "paused";
     }
 
     if (resume && current?.status !== "paused") {
@@ -289,12 +343,19 @@ export class GoalController {
 
     if (source === "operator") {
       this.pendingOperator = revision;
+      this.proposalController?.abort();
     }
 
     let next: Goal | undefined;
 
     try {
       await this.ready(ctx, revision, signal);
+
+      if (source === "agent") {
+        await this.reviewAgentTarget(text, ctx, current, revision, signal, update);
+
+        if (current?.status === "running") return current;
+      }
 
       if (resume && source === "operator") sessionServices(ctx).prepareProviderResume?.();
 

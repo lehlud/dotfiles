@@ -32,7 +32,11 @@ export type SessionServices = {
   recordOperatorInput?: (text: string, kind: OperatorInputKind) => void;
   broadcastConversationMessage?: (customType: string, text: string) => void;
   broadcastOperatorInput?: (text: string, kind: OperatorInputKind) => void;
-  setAgentGoal?: (text: string, signal?: AbortSignal) => Promise<Goal>;
+  setAgentGoal?: (
+    text: string,
+    signal?: AbortSignal,
+    update?: (text: string) => void,
+  ) => Promise<Goal>;
   fastMode?: () => boolean;
   workingModel?: () => Reviewer | undefined;
   desiredReviewer?: () => Reviewer | undefined;

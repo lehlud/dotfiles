@@ -13,7 +13,8 @@
     "eval:cache": "bun tests/cache-review.eval.ts",
     "format": "bun development/format.ts --write",
     "check:format": "bun development/format.ts --check",
-    "eval:cgroups": "bun tests/cgroup-review.eval.ts"
+    "eval:cgroups": "bun tests/cgroup-review.eval.ts",
+    "eval:goal-proposals": "bun tests/goal-proposal-review.eval.ts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.0.2",

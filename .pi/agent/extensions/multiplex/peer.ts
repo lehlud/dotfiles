@@ -99,14 +99,14 @@ export async function createPeer(
           sessionServices(child).goalInstruction = () => sessionServices(ctx).goalInstruction?.();
 
           bindPeerQuestions(ctx, child, endpoint.name);
-          sessionServices(child).setAgentGoal = (text, signal) => {
+          sessionServices(child).setAgentGoal = (text, signal, update) => {
             const set = sessionServices(ctx).setAgentGoal;
 
             if (!set) {
               throw new Error("Session goal controller unavailable");
             }
 
-            return set(text, signal);
+            return set(text, signal, update);
           };
           sessionServices(child).fastMode = () => sessionServices(ctx).fastMode?.() ?? false;
         });

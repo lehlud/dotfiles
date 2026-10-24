@@ -2040,7 +2040,7 @@ nativeTest(
         .at(-1) as any;
 
       expect(saved.data.source).toBe("agent");
-      expect(state.reviews.some((data) => data.action?.tool === "set_goal")).toBe(false);
+      expect(state.reviews.some((data) => data.action?.tool === "set_goal")).toBe(true);
       expect(state.reviews.filter((data) => data.action).length).toBeGreaterThanOrEqual(3);
 
       const completion = state.reviews.find((data) => data.goal?.source === "agent");
