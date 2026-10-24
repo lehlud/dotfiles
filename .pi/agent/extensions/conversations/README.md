@@ -4,6 +4,11 @@ This extension owns continuation, goals, steering, questions, side chats and pro
 tracking. It cannot execute or approve actions. Actual user history remains authoritative;
 review context is supplied through the session service. See the [architecture guide](../README.md).
 
+`GoalController` owns commands, activation and cancellation. `goal-state.ts` restores
+checkpoints and independent feedback; `GoalCompletion` owns one evidence snapshot,
+stale-result checks and completion auditing. It returns a decision to the controller
+and cannot activate a goal or grant execution permission.
+
 ## Queueing a prompt
 
 While busy, **Tab** queues a nonempty draft as a native follow-up after the current reply;

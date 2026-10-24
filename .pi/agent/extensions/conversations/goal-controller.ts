@@ -5,7 +5,7 @@ import {
   goalTitle,
   message,
   type Goal,
-  type GoalReview,
+  restoreGoal,
 } from "./goal-state.ts";
 import { randomUUID } from "node:crypto";
 import type {
@@ -17,8 +17,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { assertSandboxReady, loadConfig } from "../shared/configuration/load.ts";
-import { buildGoalReview, verifyGoal } from "./goal-review.ts";
-import { ReviewError } from "../shared/review/client.ts";
+import { GoalCompletion } from "./goal-completion.ts";
 import { operatorPromptRecords } from "../shared/review/prompts.ts";
 import type { GoalSource } from "../shared/contracts/goal.ts";
 import { sessionServices } from "../shared/session/services.ts";
@@ -97,42 +96,7 @@ export class GoalController {
     ctx.ui.setStatus("goal", undefined); // Clear the old status key after reload.
     ctx.ui.setStatus("00-goal", undefined);
 
-    const branch = ctx.sessionManager.getBranch();
-    const last = branch
-      .filter((entry) => entry.type === "custom" && entry.customType === STATE_ENTRY)
-      .at(-1);
-    const saved = last?.type === "custom" ? (last.data as Goal | undefined) : undefined;
-
-    this.goal =
-      saved &&
-      typeof saved.text === "string" &&
-      typeof saved.id === "string" &&
-      Number.isInteger(saved.checks) &&
-      (saved.source === undefined || saved.source === "operator" || saved.source === "agent") &&
-      ["running", "paused", "stopped"].includes(saved.status)
-        ? { ...saved }
-        : undefined;
-
-    // Older checkpoints mixed UI pause reasons into the model's missing-work
-    // instruction. Recover real feedback from the goal's independent audit.
-    if (this.goal) {
-      const id = this.goal.id;
-      const audits = branch.flatMap((entry) =>
-        entry.type === "custom" &&
-        entry.customType === "auto-approval-goal-review" &&
-        (entry.data as GoalReview)?.goalId === id
-          ? [entry.data as GoalReview]
-          : [],
-      );
-      const audit = audits.filter((entry) => !entry.superseded).at(-1);
-
-      if (audit)
-        this.goal.feedback =
-          audit.verdict?.decision === "deny" && typeof audit.verdict.reason === "string"
-            ? audit.verdict.reason
-            : undefined;
-      else if (typeof this.goal.feedback !== "string") this.goal.feedback = undefined;
-    }
+    this.goal = restoreGoal(ctx.sessionManager.getBranch());
 
     if (this.goal?.status === "running")
       this.record(
@@ -423,115 +387,43 @@ export class GoalController {
     const signal = ctx.signal
       ? AbortSignal.any([controller.signal, ctx.signal])
       : controller.signal;
-    let envelope: ReturnType<typeof buildGoalReview> | undefined;
-    let peerRevision: number | undefined;
-    let subagentRevision: number | undefined;
+    const completion = new GoalCompletion({
+      pi: this.pi,
+      ctx,
+      goal: current,
+      signal,
+      isCurrent: () => this.goal === current,
+      operatorPending: () => this.pendingOperator !== undefined,
+      display: (status) => {
+        if (this.goal === current) this.display(ctx, status);
+      },
+    });
 
     try {
-      peerRevision = sessionServices(ctx).peerRevision?.();
-      subagentRevision = sessionServices(ctx).subagentRevision?.();
+      const result = await completion.run();
 
-      const checked = await verifyGoal(
-        this.pi,
-        ctx,
-        current,
-        signal,
-        (status) => {
-          if (this.goal === current) this.display(ctx, status);
-        },
-        (prepared) => {
-          envelope = prepared;
-        },
-      );
+      if (!result) return;
 
-      signal.throwIfAborted();
-
-      if (this.goal !== current) return;
-
-      const peerChanged =
-        sessionServices(ctx).peerRevision?.() !== peerRevision ||
-        sessionServices(ctx).subagentRevision?.() !== subagentRevision;
-      const peersBusy =
-        (sessionServices(ctx).peersBusy?.() ?? false) ||
-        (sessionServices(ctx).subagentsBusy?.() ?? false);
-      const superseded =
-        ctx.hasPendingMessages() || peerChanged || peersBusy || this.pendingOperator !== undefined;
-
-      this.pi.appendEntry("auto-approval-goal-review", {
-        goalId: current.id,
-        requestId: envelope!.requestId,
-        fingerprint: envelope!.fingerprint,
-        ...checked,
-        superseded,
-      });
-
-      // New operator input must run before a verdict on older context can settle
-      // the goal. Pi drains the queued input without an extra extension turn.
-      if (superseded) {
-        // Already settled peer work triggers another turn after a stale verdict;
-        // ongoing peers wake the goal review when they finish.
-        if (!ctx.hasPendingMessages() && peerChanged && !peersBusy)
-          return {
-            continue: true,
-            entries: [
-              ...event.entries,
-              { type: "custom_message", ...message(instruction(current)) },
-            ],
-          };
+      if (result.kind === "superseded") {
+        if (result.retry) return this.continueGoal(event, current);
 
         return;
       }
 
-      const complete = checked.verdict.decision === "approve";
-      const waiting = !complete && checked.verdict.blocked === true;
-      const label = complete ? "confirmed" : waiting ? "waiting" : "incomplete";
-      const notice = [`Goal ${label}: ${checked.verdict.reason}`];
+      this.record(result.goal, ctx);
+      ctx.ui.notify(result.notice, result.waiting ? "warning" : "info");
 
-      if (waiting) {
-        notice.push(
-          "Waiting for external input; use /goal resume or /continue after resolving it.",
-        );
-      }
-
-      this.record(
-        {
-          ...current,
-          checks: current.checks + 1,
-          status: complete ? "complete" : waiting ? "paused" : "running",
-          reason: checked.verdict.reason,
-          feedback: complete ? undefined : checked.verdict.reason,
-        },
-        ctx,
-      );
-      ctx.ui.notify(notice.join("\n"), waiting ? "warning" : "info");
-
-      if (!complete && !waiting)
-        return {
-          continue: true,
-          entries: [
-            ...event.entries,
-            { type: "custom_message", ...message(instruction(this.goal!)) },
-          ],
-        };
+      if (result.goal.status === "running") return this.continueGoal(event, result.goal);
     } catch (error) {
       if (this.goal !== current) return;
 
-      if (this.goal?.id === current.id)
-        this.pause(
-          ctx,
-          signal.aborted
-            ? "Interrupted by operator; use /goal resume"
-            : `Verification unavailable: ${String(error)}`,
-        );
-
-      this.pi.appendEntry("auto-approval-goal-review-error", {
-        goalId: current.id,
-        requestId: envelope?.requestId,
-        fingerprint: envelope?.fingerprint,
-        reason: String(error),
-        attempts: error instanceof ReviewError ? error.attempts : [],
-        usage: error instanceof ReviewError ? error.usage : undefined,
-      });
+      this.pause(
+        ctx,
+        signal.aborted
+          ? "Interrupted by operator; use /goal resume"
+          : `Verification unavailable: ${String(error)}`,
+      );
+      completion.recordFailure(error);
       ctx.ui.notify(
         `Goal not confirmed: ${signal.aborted ? "interrupted" : String(error)}`,
         "warning",
@@ -541,5 +433,12 @@ export class GoalController {
 
       this.display(ctx);
     }
+  }
+
+  private continueGoal(event: TurnEndEvent, goal: Goal): BoundaryResult {
+    return {
+      continue: true,
+      entries: [...event.entries, { type: "custom_message", ...message(instruction(goal)) }],
+    };
   }
 }
