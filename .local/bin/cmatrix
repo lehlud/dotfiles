@@ -48,6 +48,7 @@ out_fd=1
 in_fd=0
 frame_count=0
 resized=0
+saved_stty=''
 
 usage() {
   cat <<'EOF'
@@ -368,6 +369,30 @@ open_target() {
   in_fd=3
 }
 
+# The tty echoes typed keys between reads, which drops digits onto the screen
+# at the cursor. Echo stays off for the whole run and is restored on exit.
+save_tty_settings() {
+  if [[ ! -t $in_fd ]]; then
+    return 0
+  fi
+
+  saved_stty="$(stty -g <&"$in_fd" 2>/dev/null || true)"
+
+  if [[ -z "$saved_stty" ]]; then
+    return 0
+  fi
+
+  stty -echo <&"$in_fd" 2>/dev/null || true
+}
+
+restore_tty_settings() {
+  if [[ -z "$saved_stty" ]]; then
+    return 0
+  fi
+
+  stty "$saved_stty" <&"$in_fd" 2>/dev/null || true
+}
+
 # Cursor prefixes are constant per row and column, so each cell costs one
 # concatenation instead of a printf call.
 build_escapes() {
@@ -427,7 +452,8 @@ setup_columns() {
     exit 1
   fi
 
-  column_count=$(((cols + 1) / 2))
+  # The last cell of a row stays untouched, so nothing can scroll or wrap.
+  column_count=$((cols / 2))
 
   active=()
   heads=()
@@ -732,9 +758,11 @@ on_interrupt() {
 }
 
 cleanup() {
-  trap - EXIT INT TERM WINCH
+  trap - EXIT INT TERM TSTP WINCH
 
   printf '%s\033[?25h\033[r\033[2J\033[H' "$reset_color" >&"$out_fd"
+
+  restore_tty_settings
 }
 
 main() {
@@ -743,13 +771,14 @@ main() {
   load_palette
   build_glyphs
   open_target
+  save_tty_settings
   setup_columns
   set_delay
   build_escapes
   build_message
 
   trap cleanup EXIT
-  trap 'on_interrupt' INT TERM
+  trap 'on_interrupt' INT TERM TSTP
   trap 'resized=1' WINCH
 
   printf '\033[?25l\033[2J' >&"$out_fd"
