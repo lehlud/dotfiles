@@ -138,10 +138,12 @@ export class SideConversation {
 
       this.history.push(user, answer);
     } catch {
-      if (!this.closed)
+      if (!this.closed) {
+        turn.answer = "";
         turn.error = controller.signal.aborted
           ? "Side request cancelled."
           : "Side request failed or timed out. Check authentication and the provider; the main conversation continues.";
+      }
     } finally {
       if (this.controller === controller) this.controller = undefined;
 

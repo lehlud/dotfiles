@@ -1,5 +1,6 @@
 import {
   Editor,
+  CURSOR_MARKER,
   Markdown,
   matchesKey,
   stripTerminalSequences,
@@ -12,6 +13,7 @@ import {
   type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { SideConversation } from "./side-conversation.ts";
+import { sessionServices } from "../shared/session/services.ts";
 
 const clean = (text: string) =>
   stripTerminalSequences(text).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
@@ -23,6 +25,7 @@ export class SideView {
   private notice = "";
   private disposed = false;
   private focusedValue = false;
+  private readonly ownsInterrupt = () => this.focusedValue && !this.disposed;
   constructor(
     private tui: TUI,
     private theme: Theme,
@@ -42,11 +45,11 @@ export class SideView {
       },
     });
     this.editor.onSubmit = (text) => {
-      this.editor.setText("");
       void this.submit(text);
     };
 
     this.editor.onChange = () => tui.requestRender();
+    sessionServices(ctx).terminalInterruptOwned = this.ownsInterrupt;
     this.update();
 
     if (initial.trim())
@@ -80,7 +83,8 @@ export class SideView {
       return;
     }
 
-    if (text.trim().startsWith("/side")) {
+    if (/^\/side(?:\s|$)/.test(text.trim())) {
+      this.editor.setText(text);
       this.notice = "A side chat cannot open another side chat.";
       this.update();
 
@@ -88,6 +92,7 @@ export class SideView {
     }
 
     if (this.conversation.busy) {
+      this.editor.setText(text);
       this.notice = "The side request is still running. Escape cancels only this request.";
       this.update();
 
@@ -109,6 +114,9 @@ export class SideView {
     try {
       await this.conversation.ask(text);
     } catch (error) {
+      // Editor clears on submit. Restore rejected input, preserving any newer draft.
+      if (!this.disposed && !this.editor.getText()) this.editor.setText(text);
+
       this.notice = error instanceof Error ? error.message : "Could not start the side question.";
     }
 
@@ -116,6 +124,8 @@ export class SideView {
   }
 
   handleInput(data: string) {
+    if (this.disposed) return;
+
     if (matchesKey(data, "ctrl+c")) {
       this.done();
 
@@ -151,10 +161,7 @@ export class SideView {
   }
 
   render(width: number): string[] {
-    const height = Math.max(
-      1,
-      Math.min(this.tui.terminal.rows - 5, Math.floor(this.tui.terminal.rows * 0.8)),
-    );
+    const height = Math.max(1, Math.floor(this.tui.terminal.rows * 0.8));
     const parent = this.ctx.isIdle() ? "ready" : "still working";
     const snapshot = this.conversation.snapshot;
     const title = `Side chat · Main conversation ${parent} · ${this.conversation.model.id}`;
@@ -168,7 +175,11 @@ export class SideView {
           width,
         ),
       );
-      body.push(...new Markdown(clean(turn.answer || "…"), 0, 0, getMarkdownTheme()).render(width));
+
+      if (turn.answer || !turn.error)
+        body.push(
+          ...new Markdown(clean(turn.answer || "…"), 0, 0, getMarkdownTheme()).render(width),
+        );
 
       if (turn.error) body.push(this.theme.fg("warning", turn.error));
 
@@ -185,20 +196,23 @@ export class SideView {
 
     if (!body.length) body.push("Ask a question about the main conversation context.");
 
-    const editor = this.editor.render(width).slice(-Math.max(1, height - 3));
+    // Reserve the composer before optional headers/history. Keep the focused row
+    // when Pi's editor is taller than this overlay, including after a resize.
+    const headerRows = header.slice(0, Math.max(0, height - 4));
+    const editor = this.editorLines(width, Math.max(1, height - headerRows.length - 1));
     const hint =
       this.notice ||
       (this.conversation.busy
         ? "Escape: cancel side request · Ctrl+C: return"
         : "Enter: ask · Escape: return · PgUp/PgDn: history");
-    const room = Math.max(0, height - header.length - editor.length - 1);
+    const room = Math.max(0, height - headerRows.length - editor.length - 1);
 
     this.scroll = Math.min(this.scroll, Math.max(0, body.length - room));
 
     const end = Math.max(0, body.length - this.scroll);
 
     return [
-      ...header,
+      ...headerRows,
       ...body.slice(Math.max(0, end - room), end),
       ...editor,
       this.theme.fg("dim", hint),
@@ -207,11 +221,28 @@ export class SideView {
       .map((line) => truncateToWidth(line, Math.max(1, width)));
   }
 
+  private editorLines(width: number, height: number): string[] {
+    const lines = this.editor.render(width);
+
+    if (lines.length <= height) return lines;
+
+    const cursor = lines.findIndex((line) => line.includes(CURSOR_MARKER));
+    const start = Math.max(0, Math.min(cursor < 0 ? 0 : cursor - 1, lines.length - height));
+
+    return lines.slice(start, start + height);
+  }
+
   dispose() {
     if (this.disposed) return;
 
     this.disposed = true;
     this.conversation.close();
+
+    const services = sessionServices(this.ctx);
+
+    if (services.terminalInterruptOwned === this.ownsInterrupt)
+      services.terminalInterruptOwned = undefined;
+
     this.ctx.ui.setStatus("01-side", undefined);
   }
 }

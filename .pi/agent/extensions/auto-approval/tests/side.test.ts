@@ -3,11 +3,12 @@ import {
   initTheme,
   theme,
 } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { sideSnapshot } from "../../conversations/side-context.ts";
 import { SideConversation, SIDE_SYSTEM } from "../../conversations/side-conversation.ts";
 import { SideView } from "../../conversations/side-view.ts";
 import { registerSide } from "../../conversations/side.ts";
+import { watchInterrupt } from "../../shared/session/interrupt.ts";
 import { sessionServices } from "../../shared/session/services.ts";
 
 const usage = {
@@ -357,4 +358,130 @@ test("side requests follow the live parent fast toggle without changing the sele
   expect(await calls[1].options.onPayload(payload, calls[1].selected)).toBeUndefined();
   expect(calls.every((call) => call.selected.id === model.id)).toBe(true);
   expect(payload.provider).toEqual({ only: ["trusted"] });
+});
+
+test("submitting while a side reply is running preserves the next draft", async () => {
+  mode = "pending";
+
+  const { view } = panel("First question");
+
+  await tick();
+  view.editor.setText("Keep my follow-up");
+  view.handleInput("\r");
+  expect(view.editor.getText()).toBe("Keep my follow-up");
+  expect(calls).toHaveLength(1);
+  view.dispose();
+  release?.();
+  await tick();
+});
+
+test("an invalid question stays editable and disposed panels ignore keyboard input", async () => {
+  const { view } = panel();
+  const question = "x".repeat(8001);
+
+  view.editor.setText(question);
+  view.handleInput("\r");
+  await tick();
+  expect(view.editor.getText()).toBe(question);
+  expect(calls).toHaveLength(0);
+  view.dispose();
+  view.handleInput("unexpected");
+  expect(view.editor.getText()).toBe(question);
+});
+
+test("small terminal layouts keep the focused draft cursor and return hint visible", () => {
+  const { view, tui } = panel();
+
+  view.focused = true;
+  view.editor.setText(Array.from({ length: 20 }, (_, i) => `draft line ${i}`).join("\n"));
+  view.handleInput("\x1b[H");
+
+  for (const rows of [6, 8, 10, 12, 16, 24]) {
+    tui.terminal.rows = rows;
+
+    const lines = view.render(40);
+
+    expect(lines.length).toBeLessThanOrEqual(rows);
+    expect(lines.some((line) => line.includes(CURSOR_MARKER))).toBe(true);
+    expect(stripTerminalSequences(lines.at(-1)!)).toContain("Escape");
+  }
+
+  view.dispose();
+});
+
+test("provider failure never leaves an untrusted partial answer presented as a reply", async () => {
+  mode = "error";
+
+  const side = new SideConversation(ctx, () => {});
+
+  await side.ask("Question");
+  expect(side.turns[0].error).toContain("failed");
+  expect(side.turns[0].answer).toBe("");
+  expect(side.history).toHaveLength(0);
+});
+
+test("side Escape and Ctrl+C never reach the parent's global cancellation watcher", async () => {
+  for (const key of ["\x1b", "\x03"]) {
+    let listener: ((data: string) => { consume?: boolean } | undefined) | undefined;
+    let parentInterrupts = 0;
+
+    ctx.ui.onTerminalInput = (handler: typeof listener) => {
+      listener = handler;
+
+      return () => {
+        listener = undefined;
+      };
+    };
+
+    const unwatch = watchInterrupt(
+      ctx,
+      () => true,
+      async () => {
+        parentInterrupts++;
+      },
+    );
+    const { view, closed } = panel();
+
+    view.focused = true;
+
+    if (!listener?.(key)?.consume) view.handleInput(key);
+
+    await tick();
+    expect(parentInterrupts).toBe(0);
+    expect(closed()).toBe(true);
+    listener?.(key);
+    await tick();
+    expect(parentInterrupts).toBe(1);
+    unwatch();
+  }
+});
+
+test("session navigation before the UI factory runs cannot open a stale side chat", async () => {
+  const hooks: Record<string, Function> = {};
+  let command: any, factory: Function | undefined, finish: (() => void) | undefined;
+
+  registerSide({
+    on: (name: string, handler: Function) => {
+      hooks[name] = handler;
+    },
+    registerCommand: (_name: string, definition: any) => {
+      command = definition.handler;
+    },
+  } as any);
+  ctx.ui.custom = (create: Function) =>
+    new Promise<void>((done) => {
+      factory = create;
+      finish = done;
+    });
+
+  const pending = command("Do not send this after switching sessions", ctx);
+
+  hooks.session_start({}, ctx);
+
+  const component = factory!({}, {}, {}, finish);
+
+  await pending;
+  expect(component.render(80)).toEqual([]);
+  expect(calls).toHaveLength(0);
+  expect(statuses.has("01-side")).toBe(false);
 });

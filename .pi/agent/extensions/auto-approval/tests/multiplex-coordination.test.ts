@@ -104,6 +104,7 @@ test("Escape interrupts the team even when its terminal actor is idle and remove
     removed = false;
   const ctx: any = {
     mode: "tui",
+    sessionManager: {},
     isIdle: () => true,
     ui: {
       onTerminalInput(handler: any) {

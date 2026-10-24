@@ -16,6 +16,7 @@ import {
 } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { registerSide } from "../../conversations/side.ts";
+import { watchInterrupt } from "../../shared/session/interrupt.ts";
 
 const tick = () => new Promise<void>((done) => setTimeout(done, 1));
 
@@ -33,7 +34,8 @@ async function fixture(directory: string) {
     allowModelNetwork: false,
   });
   let releaseMain: (() => void) | undefined,
-    mainStarted = false;
+    mainStarted = false,
+    parentInterrupts = 0;
   const sideContexts: any[] = [];
 
   runtime.registerProvider("side-sdk-fixture", {
@@ -117,7 +119,26 @@ async function fixture(directory: string) {
     noThemes: true,
     noContextFiles: true,
     noPromptTemplates: true,
-    extensionFactories: [(pi) => registerSide(pi)],
+    extensionFactories: [
+      (pi) => {
+        registerSide(pi);
+
+        let detach: (() => void) | undefined;
+
+        pi.on("session_start", (_event, ctx) => {
+          detach?.();
+          detach = watchInterrupt(
+            ctx,
+            () => !ctx.isIdle(),
+            async () => {
+              parentInterrupts++;
+              await ctx.abort();
+            },
+          );
+        });
+        pi.on("session_shutdown", () => detach?.());
+      },
+    ],
   });
 
   await resourceLoader.reload();
@@ -138,6 +159,7 @@ async function fixture(directory: string) {
     session,
     sideContexts,
     mainStarted: () => mainStarted,
+    parentInterrupts: () => parentInterrupts,
     releaseMain: () => releaseMain?.(),
   };
 }
@@ -205,6 +227,64 @@ test("real Pi SDK runs /side immediately during a parent turn without changing i
 
     await side?.catch(() => {});
 
+    state.session.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 15000);
+
+test("real Pi SDK leaves parent work running when global listeners receive side return keys", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pi-side-interrupt-sdk-"));
+  const state = await fixture(directory);
+  let view: any, main: Promise<void> | undefined, side: Promise<void> | undefined;
+  let listener: ((data: string) => { consume?: boolean } | undefined) | undefined;
+
+  try {
+    initTheme("dark", false);
+    await state.session.bindExtensions({
+      mode: "tui",
+      uiContext: {
+        setStatus() {},
+        notify() {},
+        onTerminalInput: (handler: typeof listener) => {
+          listener = handler;
+
+          return () => {
+            listener = undefined;
+          };
+        },
+        custom: (factory: Function) =>
+          new Promise<void>((done) => {
+            view = factory(
+              { terminal: { rows: 24, columns: 80 }, requestRender() {} },
+              theme,
+              {},
+              done,
+            );
+            view.focused = true;
+          }),
+      } as any,
+    });
+    main = state.session.prompt("Repair the parser and verify it.");
+    await until(state.mainStarted);
+
+    for (const key of ["\x1b", "\x03"]) {
+      view = undefined;
+      side = state.session.prompt("/side What is happening?");
+      await until(() => view?.conversation.history.length === 2);
+      expect(listener).toBeDefined();
+
+      if (!listener?.(key)?.consume) view.handleInput(key);
+
+      await side;
+      expect(state.parentInterrupts()).toBe(0);
+      expect(state.session.isStreaming).toBe(true);
+      expect(view.conversation.closed).toBe(true);
+    }
+  } finally {
+    state.releaseMain();
+    view?.handleInput("\x03");
+    await side?.catch(() => {});
+    await main?.catch(() => {});
     state.session.dispose();
     await rm(directory, { recursive: true, force: true });
   }

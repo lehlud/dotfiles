@@ -145,7 +145,11 @@ available. The window shows main working/ready state.
 
 Enter sends; PgUp/PgDn scroll. Escape cancels a running side response, otherwise closes;
 Ctrl+C or `/back` closes immediately. `/new` clears side history before the next snapshot.
-Close/reload/session replacement discards it; nested `/side` is rejected.
+While the side panel has focus, these keys leave main/Multiplex/subagent work running.
+Submitting during a reply preserves the next draft; it does not queue another request.
+Rejected input stays editable. Short terminal layouts prioritize the composer and cursor.
+Close/reload/session replacement discards the chat, including pending startup;
+nested `/side` is rejected. Failed/cancelled responses are excluded from side history.
 
 Limits: 40 complete text items/24,000 UTF-8 snapshot bytes (less for small windows), preferring
 original task/recent text and counting omissions; no images or hidden reasoning. Questions:

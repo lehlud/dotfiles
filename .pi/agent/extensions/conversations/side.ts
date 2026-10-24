@@ -1,17 +1,20 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { SideView } from "./side-view.ts";
 
-type OpenSide = { view?: SideView; close?: () => void };
+type OpenSide = { closed: boolean; view?: SideView; close?: () => void };
 
 export function registerSide(pi: ExtensionAPI) {
   let active: OpenSide | undefined;
   const close = () => {
+    if (active) active.closed = true;
+
     active?.view?.dispose();
     active?.close?.();
   };
 
   pi.on("session_shutdown", close);
   pi.on("session_tree", close);
+  pi.on("session_start", close);
   pi.registerCommand("side", {
     description: "Temporary side chat about the main context: /side [question]; Escape returns",
     async handler(question: string, ctx: ExtensionCommandContext) {
@@ -27,7 +30,7 @@ export function registerSide(pi: ExtensionAPI) {
         return;
       }
 
-      const opening: OpenSide = {};
+      const opening: OpenSide = { closed: false };
 
       active = opening;
 
@@ -35,6 +38,14 @@ export function registerSide(pi: ExtensionAPI) {
         await ctx.ui.custom<void>(
           (tui, theme, _keys, done) => {
             opening.close = () => done();
+
+            // Session navigation may finish while the UI is still opening.
+            if (opening.closed) {
+              done();
+
+              return { render: () => [], invalidate() {} };
+            }
+
             opening.view = new SideView(
               tui,
               theme,

@@ -1,6 +1,7 @@
 import { matchesKey } from "@earendil-works/pi-tui";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Readable } from "node:stream";
+import { sessionServices } from "./services.ts";
 
 /** Observe RPC cancellation without consuming, replacing or logging its input. */
 export function watchRpcAbort(input: Readable, interrupt: () => void) {
@@ -59,6 +60,9 @@ export function watchInterrupt(
   if (ctx.mode === "tui")
     return (
       ctx.ui.onTerminalInput?.((data) => {
+        // A focused local conversation handles its own cancel/return keys.
+        if (sessionServices(ctx).terminalInterruptOwned?.()) return;
+
         if (active() && (matchesKey(data, "escape") || data === "\x03")) {
           run();
 

@@ -42,6 +42,7 @@ export type SessionServices = {
   desiredReviewer?: () => Reviewer | undefined;
   activeReviewer?: () => Reviewer | undefined;
   inlineModelStatus?: boolean;
+  terminalInterruptOwned?: () => boolean;
   operatorGoal?: () => string | undefined;
   operatorGoalId?: () => string | undefined;
   goalInstruction?: () => string | undefined;
