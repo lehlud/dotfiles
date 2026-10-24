@@ -33,6 +33,11 @@ Literal `sandbox.environment` values go only into application containers. No hos
 variables are inherited. Network access belongs to this action; offline jobs cannot pull images.
 Published ports require network approval and explicit `127.0.0.1:host:container` mappings.
 
+`maxOutputBytes` caps retained workload text, not execution. Oversized logs show a bounded
+head/tail preview with truncation metadata and the actual exit status; deadlines, cancellation
+and cleanup still apply. Redirect full logs to an explicitly writable artifact path when needed.
+Internal engine identity/control responses retain strict overflow rejection.
+
 Supported operations:
 
 - Read-only engine metadata: version, info, ps, images and image inspection/history.
@@ -46,6 +51,11 @@ Supported operations:
   implicit host environment values, includes, external resources or custom drivers. Extra service
   fields are rejected explicitly. Ports use the same loopback rule. Named volumes/networks are
   temporary and isolated under a random project name. One-off `compose run` is unavailable.
+
+Compose accepts `--env-file /dev/null` as empty input and honors literal
+`COMPOSE_DISABLE_ENV_FILE=true|1` for the default `.env`. Explicit env files still need grants.
+`config --no-interpolate` preserves variable expressions. These flags do not expand the supported
+Compose subset or allow image builds, external resources or ungranted file reads.
 
 Every job gets a random ownership ID. An explicit cancellation tombstone prevents late startup even when an older host bridge does not
 propagate socket closure. Tombstones expire after 25 hours. Cleanup runs on success, failure and interruption and can

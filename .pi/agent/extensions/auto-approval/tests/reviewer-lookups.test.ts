@@ -112,6 +112,41 @@ function gate(
 
 const observer = { start() {}, finish() {}, failed() {} };
 
+test("bounded excerpts can establish constraints without rereading a diagnostic transcript", async () => {
+  const { envelope } = fixture();
+  const review = gate(envelope, (turn) => (turn === 1 ? [lookup(valid)] : review.verdict()));
+  const checked = await reviewAction(config, review.registry, envelope, observer);
+
+  expect(checked.verdict.decision).toBe("approve");
+  expect(review.calls).toHaveLength(2);
+  expect(review.calls[0].context.systemPrompt).toContain(
+    "rereading entire logs/transcripts is not a prerequisite",
+  );
+  expect(review.calls[0].context.systemPrompt).toContain("every compressed original at least once");
+  expect(review.calls[0].context.systemPrompt).toContain("valid denials remain final");
+  expect(review.calls[0].context.systemPrompt).toContain(
+    "action, completion or editorial criteria",
+  );
+  expect(JSON.parse(review.calls[1].context.messages.at(-1).content[0].text).hasMore).toBe(true);
+});
+
+test("the same review can inspect more original ranges before a final denial", async () => {
+  const { envelope } = fixture();
+  const review = gate(envelope, (turn) =>
+    turn === 1
+      ? [lookup(valid)]
+      : turn === 2
+        ? [lookup({ promptId, operation: "grep", query: "Never read credentials" })]
+        : review.verdict("deny"),
+  );
+  const checked = await reviewAction(config, review.registry, envelope, observer);
+
+  expect(checked.verdict.decision).toBe("deny");
+  expect(checked.promptLookups).toHaveLength(2);
+  expect(review.calls).toHaveLength(3);
+  expect(new Set(review.calls.map((call) => call.model.id)).size).toBe(1);
+});
+
 test("argument normalization cannot add paths, replace required fields or broaden original selection", () => {
   const sources = new Map([[promptId, original]]);
 

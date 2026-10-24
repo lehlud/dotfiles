@@ -9,7 +9,7 @@ SERVICE_FIELDS = {
     "read_only", "init", "stop_grace_period", "stop_signal", "profiles", "restart",
 }
 VERBS = {
-    "config": ({}, {"--quiet", "-q", "--services", "--images", "--volumes"}),
+    "config": ({}, {"--quiet", "-q", "--services", "--images", "--volumes", "--no-interpolate"}),
     "pull": ({}, {"--quiet", "-q"}),
     "up": ({"--wait-timeout": True}, {"-d", "--detach", "--wait"}),
     "exec": ({"--user": True, "-u": True, "--workdir": True, "-w": True, "--env": True, "-e": True}, {"-T"}),
@@ -128,4 +128,6 @@ def prepare_compose(manifest, request, limits):
         service["pull_policy"] = "missing" if connected else "never"
         service.setdefault("user", str(scope["uid"]) + ":" + str(scope["gid"]))
     arguments = command_arguments(manifest["arguments"], services, connected)
-    return {"kind": "compose", "config": escape_environment(config), "arguments": arguments}
+    no_interpolate = arguments[0] == "config" and "--no-interpolate" in arguments
+    frozen = config if no_interpolate else escape_environment(config)
+    return {"kind": "compose", "config": frozen, "arguments": arguments}

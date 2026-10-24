@@ -7,7 +7,7 @@ import subprocess
 import time
 
 
-def capture(engine, arguments, environment, cwd, timeout=15, limit=2097152):
+def capture(engine, arguments, environment, cwd, timeout=15, limit=2097152, output=None):
     child = subprocess.Popen(
         engine.argv(arguments), stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment,
@@ -28,6 +28,11 @@ def capture(engine, arguments, environment, cwd, timeout=15, limit=2097152):
                     selector.unregister(key.fileobj)
                     continue
                 size += len(chunk)
+
+                if output is not None:
+                    output.append(chunk)
+                    continue
+
                 if size > limit:
                     raise ValueError("Engine command output bound exceeded")
                 buffers[key.data].extend(chunk)

@@ -66,6 +66,8 @@ export async function prepareContainerJob(
     configurationSources: compose.sources,
     network: payload.network,
     requestedLimits: payload.limits,
+    outputHandling:
+      "maxOutputBytes bounds retained workload output, showing head/tail with truncation metadata; logs are drained without stopping the command. Control/identity responses remain strict. Full logs require explicit redirection to granted artifacts.",
     boundary:
       "Only the fixed native engine client receives the private Lubox bridge. No host shell, socket, API credentials or host environment enters a workload. OCI limits cover workload containers, not the shared engine daemon. All owned resources are temporary; images and project writes may persist. No automatic replay.",
   };

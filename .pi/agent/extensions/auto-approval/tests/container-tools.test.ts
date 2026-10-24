@@ -105,6 +105,66 @@ test("Compose snapshots reject implicit environment, includes, duplicate YAML an
   ).toEqual({});
 });
 
+test.each([false, true])(
+  "Compose empty env sources require no extra file grant (disabled=%s)",
+  async (disabled) => {
+    const seen: string[] = [];
+    const granted = reader({
+      "/project/compose.yaml":
+        'services: {app: {image: "sdk:cached", environment: {MESSAGE: "${MISSING:?must remain literal}"}}}',
+    });
+    const parsed = await prepareCompose(
+      [
+        [
+          "compose",
+          ...(disabled ? [] : ["--env-file", "/dev/null"]),
+          "--file",
+          "compose.yaml",
+          "config",
+          "--no-interpolate",
+          "--quiet",
+        ],
+      ],
+      workspace,
+      disabled ? { COMPOSE_DISABLE_ENV_FILE: "1" } : {},
+      async (paths) => {
+        seen.push(...paths);
+
+        return granted(paths);
+      },
+    );
+
+    expect(seen).toEqual(["compose.yaml"]);
+    expect((parsed.manifests[0] as any).config.services.app.environment.MESSAGE).toBe(
+      "${MISSING:?must remain literal}",
+    );
+    expect(parsed.sources.map((source) => source.path)).toEqual(["/project/compose.yaml"]);
+  },
+);
+
+test("explicit env files remain required despite default-env disabling", async () => {
+  await expect(
+    prepareCompose(
+      [["compose", "--env-file", "missing.env", "config"]],
+      workspace,
+      { COMPOSE_DISABLE_ENV_FILE: "true" },
+      reader({}),
+    ),
+  ).rejects.toThrow("unavailable");
+});
+
+test("bounded engine output retains completion and failure status using fake engines", () => {
+  const child = Bun.spawnSync([
+    "/usr/bin/python3",
+    "-I",
+    "-B",
+    resolve(import.meta.dir, "container-output.test.py"),
+  ]);
+
+  expect(child.exitCode).toBe(0);
+  expect(child.stderr.toString()).toContain("OK");
+});
+
 test("host policy and pre-start/cleanup regressions use only fake engines", () => {
   const child = Bun.spawnSync([
     "/usr/bin/python3",

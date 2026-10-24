@@ -8,6 +8,7 @@ import time
 import tempfile
 from .policy import OWNER
 from .processes import capture, clean_environment
+from .output import WorkloadOutput
 from .workloads import projected_mounts, read_json, require_controls, verified_container
 
 
@@ -109,7 +110,7 @@ class Job:
         self.directory.mkdir(mode=0o700)
         self.environment = clean_environment()
         self.cwd = request["workspace"]["cwd"]
-        self.remaining = request.get("limits", {}).get("maxOutputBytes", 1048576)
+        self.output = WorkloadOutput(request.get("limits", {}).get("maxOutputBytes", 1048576))
         self.deadline = time.monotonic() + request.get("limits", {}).get("executionTimeoutMs", 120000) / 1000
         self.results = []
         self.mutated = False
@@ -124,11 +125,10 @@ class Job:
         if cancellation_path(self.request["job"]).exists():
             raise InterruptedError("Container job cancelled; no automatic replay")
         timeout = min(15 if control else 82800, max(0.01, self.deadline - time.monotonic()))
-        result = capture(self.engine, arguments, self.environment, self.cwd, timeout, 2097152 if control else self.remaining)
+        result = capture(self.engine, arguments, self.environment, self.cwd, timeout,
+                         output=None if control else self.output)
         if cancellation_path(self.request["job"]).exists():
             raise InterruptedError("Container job cancelled during engine operation")
-        if not control:
-            self.remaining -= len((result["stdout"] + result["stderr"]).encode())
         return result
 
     def run(self, command, index):
@@ -211,13 +211,14 @@ class Job:
                 if argv[:2] == ["compose", "version"]:
                     compose_provider(self.engine, self.environment)
                 result = self.call(argv)
+            self.output.append((result["stdout"] + result["stderr"]).encode())
             self.results.append(result)
             if result["exitCode"]:
                 break
-        output = "\n".join(item["stdout"] + item["stderr"] for item in self.results)
+        output, output_details = self.output.finish()
         status = self.results[-1]["exitCode"] if self.results else 0
         return {"content": [{"type": "text", "text": output}], "isError": bool(status),
-                "details": {"exitCode": status, "commands": len(self.results)}}
+                "details": {"exitCode": status, "commands": len(self.results), **output_details}}
 
     def close(self):
         if self.mutated:

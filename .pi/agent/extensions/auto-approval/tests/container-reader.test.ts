@@ -50,6 +50,14 @@ native(
       expect(Buffer.byteLength(result.source)).toBeGreaterThan(100000);
       expect(result.source).toBe(text);
 
+      const scoped = containerFileReader(
+        { path: project, cwd: project, bindings: [path], masked: [] },
+        config,
+      );
+
+      expect((await scoped([path]))[0]).toEqual(result);
+      await expect(scoped(["/dev/null"])).rejects.toThrow("exceeds granted project paths");
+
       const outside = join(directory, "outside-secret");
 
       await writeFile(outside, "synthetic-outside-data");

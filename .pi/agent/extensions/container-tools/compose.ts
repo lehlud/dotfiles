@@ -134,9 +134,12 @@ export async function prepareCompose(
 
     const options = composeArguments(argv);
     let environment: Record<string, string> = {};
-    const envFiles = options.envFiles.length ? options.envFiles : [".env"];
+    const disableEnv = ["true", "1"].includes(literal.COMPOSE_DISABLE_ENV_FILE ?? "");
+    const envFiles = options.envFiles.length ? options.envFiles : disableEnv ? [] : [".env"];
 
     for (const path of envFiles) {
+      if (path === "/dev/null") continue;
+
       try {
         environment = { ...environment, ...dotenv((await read(path)).source) };
       } catch (error) {
@@ -182,7 +185,10 @@ export async function prepareCompose(
     if (document.errors.length || document.warnings.length)
       throw new Error("Compose YAML contains unsupported or invalid syntax");
 
-    const config = interpolate(document.toJS({ maxAliasCount: 100 }), environment);
+    const raw = document.toJS({ maxAliasCount: 100 });
+    const noInterpolate =
+      options.command[0] === "config" && options.command.includes("--no-interpolate");
+    const config = noInterpolate ? raw : interpolate(raw, environment);
 
     if (config.include || config.extends)
       throw new Error(

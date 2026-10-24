@@ -366,6 +366,9 @@ grep. Maximum 8,000 characters/call and max(8, compressed originals + 4) attempt
 capacity. No filesystem, regex, shell/network or sibling branch. Every compressed original must
 return nonempty text before approval; summaries guide, originals remain authoritative. Relevant
 conditions may require further reads. Unresolved lookup/inspection failure blocks without fallback.
+Excerpts are expected; complete diagnostic-log rereads are not a prerequisite. Request relevant
+additional ranges within the same review before deciding; compression alone is not a denial reason.
+Explicit user requirements to read the whole prompt still apply; valid denials remain final.
 JSON-encoded argument objects/null optional fields normalize before strict validation. Invalid
 IDs/fields/bounds get bounded errors to the same reviewer; every attempt counts, third invalid
 ends review. Failed/empty reads do not satisfy inspection. This repairs protocol, never a denial.

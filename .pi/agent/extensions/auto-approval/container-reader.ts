@@ -25,6 +25,8 @@ for name in settings["names"]:
         answers.append({"path":path,"data":base64.b64encode(data[offset:offset+16384]).decode(),"size":len(data),"sha256":hashlib.sha256(data).hexdigest()})
     except FileNotFoundError:
         answers.append({"errorCode":"ENOENT"})
+    except (PermissionError,ValueError) as error:
+        answers.append({"errorCode":"CONFIG_SCOPE","message":str(error)})
 print(json.dumps(answers))
 `;
 
@@ -65,7 +67,10 @@ export function containerFileReader(workspace: Workspace, config: Config, signal
         signal,
       );
 
-      if (result.isError) throw new Error("Isolated container configuration inspection failed");
+      if (result.isError)
+        throw new Error(
+          `Isolated container configuration inspection failed (executor exit ${result.details?.exitCode ?? "unknown"}); no configuration accepted`,
+        );
 
       return JSON.parse(
         result.content
@@ -80,6 +85,9 @@ export function containerFileReader(workspace: Workspace, config: Config, signal
       const first = await chunk(name, 0);
 
       if (first.errorCode) {
+        if (first.errorCode !== "ENOENT")
+          throw new Error(`Container configuration inspection failed: ${first.message}`);
+
         answers.push(first);
 
         continue;
