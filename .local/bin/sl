@@ -1,23 +1,736 @@
 #!/usr/bin/env bash
+#
+# sl: pure bash port of the Steam Locomotive.
+#
+# The train art comes from Toyoda Masashi's sl (D51, C51 and the small logo),
+# so this version draws the original locomotive while using no curses and no
+# container runtime.
 
-_helper="${AUTO_UPDATE_APP_HELPER:-$HOME/.local/bin/auto-update-app.bash}"
-if [ ! -r "$_helper" ]; then
-    printf 'sl: missing auto-update helper: %s\n' "$_helper" >&2
+set -uo pipefail
+
+VERSION='sl (bash port) 1.0'
+FRAME_DELAY=0.040
+PUFF_MAX=160
+
+D51_LENGTH=83
+D51_TALL=11
+D51_COAL_OFFSET=53
+C51_LENGTH=87
+C51_TALL=12
+C51_COAL_OFFSET=55
+LOGO_LENGTH=84
+LOGO_TALL=7
+
+accident=0
+fly=0
+logo=0
+c51=0
+saved_stty=''
+
+usage() {
+  cat <<'EOF'
+sl: a steam locomotive crosses the terminal
+
+Usage: sl [-aFcl] [-h] [-V]
+
+Options:
+  -a      Accident: people run after the train
+  -c      C51 locomotive instead of the D51
+  -F      Fly: the train gains height as it travels
+  -l      Small logo train
+  -h      Show this help
+  -V      Show version
+
+Keys:
+  q or Ctrl+C stops the train early.
+EOF
+}
+
+D51_ROWS=(
+  '      ====        ________                ___________ '
+  '  _D _|  |_______/        \__I_I_____===__|_________| '
+  '   |(_)---  |   H\________/ |   |        =|___ ___|   '
+  '   /     |  |   H  |  |     |   |         ||_| |_||   '
+  '  |      |  |   H  |__--------------------| [___] |   '
+  '  | ________|___H__/__|_____/[][]~\_______|       |   '
+  '  |/ |   |-----------I_____I [][] []  D   |=======|__ '
+)
+
+D51_WHEELS=(
+  '__/ =| o |=-~~\  /~~\  /~~\  /~~\ ____Y___________|__ '
+  ' |/-=|___|=    ||    ||    ||    |_____/~\___/        '
+  '  \_/      \O=====O=====O=====O_/      \_/            '
+  '__/ =| o |=-~~\  /~~\  /~~\  /~~\ ____Y___________|__ '
+  ' |/-=|___|=O=====O=====O=====O   |_____/~\___/        '
+  '  \_/      \__/  \__/  \__/  \__/      \_/            '
+  '__/ =| o |=-O=====O=====O=====O \ ____Y___________|__ '
+  ' |/-=|___|=    ||    ||    ||    |_____/~\___/        '
+  '  \_/      \__/  \__/  \__/  \__/      \_/            '
+  '__/ =| o |=-~O=====O=====O=====O\ ____Y___________|__ '
+  ' |/-=|___|=    ||    ||    ||    |_____/~\___/        '
+  '  \_/      \__/  \__/  \__/  \__/      \_/            '
+  '__/ =| o |=-~~\  /~~\  /~~\  /~~\ ____Y___________|__ '
+  ' |/-=|___|=   O=====O=====O=====O|_____/~\___/        '
+  '  \_/      \__/  \__/  \__/  \__/      \_/            '
+  '__/ =| o |=-~~\  /~~\  /~~\  /~~\ ____Y___________|__ '
+  ' |/-=|___|=    ||    ||    ||    |_____/~\___/        '
+  '  \_/      \_O=====O=====O=====O/      \_/            '
+)
+
+D51_COAL=(
+  '                              '
+  '                              '
+  '    _________________         '
+  '   _|                \_____A  '
+  ' =|                        |  '
+  ' -|                        |  '
+  '__|________________________|_ '
+  '|__________________________|_ '
+  '   |_D__D__D_|  |_D__D__D_|   '
+  '    \_/   \_/    \_/   \_/    '
+  '                              '
+)
+
+C51_ROWS=(
+  '        ___                                            '
+  '       _|_|_  _     __       __             ___________'
+  '    D__/   \_(_)___|  |__H__|  |_____I_Ii_()|_________|'
+  # This row holds apostrophes and backticks, so it needs double quotes
+  # with the backticks escaped to stay literal.
+  "     | \`---'   |:: \`--'  H  \`--'         |  |___ ___|  "
+  '    +|~~~~~~~~++::~~~~~~~H~~+=====+~~~~~~|~~||_| |_||  '
+  '    ||        | ::       H  +=====+      |  |::  ...|  '
+  '|    | _______|_::-----------------[][]-----|       |  '
+)
+
+C51_WHEELS=(
+  '| /~~ ||   |-----/~~~~\  /[I_____I][][] --|||_______|__'
+  '------|oOo|==[]=-      ||      ||      |  ||=======_|__'
+  '/~\____|___|/~\_|  O=======O=======O   |__|+-/~\_|     '
+  '\_/         \_/  \____/  \____/  \____/      \_/       '
+  '| /~~ ||   |-----/~~~~\  /[I_____I][][] --|||_______|__'
+  '------|oOo|=[]=- O=======O=======O    |  ||=======_|__'
+  '/~\____|___|/~\_|      ||      ||      |__|+-/~\_|     '
+  '\_/         \_/  \____/  \____/  \____/      \_/       '
+  '| /~~ ||   |-----/~~~~\  /[I_____I][][] --|||_______|__'
+  '------|oOo|==[]=- O=======O=======O   |  ||=======_|__'
+  '/~\____|___|/~\_|      ||      ||      |__|+-/~\_|     '
+  '\_/         \_/  \____/  \____/  \____/      \_/       '
+  '| /~~ ||   |-----/~~~~\  /[I_____I][][] --|||_______|__'
+  '------|oOo|===[]=- O=======O=======O  |  ||=======_|__'
+  '/~\____|___|/~\_|      ||      ||      |__|+-/~\_|     '
+  '\_/         \_/  \____/  \____/  \____/      \_/       '
+  '| /~~ ||   |-----/~~~~\  /[I_____I][][] --|||_______|__'
+  '------|oOo|===[]=-    ||      ||      |  ||=======_|__'
+  '/~\____|___|/~\_|    O=======O=======O |__|+-/~\_|     '
+  '\_/         \_/  \____/  \____/  \____/      \_/       '
+  '| /~~ ||   |-----/~~~~\  /[I_____I][][] --|||_______|__'
+  '------|oOo|==[]=-     ||      ||      |  ||=======_|__'
+  '/~\____|___|/~\_|   O=======O=======O  |__|+-/~\_|     '
+  '\_/         \_/  \____/  \____/  \____/      \_/       '
+)
+
+C51_COAL=(
+  '                              '
+  '                              '
+  '    _________________         '
+  '   _|                \_____A  '
+  ' =|                        |  '
+  ' -|                        |  '
+  '__|________________________|_ '
+  '|__________________________|_ '
+  '   |_D__D__D_|  |_D__D__D_|   '
+  '    \_/   \_/    \_/   \_/    '
+  '                              '
+  '                              '
+)
+
+LOGO_ROWS=(
+  '     ++      +------ '
+  '     ||      |+-+ |  '
+  '   /---------|| | |  '
+  '  + ========  +-+ |  '
+)
+
+LOGO_WHEELS=(
+  ' _|--O========O~\-+  '
+  '//// \_/      \_/    '
+  ' _|--/O========O\-+  '
+  '//// \_/      \_/    '
+  ' _|--/~O========O-+  '
+  '//// \_/      \_/    '
+  ' _|--/~\------/~\-+  '
+  '//// \_O========O    '
+  ' _|--/~\------/~\-+  '
+  '//// \O========O/    '
+  ' _|--/~\------/~\-+  '
+  '//// O========O_/    '
+)
+
+LOGO_COAL=(
+  '____                 '
+  '|   \@@@@@@@@@@@     '
+  '|    \@@@@@@@@@@@@@_ '
+  '|                  | '
+  '|__________________| '
+  '   (O)       (O)     '
+)
+
+LOGO_CAR=(
+  '____________________ '
+  '|  ___ ___ ___ ___ | '
+  '|  |_| |_| |_| |_| | '
+  '|__________________| '
+  '|__________________| '
+  '   (O)        (O)    '
+)
+
+SMOKE_KIND1=(
+  '(   )' '(    )' '(    )' '(   )' '(  )' '(  )'
+  '( )' '( )' '()' '()' 'O' 'O' 'O' 'O' 'O' ' '
+)
+
+SMOKE_KIND2=(
+  '(@@@)' '(@@@@)' '(@@@@)' '(@@@)' '(@@)' '(@@)'
+  '(@)' '(@)' '@@' '@@' '@' '@' '@' '@' '@' ' '
+)
+
+SMOKE_ERASE=(
+  '     ' '      ' '      ' '     ' '    ' '    '
+  '   ' '   ' '  ' '  ' ' ' ' ' ' ' ' ' ' ' ' '
+)
+
+SMOKE_DY=(2 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0)
+SMOKE_DX=(-2 -1 0 1 1 1 1 1 2 2 2 2 2 3 3 3)
+
+parse_args() {
+  local arg cluster letter
+
+  while (($# > 0)); do
+    arg="$1"
+
+    case "$arg" in
+      --help)
+        usage
+        exit 0
+        ;;
+
+      --version)
+        echo "$VERSION"
+        exit 0
+        ;;
+
+      --)
+        shift
+        break
+        ;;
+    esac
+
+    if [[ "$arg" != -?* ]]; then
+      echo "sl: unexpected operand: $arg" >&2
+      exit 2
+    fi
+
+    cluster="${arg#-}"
+
+    while [[ -n "$cluster" ]]; do
+      letter="${cluster:0:1}"
+      cluster="${cluster:1}"
+
+      case "$letter" in
+        a)
+          accident=1
+          ;;
+
+        c)
+          c51=1
+          ;;
+
+        F)
+          fly=1
+          ;;
+
+        l)
+          logo=1
+          ;;
+
+        h)
+          usage
+          exit 0
+          ;;
+
+        V)
+          echo "$VERSION"
+          exit 0
+          ;;
+
+        *)
+          echo "sl: unknown option: -$letter" >&2
+          usage >&2
+          exit 2
+          ;;
+      esac
+    done
+
+    shift
+  done
+}
+
+terminal_size() {
+  local reported rows columns
+
+  reported="$(stty size 2>/dev/null || true)"
+
+  if [[ "$reported" =~ ^([0-9]+)\ ([0-9]+)$ ]]; then
+    lines="${BASH_REMATCH[1]}"
+    cols="${BASH_REMATCH[2]}"
+    return 0
+  fi
+
+  rows="$(tput lines 2>/dev/null || printf '24')"
+  columns="$(tput cols 2>/dev/null || printf '80')"
+
+  [[ "$rows" =~ ^[0-9]+$ ]] || rows=24
+  [[ "$columns" =~ ^[0-9]+$ ]] || columns=80
+
+  lines=$rows
+  cols=$columns
+}
+
+# The tty echoes typed keys between reads, so echo is off for the whole run
+# and restored on exit, exactly as the cmatrix clone does.
+save_tty_settings() {
+  if [[ ! -t 0 ]]; then
+    return 0
+  fi
+
+  saved_stty="$(stty -g 2>/dev/null || true)"
+
+  if [[ -z "$saved_stty" ]]; then
+    return 0
+  fi
+
+  stty -echo 2>/dev/null || true
+}
+
+restore_tty_settings() {
+  if [[ -z "$saved_stty" ]]; then
+    return 0
+  fi
+
+  stty "$saved_stty" 2>/dev/null || true
+}
+
+build_canvas() {
+  printf -v empty '%*s' "$cols" ''
+}
+
+# Clip one piece of art into the canvas row at a screen column that may be
+# negative while the train is still entering from the right edge.
+overlay() {
+  local row=$1
+  local col=$2
+  local text=$3
+  local width
+
+  if ((row < 1)) || ((row > lines)); then
+    return 0
+  fi
+
+  if ((col < 1)); then
+    width=$((1 - col))
+
+    if ((width >= ${#text})); then
+      return 0
+    fi
+
+    text="${text:width}"
+    col=1
+  fi
+
+  if ((col > cols)); then
+    return 0
+  fi
+
+  width=${#text}
+
+  if ((col + width - 1 > cols)); then
+    width=$((cols - col + 1))
+    text="${text:0:width}"
+  fi
+
+  ROW="${ROW:0:col-1}${text}${ROW:col-1+width}"
+}
+
+# Small writes such as smoke and people do not repaint a whole row, so they
+# cannot erase the train on rows they share. They clip at the screen edges the
+# way the original addstr calls do.
+put_clipped() {
+  local row=$1
+  local col=$2
+  local text=$3
+  local skip
+  local width
+  local escape
+
+  if ((row < 1)) || ((row > lines)); then
+    return 0
+  fi
+
+  if ((col < 1)); then
+    skip=$(( 1 - col ))
+
+    if ((skip >= ${#text})); then
+      return 0
+    fi
+
+    text=${text:skip}
+    col=1
+  fi
+
+  if ((col > cols)); then
+    return 0
+  fi
+
+  width=${#text}
+
+  if ((col + width - 1 > cols)); then
+    text=${text:0:cols-col+1}
+  fi
+
+  printf -v escape '\033[%d;%dH%s' "$row" "$col" "$text"
+  buffer+=$escape
+}
+
+flush_row() {
+  local row=$1
+  local escape
+
+  printf -v escape '\033[%d;1H' "$row"
+  buffer+="${escape}${ROW}"
+}
+
+draw_man() {
+  local row=$1
+  local col=$2
+  local phase=$3
+
+  if ((phase % 2 == 0)); then
+    put_clipped "$((row + 1))" "$col" '(O)'
+  else
+    put_clipped "$row" "$col" 'Help!'
+    put_clipped "$((row + 1))" "$col" '\O/'
+  fi
+}
+
+render_d51() {
+  local x=$1
+  local pattern=$(( (D51_LENGTH + x) % 6 ))
+  local y=$(( lines / 2 - 5 ))
+  local coal_shift=0
+  local row i j bottom
+
+  if ((fly)); then
+    y=$(( x / 7 + lines - cols / 7 - 10 ))
+    coal_shift=1
+  fi
+
+  bottom=$(( y + D51_TALL + coal_shift ))
+
+  for ((row = y; row <= bottom; row++)); do
+    if ((row < 1)) || ((row > lines)); then
+      continue
+    fi
+
+    ROW=$empty
+    i=$(( row - y ))
+    j=$(( row - y - coal_shift ))
+
+    if ((i >= 0)) && ((i < 7)); then
+      overlay "$row" "$x" "${D51_ROWS[i]}"
+    elif ((i >= 7)) && ((i < 10)); then
+      overlay "$row" "$x" "${D51_WHEELS[pattern * 3 + i - 7]}"
+    fi
+
+    if ((j >= 0)) && ((j < D51_TALL)); then
+      overlay "$row" "$(( x + D51_COAL_OFFSET ))" "${D51_COAL[j]}"
+    fi
+
+    flush_row "$row"
+  done
+
+  if ((accident)); then
+    draw_man "$(( y + 2 ))" "$(( x + 43 ))" "$(( (D51_LENGTH + x) / 12 ))"
+    draw_man "$(( y + 2 ))" "$(( x + 47 ))" "$(( (D51_LENGTH + x) / 12 ))"
+  fi
+
+  SMOKE_ROW=$(( y - 1 ))
+  SMOKE_COL=$(( x + 7 ))
+}
+
+render_c51() {
+  local x=$1
+  local pattern=$(( (C51_LENGTH + x) % 6 ))
+  local y=$(( lines / 2 - 5 ))
+  local coal_shift=0
+  local row i j bottom
+
+  if ((fly)); then
+    y=$(( x / 7 + lines - cols / 7 - 11 ))
+    coal_shift=1
+  fi
+
+  bottom=$(( y + C51_TALL + coal_shift ))
+
+  for ((row = y; row <= bottom; row++)); do
+    if ((row < 1)) || ((row > lines)); then
+      continue
+    fi
+
+    ROW=$empty
+    i=$(( row - y ))
+    j=$(( row - y - coal_shift ))
+
+    if ((i >= 0)) && ((i < C51_TALL)); then
+      if ((i < 7)); then
+        overlay "$row" "$x" "${C51_ROWS[i]}"
+      elif ((i < 11)); then
+        overlay "$row" "$x" "${C51_WHEELS[pattern * 4 + i - 7]}"
+      fi
+    fi
+
+    if ((j >= 0)) && ((j < C51_TALL)); then
+      overlay "$row" "$(( x + C51_COAL_OFFSET ))" "${C51_COAL[j]}"
+    fi
+
+    flush_row "$row"
+  done
+
+  if ((accident)); then
+    draw_man "$(( y + 3 ))" "$(( x + 45 ))" "$(( (C51_LENGTH + x) / 12 ))"
+    draw_man "$(( y + 3 ))" "$(( x + 49 ))" "$(( (C51_LENGTH + x) / 12 ))"
+  fi
+
+  SMOKE_ROW=$(( y - 1 ))
+  SMOKE_COL=$(( x + 7 ))
+}
+
+render_logo() {
+  local x=$1
+  local pattern=$(( (LOGO_LENGTH + x) / 3 % 6 ))
+  local y=$(( lines / 2 - 3 ))
+  local py1=0
+  local py2=0
+  local py3=0
+  local row i first last bottom men_phase men_top
+
+  if ((fly)); then
+    y=$(( x / 6 + lines - cols / 6 - 6 ))
+    py1=2
+    py2=4
+    py3=6
+  fi
+
+  first=$y
+  bottom=$(( y + LOGO_TALL + py3 ))
+
+  for ((row = first; row <= bottom; row++)); do
+    if ((row < 1)) || ((row > lines)); then
+      continue
+    fi
+
+    ROW=$empty
+
+    i=$(( row - y ))
+
+    if ((i >= 0)) && ((i < 4)); then
+      overlay "$row" "$x" "${LOGO_ROWS[i]}"
+    elif ((i >= 4)) && ((i < 6)); then
+      overlay "$row" "$x" "${LOGO_WHEELS[pattern * 2 + i - 4]}"
+    fi
+
+    i=$(( row - y - py1 ))
+
+    if ((i >= 0)) && ((i < 6)); then
+      overlay "$row" "$(( x + 21 ))" "${LOGO_COAL[i]}"
+    fi
+
+    i=$(( row - y - py2 ))
+
+    if ((i >= 0)) && ((i < 6)); then
+      overlay "$row" "$(( x + 42 ))" "${LOGO_CAR[i]}"
+      overlay "$row" "$(( x + 63 ))" "${LOGO_CAR[i]}"
+    fi
+
+    flush_row "$row"
+  done
+
+  if ((accident)); then
+    men_phase=$(( (LOGO_LENGTH + x) / 12 % 2 ))
+    men_top=$(( y + 1 ))
+
+    draw_man "$men_top" "$(( x + 14 ))" "$men_phase"
+    draw_man "$(( men_top + py2 ))" "$(( x + 45 ))" "$men_phase"
+    draw_man "$(( men_top + py2 ))" "$(( x + 53 ))" "$men_phase"
+    draw_man "$(( men_top + py3 ))" "$(( x + 66 ))" "$men_phase"
+    draw_man "$(( men_top + py3 ))" "$(( x + 74 ))" "$men_phase"
+  fi
+
+  SMOKE_ROW=$(( y - 1 ))
+  SMOKE_COL=$(( x + 4 ))
+}
+
+# The plume advances once every fourth frame, which is what gives the original
+# its lazy drift; the same tick also releases a new puff at the funnel.
+smoke_update() {
+  local row=$1
+  local col=$2
+  local x=$3
+  local i index kind
+
+  if (( x % 4 != 0 )); then
+    return 0
+  fi
+
+  for ((i = 0; i < ${#puff_y[@]}; i++)); do
+    index=${puff_pattern[i]}
+    kind=${puff_kind[i]}
+
+    put_clipped "${puff_y[i]}" "${puff_x[i]}" "${SMOKE_ERASE[index]}"
+
+    puff_y[i]=$(( puff_y[i] - SMOKE_DY[index] ))
+    puff_x[i]=$(( puff_x[i] + SMOKE_DX[index] ))
+
+    if (( index < 15 )); then
+      index=$(( index + 1 ))
+    fi
+
+    puff_pattern[i]=$index
+
+    if (( kind == 0 )); then
+      put_clipped "${puff_y[i]}" "${puff_x[i]}" "${SMOKE_KIND1[index]}"
+    else
+      put_clipped "${puff_y[i]}" "${puff_x[i]}" "${SMOKE_KIND2[index]}"
+    fi
+  done
+
+  kind=$(( ${#puff_y[@]} % 2 ))
+
+  puff_y+=("$row")
+  puff_x+=("$col")
+  puff_pattern+=(0)
+  puff_kind+=("$kind")
+
+  if (( kind == 0 )); then
+    put_clipped "$row" "$col" "${SMOKE_KIND1[0]}"
+  else
+    put_clipped "$row" "$col" "${SMOKE_KIND2[0]}"
+  fi
+
+  if ((${#puff_y[@]} > PUFF_MAX)); then
+    puff_y=("${puff_y[@]:1}")
+    puff_x=("${puff_x[@]:1}")
+    puff_pattern=("${puff_pattern[@]:1}")
+    puff_kind=("${puff_kind[@]:1}")
+  fi
+}
+
+render_frame() {
+  local x=$1
+  local phase=$2
+
+  buffer=''
+
+  case "$phase" in
+    logo)
+      render_logo "$x"
+      ;;
+
+    c51)
+      render_c51 "$x"
+      ;;
+
+    *)
+      render_d51 "$x"
+      ;;
+  esac
+
+  smoke_update "$SMOKE_ROW" "$SMOKE_COL" "$x"
+
+  printf '%s' "$buffer"
+}
+
+cleanup() {
+  trap - EXIT INT TERM TSTP
+
+  printf '%s\033[?25h\033[2J\033[H' "$reset_color"
+
+  restore_tty_settings
+}
+
+main() {
+  local x phase=d51 train_length key
+
+  terminal_size
+
+  if ((lines < 8)) || ((cols < 20)); then
+    echo 'sl: terminal is too small' >&2
     exit 1
-fi
-source "$_helper"
+  fi
 
-_image=dotfiles/terminal-toys:latest
-_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/terminal-toys")"
-if ! auto_update_ensure_docker_build sl "$_image" "$_cache_dir" \
-    "$HOME/.local/scripts/terminal-toys.Dockerfile" 3; then
-    exit 1
-fi
+  if ((logo)); then
+    phase=logo
+    train_length=$LOGO_LENGTH
+  elif ((c51)); then
+    phase=c51
+    train_length=$C51_LENGTH
+  else
+    phase=d51
+    train_length=$D51_LENGTH
+  fi
 
-_tty=(-i)
-if [ -t 0 ] && [ -t 1 ]; then
-    _tty=(-it)
-fi
-exec docker run "${_tty[@]}" --rm --init \
-    --env "TERM=${TERM:-xterm-256color}" --entrypoint /usr/bin/sl \
-    "$_image" "$@"
+  puff_y=()
+  puff_x=()
+  puff_pattern=()
+  puff_kind=()
+  SMOKE_ROW=0
+  SMOKE_COL=0
+
+  build_canvas
+
+  reset_color=$'\033[0m'
+
+  save_tty_settings
+
+  trap cleanup EXIT
+  trap 'exit 0' INT TERM TSTP
+
+  printf '\033[?25l\033[2J'
+
+  x=$(( cols - 1 ))
+
+  while :; do
+    if ((x < -train_length)); then
+      break
+    fi
+
+    render_frame "$x" "$phase"
+
+    x=$(( x - 1 ))
+
+    if [[ -t 0 ]]; then
+      if IFS= read -r -s -n 1 -t "$FRAME_DELAY" key; then
+        case "$key" in
+          q|Q)
+            break
+            ;;
+        esac
+      fi
+    else
+      sleep "$FRAME_DELAY"
+    fi
+  done
+}
+
+parse_args "$@"
+main
