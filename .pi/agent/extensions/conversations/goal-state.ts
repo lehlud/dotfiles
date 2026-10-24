@@ -35,7 +35,9 @@ export const instruction = (current: Goal) =>
 
 /** Restore the latest checkpoint and independent feedback without resuming work. */
 export function restoreGoal(branch: readonly SessionEntry[]): Goal | undefined {
-  const last = branch.findLast((entry) => entry.type === "custom" && entry.customType === STATE_ENTRY);
+  const last = branch.findLast(
+    (entry) => entry.type === "custom" && entry.customType === STATE_ENTRY,
+  );
   const saved = last?.type === "custom" ? (last.data as Goal | undefined) : undefined;
 
   const goal: Goal | undefined =

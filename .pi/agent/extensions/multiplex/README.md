@@ -10,6 +10,11 @@ questions, blockers, conflicts, findings and evidenced deliverables to relevant 
 broadcast only team-wide information. Avoid duplicate work/status/acknowledgements/polling.
 Speed/quality are not guaranteed and each active member incurs model usage.
 
+`TeamController` handles commands, peer creation/replacement and UI registration.
+`TeamSession` owns delivery queues, parent service bindings, goal broadcasts and
+quiescence. Stopping closes admissions synchronously before asynchronous peer cleanup.
+`peer.ts` remains the explicit policy/tool composition root, using named construction options.
+
 | Command                  | Effect                                  |
 | ------------------------ | --------------------------------------- |
 | `/multiplex <n>`         | Start/resize; resize only when all idle |

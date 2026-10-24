@@ -38,15 +38,27 @@ export class Peer extends ChildSession {
   }
 }
 
+type PeerOptions = {
+  endpoint: Endpoint;
+  runtime: ModelRuntime;
+  report(error: string): void;
+  answer(text: string): void;
+  settled(): void;
+  branch?: ReturnType<ExtensionContext["sessionManager"]["getBranch"]>;
+  observe?: (event: ActivityEvent) => void;
+};
+
 export async function createPeer(
   ctx: ExtensionContext,
-  endpoint: Endpoint,
-  runtime: ModelRuntime,
-  report: (error: string) => void,
-  answer: (text: string) => void,
-  settled: () => void,
-  branch = ctx.sessionManager.getBranch(),
-  observe?: (event: ActivityEvent) => void,
+  {
+    endpoint,
+    runtime,
+    report,
+    answer,
+    settled,
+    branch = ctx.sessionManager.getBranch(),
+    observe,
+  }: PeerOptions,
 ) {
   const entries = structuredClone(branch);
   const manager = SessionManager.inMemory(ctx.cwd, undefined, [
