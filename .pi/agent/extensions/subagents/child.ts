@@ -1,11 +1,9 @@
-import {
-  createAgentSession,
-  DefaultResourceLoader,
-  getAgentDir,
-  SettingsManager,
-  type AgentSession,
-  type ExtensionContext,
-  type SessionManager,
+import type {
+  AgentSession,
+  AgentSessionEvent,
+  ExtensionContext,
+  SessionManager,
+  ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import autoApproval from "../auto-approval/index.ts";
@@ -15,20 +13,20 @@ import contextManagement from "../context-management/index.ts";
 import { registerOperatorInputs } from "../conversations/operator-input.ts";
 import { registerSteering } from "../conversations/steering.ts";
 import { registerProgress } from "../conversations/progress.ts";
-import { registerFastRequests } from "../shared/providers/fast.ts";
-import { registerInheritedSelection } from "../shared/session/model-selection.ts";
 import { childRuntime } from "../shared/providers/child-runtime.ts";
 import { registerCacheAffinity } from "../shared/providers/cache-affinity.ts";
 import { PARENT_MAILBOX, type SubagentResult } from "../shared/contracts/subagents.ts";
 import { sessionServices } from "../shared/session/services.ts";
-import { registerGoalContext } from "../shared/session/goal-context.ts";
+
+import { createHeadlessSession } from "../shared/session/headless-session.ts";
+import { registerParentContext } from "../shared/session/inherit.ts";
 
 type Hooks = {
   message(text: string): void;
   settled(session: AgentSession): void;
   failed(text: string): void;
-  observe(event: any): void;
-  evidence(event: any): void;
+  observe(event: AgentSessionEvent): void;
+  evidence(event: ToolResultEvent): void;
 };
 
 function policy(job: SubagentResult) {
@@ -38,7 +36,7 @@ function policy(job: SubagentResult) {
 function bindings(parent: ExtensionContext, job: SubagentResult, hooks: Hooks) {
   return (pi: Parameters<typeof autoApproval>[0]) => {
     registerCacheAffinity(pi);
-    registerGoalContext(pi);
+    registerParentContext(pi, parent);
     pi.on("context", (event) => ({
       messages: [
         ...event.messages,
@@ -46,19 +44,12 @@ function bindings(parent: ExtensionContext, job: SubagentResult, hooks: Hooks) {
       ],
     }));
     registerOperatorInputs(pi);
-    registerFastRequests(pi);
-    registerInheritedSelection(pi, parent);
     registerSteering(pi, () => sessionServices(parent).operatorGoal?.());
     registerProgress(pi, (_ctx, text) => hooks.failed(text));
     pi.on("session_start", (_event, child) => {
       const services = sessionServices(child);
 
-      services.containers = sessionServices(parent).containers;
       services.delegationMode = job.mode;
-      services.parentCacheLineage = () => sessionServices(parent).cacheLineage?.();
-      services.operatorGoal = () => sessionServices(parent).operatorGoal?.();
-      services.goalInstruction = () => sessionServices(parent).goalInstruction?.();
-      services.fastMode = () => sessionServices(parent).fastMode?.() ?? false;
       services.acquireActionLease = () => {
         const lease = sessionServices(parent).mailbox?.beginAction?.();
 
@@ -96,64 +87,29 @@ export async function createChild(
   manager: SessionManager,
   hooks: Hooks,
 ) {
-  const settings = SettingsManager.inMemory();
-  const loader = new DefaultResourceLoader({
-    cwd: parent.cwd,
-    agentDir: getAgentDir(),
-    settingsManager: settings,
-    noExtensions: true,
-    noSkills: true,
-    noThemes: true,
-    noContextFiles: true,
-    noPromptTemplates: true,
-    // Keep shared instructions intact; the role is a later system section.
-    systemPrompt: parent.getSystemPrompt(),
-    extensionFactories: [
+  const session = await createHeadlessSession(parent, {
+    manager,
+    runtime: await childRuntime(parent),
+    extensions: [
       autoApproval,
       publicWriting,
       codeQuality,
       contextManagement,
       bindings(parent, job, hooks),
     ],
-  });
-
-  await loader.reload();
-
-  const { session } = await createAgentSession({
-    cwd: parent.cwd,
-    agentDir: getAgentDir(),
-    modelRuntime: await childRuntime(parent),
-    model: parent.model,
-    thinkingLevel: parent.thinkingLevel ?? "medium",
-    sessionManager: manager,
-    settingsManager: settings,
-    resourceLoader: loader,
     tools: ["approved_action", PARENT_MAILBOX, "history", "notes", "new_context"],
+    errors: {
+      report: hooks.failed,
+      extension: "Subagent extension failed",
+      sandbox: "Subagent sandbox or configuration unavailable",
+    },
   });
 
-  try {
-    await session.bindExtensions({
-      mode: "json",
-      onError: () => hooks.failed("Subagent extension failed"),
-      uiContext: {
-        setStatus() {},
-        setWidget() {},
-        notify(_text: string, kind?: string) {
-          if (kind === "error") hooks.failed("Subagent sandbox or configuration unavailable");
-        },
-      } as any,
-    });
-    session.subscribe((event) => {
-      hooks.observe(event);
+  session.subscribe((event) => {
+    hooks.observe(event);
 
-      if (event.type === "agent_settled") hooks.settled(session);
-    });
+    if (event.type === "agent_settled") hooks.settled(session);
+  });
 
-    return session;
-  } catch (error) {
-    await sessionServices({ sessionManager: manager }).cleanup?.();
-    session.dispose();
-
-    throw error;
-  }
+  return session;
 }

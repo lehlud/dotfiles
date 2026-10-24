@@ -29,6 +29,9 @@ is a library, not an extension; its contracts/infrastructure never import featur
 - `multiplex/peer.ts` and `subagents/child.ts` are explicit composition roots. Each
   child gets its own gate, policies and session storage; shared child transport,
   provider setup, names and cancellation serve both without reverse imports.
+  `shared/session/headless-session.ts` owns SDK setup and startup cleanup;
+  `inherit.ts` binds live parent preferences/task data. Tool lists, role policies,
+  action leases and peer/parent routing remain explicit in the composition roots.
 - Model selection snapshots reviewers at turn boundaries. Fast-mode hooks apply to
   working, peer, child, side and review requests without changing policy or grants.
 - Context management owns separate projections per actor; original evidence remains
