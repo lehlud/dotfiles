@@ -65,6 +65,7 @@ export async function prepareCompanionDependencies(directory: string): Promise<v
     "container-tools",
     "subagents",
     "context-management",
+    "jobs",
   ]) {
     const companion = join(dirname(directory), name);
 
@@ -120,6 +121,7 @@ export async function prepareExecutor(
 
   const sources = await fingerprint(directory, [
     "runner.ts",
+    "../shared/contracts/jobs.ts",
     "credential-command.ts",
     "../shared/configuration/credential-profile.ts",
     "git-command.ts",

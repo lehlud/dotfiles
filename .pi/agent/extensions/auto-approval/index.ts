@@ -1,3 +1,4 @@
+import { availableJobTools, JOB_TOOL } from "../shared/contracts/jobs.ts";
 import { availableQuestionTools, QUESTION_TOOLS } from "../shared/contracts/questions.ts";
 import { join } from "node:path";
 import {
@@ -25,7 +26,10 @@ const localConfigPath = join(getAgentDir(), "auto-approval.device.json");
 export default function autoApproval(pi: ExtensionAPI) {
   const session = new ActionSession();
 
-  pi.on("session_shutdown", () => session.cleanup());
+  pi.on("session_shutdown", async (_event, ctx) => {
+    await sessionServices(ctx).jobs?.stop();
+    await session.cleanup();
+  });
 
   function lock(ctx: ExtensionContext) {
     pi.setActiveTools([
@@ -34,6 +38,7 @@ export default function autoApproval(pi: ExtensionAPI) {
       ...availableQuestionTools(pi),
       ...availableSubagentTools(pi),
       ...availableContextTools(pi),
+      ...availableJobTools(pi),
       ...(sessionServices(ctx).mailbox?.active() ? ["mailbox"] : []),
     ]);
     // Clear a widget left by an older version after /reload.
@@ -43,6 +48,7 @@ export default function autoApproval(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     sessionServices(ctx).cleanup = async () => {
+      await sessionServices(ctx).jobs?.stop();
       await session.cleanup();
       await sessionServices(ctx).remote?.cleanup(ctx.sessionManager.getSessionId());
     };
@@ -81,6 +87,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     // Goal proposals have their own mandatory independent review in the controller.
     // Other internal metadata tools grant no external-action permissions.
     if (
+      event.toolName === JOB_TOOL ||
       event.toolName === "mailbox" ||
       event.toolName === GOAL_TOOL ||
       availableSubagentTools(pi).includes(event.toolName) ||

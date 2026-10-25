@@ -42,6 +42,29 @@ export async function prepareAction(
 
   assertDelegatedAction(sessionServices(ctx).delegationMode, request);
 
+  if (request.background) {
+    if (!request.background.title.trim() || !request.background.work.trim())
+      throw new Error("Background jobs need a title and independent work description");
+
+    if (!sessionServices(ctx).jobs)
+      throw new Error("Background supervisor unavailable; restart Pi through ~/.local/bin/pi");
+
+    const output = request.sandbox?.limits?.maxOutputBytes ?? 65536;
+
+    if (output > 131072)
+      throw new Error(
+        "Background retained output is limited to 131072 bytes; redirect full logs to reviewed project artifacts",
+      );
+
+    request = {
+      ...request,
+      sandbox: {
+        ...request.sandbox,
+        limits: { ...request.sandbox?.limits, maxOutputBytes: output },
+      },
+    };
+  }
+
   checkActionSize(request);
   stage("sandbox configuration");
 

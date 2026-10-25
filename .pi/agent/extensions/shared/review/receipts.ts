@@ -14,6 +14,7 @@ function operationIdentity(action: unknown, cwd: unknown) {
     arguments: value.arguments,
     sandbox: value.sandbox,
     network: value.network,
+    background: value.background,
   };
 }
 
@@ -104,10 +105,14 @@ export function reviewedReceipts(entries: readonly Entry[]): ReviewedEvidence[] 
       entry.type === "custom" && entry.customType === "auto-approval-peer-result"
         ? (entry.data as { multiplexAgent?: string; message?: Entry["message"] })
         : undefined;
-    const message = peer?.message ?? entry.message;
+    const job =
+      entry.type === "custom" && entry.customType === "auto-approval-job-result"
+        ? (entry.data as { message?: Entry["message"] })
+        : undefined;
+    const message = peer?.message ?? job?.message ?? entry.message;
 
     if (
-      (!peer && entry.type !== "message") ||
+      (!peer && !job && entry.type !== "message") ||
       message?.role !== "toolResult" ||
       message.toolName !== "approved_action" ||
       message.isError
@@ -116,6 +121,13 @@ export function reviewedReceipts(entries: readonly Entry[]): ReviewedEvidence[] 
 
     const details = message.details as { approval?: ActionAudit; result?: unknown } | undefined;
     const receipt = details?.approval;
+
+    if (
+      message.details &&
+      typeof message.details === "object" &&
+      "backgroundJob" in message.details
+    )
+      continue;
 
     if (peer && peer.multiplexAgent !== receipt?.multiplexAgent) continue;
 

@@ -1,3 +1,4 @@
+import { availableJobTools } from "../shared/contracts/jobs.ts";
 import { availableQuestionTools } from "../shared/contracts/questions.ts";
 import type {
   ExtensionAPI,
@@ -77,6 +78,7 @@ export class TeamController {
       ...availableQuestionTools(this.pi),
       ...availableSubagentTools(this.pi),
       ...availableContextTools(this.pi),
+      ...availableJobTools(this.pi),
     ]);
     this.closing = previous.dispose();
 
@@ -204,6 +206,7 @@ export class TeamController {
         ...availableQuestionTools(this.pi),
         ...availableSubagentTools(this.pi),
         ...availableContextTools(this.pi),
+        ...availableJobTools(this.pi),
       ]);
       this.display(ctx);
 

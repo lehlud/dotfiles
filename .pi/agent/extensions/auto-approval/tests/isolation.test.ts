@@ -10,6 +10,8 @@ import {
   executeIsolated,
   type SandboxConfig,
 } from "../isolation.ts";
+import { JobManager } from "../../jobs/manager.ts";
+import { acquireTemporaryMountpoints } from "../sandbox/temporary-mounts.ts";
 import type { Request } from "../../shared/contracts/action.ts";
 
 const fixture = await mkdtemp(join(tmpdir(), "pi-isolation-test-"));
@@ -797,3 +799,71 @@ nativeTest(
     expect((result as any).structuredContent.exit_code).toBe(0);
   },
 );
+
+nativeTest(
+  "concurrent supervised and foreground commands keep separate per-command network grants",
+  async () => {
+    const { readlink } = await import("node:fs/promises");
+    const net = await readlink("/proc/self/ns/net");
+    const manager = new JobManager({
+      started() {},
+      completed() {},
+      notify() {},
+      changed() {},
+      error(error) {
+        throw error;
+      },
+    });
+    const workspace = await validateWorkspace(project, native, [], undefined, privateTmp);
+    const request: Request = {
+      ...action("bash", {
+        command: "readlink /proc/self/ns/net; sleep 0.3; printf BACKGROUND-DONE",
+      }),
+      background: { title: "Native check", work: "Run the independent offline check" },
+      sandbox: { network: "host" },
+    };
+    const job = manager.start({ ...request.background!, toolCallId: "native-job" }, (signal) =>
+      executeIsolated(request, workspace, native, signal),
+    );
+
+    try {
+      const foreground = await run("bash", {
+        command: "readlink /proc/self/ns/net; printf FOREGROUND-DONE",
+      });
+
+      expect(JSON.stringify(foreground.content)).toContain("FOREGROUND-DONE");
+      expect(JSON.stringify(foreground.content)).not.toContain(net);
+
+      const completed = (await manager.wait(job.id))[0];
+
+      expect(completed.job.state).toBe("succeeded");
+      expect(JSON.stringify(completed.result.content)).toContain(net);
+      expect(JSON.stringify(completed.result.content)).toContain("BACKGROUND-DONE");
+    } finally {
+      await manager.stop();
+    }
+  },
+);
+
+test("temporary mount placeholders remain until the last concurrent action releases them", async () => {
+  const directory = await mkdtemp(join(fixture, "mount-leases-"));
+  const workspace = {
+    path: directory,
+    cwd: directory,
+    bindings: [],
+    masked: [],
+    temporaryDirectory: directory,
+  };
+  const [first, second] = await Promise.all([
+    acquireTemporaryMountpoints(workspace),
+    acquireTemporaryMountpoints(workspace),
+  ]);
+
+  await first();
+  await access(join(directory, "home"));
+  await access(join(directory, "pi"));
+  await second();
+  await expect(access(join(directory, "home"))).rejects.toThrow();
+  await first();
+  await expect(access(join(directory, "pi"))).rejects.toThrow();
+});

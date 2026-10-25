@@ -1207,3 +1207,65 @@ test.each([false, true])(
     expect(drafts).toHaveLength(1);
   },
 );
+
+test("owned background work prevents premature goal review and invalidates a stale completion snapshot", async () => {
+  let busy = true,
+    revision = 1;
+
+  sessionServices(ctx).jobs = {
+    get busy() {
+      return busy;
+    },
+    get revision() {
+      return revision;
+    },
+    start() {
+      throw new Error("not used");
+    },
+    async cancelAll() {
+      busy = false;
+    },
+    async stop() {
+      busy = false;
+    },
+  };
+  await command("Validate the background result", ctx);
+
+  const before = requests.length;
+
+  await settle();
+  expect(requests.length).toBe(before);
+  expect(state().status).toBe("running");
+  busy = false;
+  duringReview = () => {
+    revision++;
+  };
+
+  const superseded = await settle();
+
+  expect(superseded.continue).toBe(true);
+  expect(state().checks).toBe(0);
+  duringReview = undefined;
+  await settle();
+  expect(state().status).toBe("complete");
+});
+
+test("goal stop cancels owned jobs even when the terminal actor is already idle", async () => {
+  let cancelled = false;
+
+  sessionServices(ctx).jobs = {
+    busy: true,
+    revision: 1,
+    start() {
+      throw new Error("not used");
+    },
+    async cancelAll() {
+      cancelled = true;
+    },
+    async stop() {},
+  };
+  await command("Finish validation", ctx);
+  await command("stop", ctx);
+  expect(cancelled).toBe(true);
+  expect(state().status).toBe("stopped");
+});

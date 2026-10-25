@@ -1,3 +1,4 @@
+import { availableJobTools } from "../shared/contracts/jobs.ts";
 import { availableQuestionTools } from "../shared/contracts/questions.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { availableGoalTools } from "../shared/contracts/goal.ts";
@@ -56,6 +57,12 @@ export function registerEndpoint(pi: ExtensionAPI, current: () => Endpoint | und
   const attach = (ctx: ExtensionContext) => {
     const endpoint = current();
 
+    sessionServices(ctx).publishActionResult = endpoint
+      ? (message) =>
+          endpoint.boxes.share(endpoint.name, "result", {
+            message: { ...message, role: "toolResult", toolName: "approved_action" },
+          })
+      : undefined;
     sessionServices(ctx).mailbox = endpoint
       ? {
           name: endpoint.name,
@@ -75,6 +82,7 @@ export function registerEndpoint(pi: ExtensionAPI, current: () => Endpoint | und
         MAILBOX_TOOL,
         ...availableGoalTools(pi),
         ...availableQuestionTools(pi),
+        ...availableJobTools(pi),
       ]);
   };
 

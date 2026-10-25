@@ -28,6 +28,7 @@ export class GoalCompletion {
     const services = sessionServices(ctx);
     const peerRevision = services.peerRevision?.();
     const subagentRevision = services.subagentRevision?.();
+    const jobRevision = services.jobs?.revision;
     const checked = await verifyGoal(pi, ctx, goal, signal, display, (envelope) => {
       this.envelope = envelope;
     });
@@ -38,8 +39,12 @@ export class GoalCompletion {
 
     const changed =
       services.peerRevision?.() !== peerRevision ||
-      services.subagentRevision?.() !== subagentRevision;
-    const busy = (services.peersBusy?.() ?? false) || (services.subagentsBusy?.() ?? false);
+      services.subagentRevision?.() !== subagentRevision ||
+      services.jobs?.revision !== jobRevision;
+    const busy =
+      (services.peersBusy?.() ?? false) ||
+      (services.subagentsBusy?.() ?? false) ||
+      !!services.jobs?.busy;
     const superseded = ctx.hasPendingMessages() || changed || busy || operatorPending();
 
     pi.appendEntry("auto-approval-goal-review", {

@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, getCurrentTools } from "@earendil-works/pi-ai";
 import autoApproval from "../index.ts";
+import jobs from "../../jobs/index.ts";
 import conversations from "../../conversations/index.ts";
 import multiplex from "../../multiplex/index.ts";
 import recovery from "../../provider-recovery/index.ts";
@@ -458,12 +459,17 @@ async function fixture(
     noContextFiles: true,
     noPromptTemplates: true,
     additionalExtensionPaths: diskLoaded
-      ? ["auto-approval", "conversations", "multiplex", "provider-recovery", "code-quality"].map(
-          (name) => resolve(import.meta.dir, "../..", name, "index.ts"),
-        )
+      ? [
+          "auto-approval",
+          "jobs",
+          "conversations",
+          "multiplex",
+          "provider-recovery",
+          "code-quality",
+        ].map((name) => resolve(import.meta.dir, "../..", name, "index.ts"))
       : [],
     extensionFactories: [
-      ...(diskLoaded ? [] : [autoApproval, conversations, multiplex, recovery, codeQuality]),
+      ...(diskLoaded ? [] : [autoApproval, jobs, conversations, multiplex, recovery, codeQuality]),
       (pi) => {
         pi.on("session_start", (_event, ctx) => {
           rootContext = ctx;
@@ -512,7 +518,7 @@ async function fixture(
     sessionManager: manager,
     settingsManager: settings,
     resourceLoader: loader,
-    tools: ["approved_action", "ask_user", "mailbox", "set_goal", "user_questions"],
+    tools: ["approved_action", "ask_user", "job", "mailbox", "set_goal", "user_questions"],
   });
 
   return {
@@ -605,6 +611,7 @@ nativeTest(
         "set_goal",
         "ask_user",
         "user_questions",
+        "job",
       ]);
       expect(sessionServices(state.root()).mailbox?.active()).toBe(true);
     } finally {
@@ -774,6 +781,7 @@ nativeTest(
         expect(latest.tools.sort()).toEqual([
           "approved_action",
           "ask_user",
+          "job",
           "mailbox",
           "set_goal",
           "user_questions",
@@ -965,6 +973,7 @@ nativeTest(
         "set_goal",
         "ask_user",
         "user_questions",
+        "job",
       ]);
     } finally {
       state?.releases.forEach((release) => release());
@@ -1497,6 +1506,7 @@ nativeTest(
         "set_goal",
         "ask_user",
         "user_questions",
+        "job",
       ]);
       expect(await readdir(state.project)).toEqual([`${backend}.txt`]);
       expect(state.reviews.filter((review) => !review.action)).toEqual([]);
@@ -1589,6 +1599,7 @@ nativeTest(
         "set_goal",
         "ask_user",
         "user_questions",
+        "job",
       ]);
     } finally {
       state?.releases.forEach((release) => release());
@@ -1751,6 +1762,7 @@ for (const failure of ["terminal", "peer"] as const)
           "set_goal",
           "ask_user",
           "user_questions",
+          "job",
         ]);
         expect(
           branch.filter(
@@ -1830,6 +1842,7 @@ for (const failure of ["invalid-terminal", "invalid-peer"] as const)
           "set_goal",
           "ask_user",
           "user_questions",
+          "job",
         ]);
         expect((await readdir(state.project)).filter((name) => name.endsWith(".txt"))).toEqual([]);
       } finally {
@@ -1956,6 +1969,7 @@ for (const spinning of ["terminal", "peer"] as const)
           "set_goal",
           "ask_user",
           "user_questions",
+          "job",
         ]);
         expect(sessionServices(state.root()).mailbox?.active()).not.toBe(true);
 
@@ -2055,6 +2069,57 @@ nativeTest(
         await state.session.abort();
         await sessionServices(state.root()).stopTeam?.();
         await main?.catch(() => {});
+        state.session.dispose();
+      }
+
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+nativeTest(
+  "disabling Multiplex cancels the terminal actor's owned jobs without waking a cancelled team",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-team-owned-jobs-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    let state: Awaited<ReturnType<typeof fixture>> | undefined;
+
+    try {
+      state = await fixture(directory);
+      await state.session.bindExtensions({ mode: "json" });
+      await state.session.prompt("/multiplex 2");
+
+      let cancelled = false;
+      const jobs = sessionServices(state.root()).jobs!;
+
+      jobs.start(
+        { title: "Owned wait", work: "Independent review", toolCallId: "synthetic-owned-wait" },
+        async (signal) => {
+          await new Promise<void>((resolve) =>
+            signal.addEventListener(
+              "abort",
+              () => {
+                cancelled = true;
+                resolve();
+              },
+              { once: true },
+            ),
+          );
+
+          return { content: [{ type: "text", text: "cancelled" }], details: undefined };
+        },
+      );
+      await Promise.resolve();
+      await state.session.prompt("/multiplex off");
+      expect(cancelled).toBe(true);
+      expect(jobs.busy).toBe(false);
+      expect(state.contexts).toHaveLength(0);
+    } finally {
+      if (state) {
+        await sessionServices(state.root()).cleanup?.();
         state.session.dispose();
       }
 

@@ -112,3 +112,63 @@ export async function cleanTemporaryMountpoints(
     }
   }
 }
+
+type MountLease = { users: number; queue: Promise<unknown>; created: TemporaryMountpoint[] };
+
+const leases = new Map<string, MountLease>();
+
+function serialize<T>(lease: MountLease, run: () => Promise<T>): Promise<T> {
+  const result = lease.queue.then(run, run);
+
+  lease.queue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+
+  return result;
+}
+
+/** Concurrent actions share placeholders, never permissions or mount namespaces. */
+export async function acquireTemporaryMountpoints(
+  workspace: Workspace,
+): Promise<() => Promise<void>> {
+  const root = workspace.temporaryDirectory;
+
+  if (!root) return async () => {};
+
+  const lease = leases.get(root) ?? { users: 0, queue: Promise.resolve(), created: [] };
+
+  leases.set(root, lease);
+  lease.users++;
+
+  let released = false;
+  const release = () =>
+    serialize(lease, async () => {
+      if (released) return;
+
+      released = true;
+      lease.users--;
+
+      if (lease.users === 0) {
+        await cleanTemporaryMountpoints(
+          root,
+          lease.created.sort((a, b) => b.path.length - a.path.length),
+        );
+        lease.created = [];
+
+        if (lease.users === 0) leases.delete(root);
+      }
+    });
+
+  try {
+    await serialize(lease, async () => {
+      lease.created.push(...(await temporaryMountpoints(workspace)));
+    });
+
+    return release;
+  } catch (error) {
+    await release();
+
+    throw error;
+  }
+}

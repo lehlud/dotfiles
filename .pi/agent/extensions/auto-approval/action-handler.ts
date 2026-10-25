@@ -91,9 +91,13 @@ class ActionRun {
       )
         pinSecurityConfig(prepared.config);
 
+      this.signal?.throwIfAborted();
+
+      if (prepared.request.background) return this.background(prepared);
+
       this.executionStarted = true;
 
-      return await this.execute(prepared);
+      return await this.execute(prepared, this.signal);
     } catch (error) {
       return this.failed(error);
     } finally {
@@ -138,6 +142,22 @@ class ActionRun {
     const reviewCwd = remote
       ? `ssh://${remote.target.user}@${remote.target.host}${remote.target.root}`
       : this.ctx.cwd;
+    const reviewPlan = {
+      ...sandboxPlan,
+      ...(request.background
+        ? {
+            managedBackground: {
+              owner: "this actor/session only",
+              maximumActiveJobs: 4,
+              execution:
+                "same attached executor, reviewed timeout and per-command grants; no shell detachment",
+              completion: "one automatic result or blocking join; no status polling",
+              cancellation:
+                "interrupt or session teardown aborts execution and awaits cleanup before temporary storage removal",
+            },
+          }
+        : {}),
+    };
     const review = buildReview(
       request,
       branch,
@@ -147,7 +167,7 @@ class ActionRun {
         ...reviewedProtection,
         "[Additional operator-owned credential sources and executables: privately protected]",
       ],
-      sandboxPlan,
+      reviewPlan,
       operatorGoal,
       prepared,
     );
@@ -165,7 +185,7 @@ class ActionRun {
           : workspace.cwd,
       executionCwd: workspace.cwd,
       backend: sandboxPlan.backend ?? (remote ? "ssh" : (config.sandbox.backend ?? "docker")),
-      sandboxPlan,
+      sandboxPlan: reviewPlan,
       requestId: review.requestId,
       fingerprint: review.fingerprint,
       operatorGoal,
@@ -204,34 +224,75 @@ class ActionRun {
     return checked.verdict;
   }
 
-  private dispatch(prepared: PreparedAction) {
+  private background(prepared: PreparedAction) {
+    const jobs = sessionServices(this.ctx).jobs!;
+    const lease = this.assignment;
+    const job = jobs.start(
+      { ...prepared.request.background!, toolCallId: this.id },
+      async (signal) => {
+        try {
+          signal.throwIfAborted();
+          lease?.assertCurrent();
+          prepared.remote?.assertCurrent();
+          await prepared.container?.assertCurrent();
+          signal.throwIfAborted();
+          this.executionStarted = true;
+
+          const result = await this.execute(prepared, signal);
+
+          // Review usage belongs to admission, not the later completion notification.
+          return { ...result, usage: undefined };
+        } catch (error) {
+          return { ...this.failed(error), usage: undefined };
+        } finally {
+          lease?.release();
+        }
+      },
+    );
+
+    // Admission succeeded. The supervisor now owns execution and its assignment lease.
+    this.assignment = undefined;
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `${this.summary}\nBackground job ${job.id} started: ${job.title}. Do the independent work now. Completion arrives automatically; use job wait only when ready to join.`,
+        },
+      ],
+      details: { approval: this.audit, backgroundJob: job },
+      usage: this.usage,
+    };
+  }
+
+  private dispatch(prepared: PreparedAction, signal: AbortSignal | undefined) {
     const { request, workspace, config, credentialPlan, remote, localGitWorkspace, container } =
       prepared;
 
-    if (container) return container.execute(this.signal);
+    if (container) return container.execute(signal);
 
     if (remote) {
       if (request.sandbox?.gitConfig === true)
         return executeWithGitConfig(request, localGitWorkspace!, config, {
-          signal: this.signal,
-          dispatch: (text) => remote.execute(this.signal, text),
+          signal: signal,
+          dispatch: (text) => remote.execute(signal, text),
         });
 
-      return remote.execute(this.signal);
+      return remote.execute(signal);
     }
 
     if (credentialPlan)
-      return executeWithCredentials(request, credentialPlan, config, this.signal, workspace);
+      return executeWithCredentials(request, credentialPlan, config, signal, workspace);
 
     if (request.sandbox?.gitConfig === true)
-      return executeWithGitConfig(request, workspace, config, { signal: this.signal });
+      return executeWithGitConfig(request, workspace, config, { signal: signal });
 
-    return executeIsolated(request, workspace, config.sandbox, this.signal);
+    return executeIsolated(request, workspace, config.sandbox, signal);
   }
 
-  private async execute(prepared: PreparedAction) {
+  private async execute(prepared: PreparedAction, signal: AbortSignal | undefined) {
     const { request } = prepared;
-    const result = await this.dispatch(prepared);
+    const result = await this.dispatch(prepared, signal);
 
     if (isWebTool(request.tool))
       return {

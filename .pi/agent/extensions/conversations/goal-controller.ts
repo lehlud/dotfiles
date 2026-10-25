@@ -154,6 +154,7 @@ export class GoalController {
         ctx.abort();
         await sessionServices(ctx).stopTeam?.();
         await sessionServices(ctx).stopSubagents?.();
+        await sessionServices(ctx).jobs?.cancelAll();
         this.record(stopped, ctx);
       }
 
@@ -378,7 +379,12 @@ export class GoalController {
       return;
 
     // A team result can be reviewed only after peer actions have settled.
-    if (sessionServices(ctx).peersBusy?.() || sessionServices(ctx).subagentsBusy?.()) return;
+    if (
+      sessionServices(ctx).peersBusy?.() ||
+      sessionServices(ctx).subagentsBusy?.() ||
+      sessionServices(ctx).jobs?.busy
+    )
+      return;
 
     const controller = new AbortController();
 

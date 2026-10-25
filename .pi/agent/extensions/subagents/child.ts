@@ -6,6 +6,7 @@ import type {
   ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import jobs from "../jobs/index.ts";
 import autoApproval from "../auto-approval/index.ts";
 import publicWriting from "../public-writing/index.ts";
 import codeQuality from "../code-quality/index.ts";
@@ -50,6 +51,14 @@ function bindings(parent: ExtensionContext, job: SubagentResult, hooks: Hooks) {
       const services = sessionServices(child);
 
       services.delegationMode = job.mode;
+      services.publishActionResult = (result) =>
+        hooks.evidence({
+          ...result,
+          type: "tool_result",
+          toolName: "approved_action",
+          input: {},
+          isError: result.isError ?? false,
+        });
       services.acquireActionLease = () => {
         const lease = sessionServices(parent).mailbox?.beginAction?.();
 
@@ -92,12 +101,13 @@ export async function createChild(
     runtime: await childRuntime(parent),
     extensions: [
       autoApproval,
+      jobs,
       publicWriting,
       codeQuality,
       contextManagement,
       bindings(parent, job, hooks),
     ],
-    tools: ["approved_action", PARENT_MAILBOX, "history", "notes", "new_context"],
+    tools: ["approved_action", "job", PARENT_MAILBOX, "history", "notes", "new_context"],
     errors: {
       report: hooks.failed,
       extension: "Subagent extension failed",
@@ -108,7 +118,11 @@ export async function createChild(
   session.subscribe((event) => {
     hooks.observe(event);
 
-    if (event.type === "agent_settled") hooks.settled(session);
+    if (
+      event.type === "agent_settled" &&
+      !sessionServices({ sessionManager: session.sessionManager }).jobs?.busy
+    )
+      hooks.settled(session);
   });
 
   return session;

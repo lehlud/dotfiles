@@ -27,3 +27,5 @@
 !shared/
 !shared/configuration/
 !shared/configuration/credential-profile.ts
+
+!shared/contracts/jobs.ts

@@ -6,7 +6,7 @@ import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { Request } from "../../shared/contracts/action.ts";
 import type { CredentialExecution } from "../credential-command.ts";
 import type { GitConfigReader } from "../git-command.ts";
-import { temporaryMountpoints, cleanTemporaryMountpoints } from "./temporary-mounts.ts";
+import { acquireTemporaryMountpoints } from "./temporary-mounts.ts";
 import { sandboxArguments } from "./arguments.ts";
 import type { SandboxConfig, Workspace } from "./types.ts";
 import { createCgroupScope, type CgroupScope } from "./cgroup-scope.ts";
@@ -86,7 +86,7 @@ async function executeCommand(
   const native = config.backend === "bwrap";
   const executable = native ? config.executable : config.dockerExecutable;
   // Bind mount scaffolding must not survive an action-specific access grant.
-  const mountpoints = await temporaryMountpoints(workspace);
+  const releaseMountpoints = await acquireTemporaryMountpoints(workspace);
   const args = sandboxArguments(workspace, config, name, request.sandbox);
   const launch = scope?.launch(executable, args) ?? { executable, args };
   const child = spawn(launch.executable, launch.args, {
@@ -182,7 +182,11 @@ async function executeCommand(
   } finally {
     clearTimeout(watchdog);
     signal?.removeEventListener("abort", abort);
-    await remove();
-    await cleanTemporaryMountpoints(workspace.temporaryDirectory, mountpoints);
+
+    try {
+      await remove();
+    } finally {
+      await releaseMountpoints();
+    }
   }
 }

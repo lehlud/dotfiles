@@ -1,4 +1,5 @@
 import { Type, type Static } from "typebox";
+import { backgroundSchema } from "./jobs.ts";
 
 export const sandboxRequestSchema = Type.Object(
   {
@@ -84,6 +85,7 @@ export type Request = {
   justification: string;
   sandbox?: SandboxRequest;
   network?: boolean;
+  background?: Static<typeof backgroundSchema>;
 };
 
 export function normalizeNetworkFlag(request: Request): Request {

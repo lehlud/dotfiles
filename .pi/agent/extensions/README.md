@@ -3,22 +3,23 @@
 Each feature has one launcher-loaded `index.ts` and owns its session state. `shared/`
 is a library, not an extension; its contracts/infrastructure never import feature code.
 
-| Module                                             | Responsibility                                                       |
-| -------------------------------------------------- | -------------------------------------------------------------------- |
-| [Auto-Approval](auto-approval/README.md)           | Exact-action review, audit and isolated execution                    |
-| [Conversations](conversations/README.md)           | Goals, continuation, steering, questions, side chats, progress guard |
-| [Multiplex](multiplex/README.md)                   | Equal peers, coordination, authenticated mailboxes, shared feed      |
-| [Subagents](subagents/README.md)                   | Bounded delegates, parent mailbox, review mode, kill/resurrection    |
-| [Context management](context-management/README.md) | Budgets, history, notes, eviction and rotation                       |
-| [Fast mode](fast-mode/README.md)                   | Session speed preference for working/review requests                 |
-| [Model selection](model-selection/README.md)       | Persistent model/thinking pairs and live selections                  |
-| [Provider recovery](provider-recovery/README.md)   | Bounded retries and availability tracking                            |
-| [Code quality](code-quality/README.md)             | Standing multilingual readability instruction                        |
-| [Public writing](public-writing/README.md)         | Frozen editorial rules and explicit draft checks                     |
-| [Web research](web-research/README.md)             | DDGS and public-page text extraction                                 |
-| [Remote](remote/README.md)                         | Operator-selected SSH workspace and bounded forwarding               |
-| [Container tools](container-tools/README.md)       | Reviewed Docker/Podman workloads through a private bridge            |
-| `shared/`                                          | Settings, contracts, provider/review transport and session services  |
+| Module                                             | Responsibility                                                         |
+| -------------------------------------------------- | ---------------------------------------------------------------------- |
+| [Auto-Approval](auto-approval/README.md)           | Exact-action review, audit and isolated execution                      |
+| [Conversations](conversations/README.md)           | Goals, continuation, steering, questions, side chats, progress guard   |
+| [Multiplex](multiplex/README.md)                   | Equal peers, coordination, authenticated mailboxes, shared feed        |
+| [Subagents](subagents/README.md)                   | Bounded delegates, parent mailbox, review mode, kill/resurrection      |
+| [Context management](context-management/README.md) | Budgets, history, notes, eviction and rotation                         |
+| [Fast mode](fast-mode/README.md)                   | Session speed preference for working/review requests                   |
+| [Model selection](model-selection/README.md)       | Persistent model/thinking pairs and live selections                    |
+| [Provider recovery](provider-recovery/README.md)   | Bounded retries and availability tracking                              |
+| [Code quality](code-quality/README.md)             | Standing multilingual readability instruction                          |
+| [Public writing](public-writing/README.md)         | Frozen editorial rules and explicit draft checks                       |
+| [Web research](web-research/README.md)             | DDGS and public-page text extraction                                   |
+| [Remote](remote/README.md)                         | Operator-selected SSH workspace and bounded forwarding                 |
+| [Jobs](jobs/README.md)                             | Supervised background commands, completion delivery and blocking waits |
+| [Container tools](container-tools/README.md)       | Reviewed Docker/Podman workloads through a private bridge              |
+| `shared/`                                          | Settings, contracts, provider/review transport and session services    |
 
 ## Boundaries
 
@@ -50,7 +51,7 @@ The shared test harness/dependencies remain under `auto-approval/`.
 ## Action pipeline
 
 `index.ts` registers hooks/tools; `tool-catalog.ts` owns the portable schema and strict
-selected-tool validator. `ActionSession` serializes actions and owns private storage.
+selected-tool validator. `ActionSession` serializes foreground actions and job admissions and owns private storage.
 `ActionRun` preserves this order:
 
 1. Acquire any Multiplex assignment lease.
@@ -59,7 +60,8 @@ selected-tool validator. `ActionSession` serializes actions and owns private sto
 4. Build bounded operator evidence and obtain an independent verdict.
 5. Persist that verdict before execution.
 6. Recheck lease/cancellation; execute within the reviewed local/remote boundary.
-7. Release the lease and finish presentation on every exit.
+7. Release the lease after execution and cleanup. A background admission transfers it
+   to the session-owned job supervisor; the gate queue can then admit other actions.
 
 `prepare-action.ts` handles preflight; `sandbox-plan.ts` describes scope without resolving
 credentials; `review-display.ts` handles callbacks. `sandbox/` separates discovery,
@@ -75,7 +77,10 @@ execution takes named options for identity sources, cancellation and remote disp
 
 ## Lifecycle
 
-Goal controllers discard completion snapshots superseded by user input or peer work.
+Goal controllers discard completion snapshots superseded by user input, peer work or
+owned jobs. The [job supervisor](jobs/README.md) keeps commands attached to their
+reviewed executors while independent work proceeds. Completion is event-driven;
+joins and genuine observation intervals suspend the model without polling.
 Team controllers own startup, global cancellation and cleanup; mailbox/coordination/
 activity modules own their respective state. Session services and availability retain
 `Symbol.for` registries: compiled Pi loads extensions through separate module caches,

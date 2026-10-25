@@ -61,6 +61,7 @@ export class TeamSession {
       !this.ready ||
       !this.boxes.coordination.ready ||
       this.peers.some((peer) => peer.busy) ||
+      !!sessionServices(this.ctx).jobs?.busy ||
       (!!sessionServices(this.ctx).goalInstruction?.() && this.boxes.unobserved().length > 0)
     );
   }
@@ -158,7 +159,8 @@ export class TeamSession {
       !this.ready ||
       !this.boxes.coordination.ready ||
       !this.ctx.isIdle() ||
-      this.peers.some((peer) => peer.busy)
+      this.peers.some((peer) => peer.busy) ||
+      !!sessionServices(this.ctx).jobs?.busy
     )
       return;
 
@@ -215,6 +217,7 @@ export class TeamSession {
   async dispose() {
     const closed = await Promise.allSettled([
       sessionServices(this.ctx).stopSubagents?.(),
+      sessionServices(this.ctx).jobs?.cancelAll(),
       ...this.peers.map((peer) => peer.close()),
     ]);
 

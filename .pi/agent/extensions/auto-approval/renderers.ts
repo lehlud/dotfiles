@@ -102,12 +102,13 @@ export function createApprovalRenderers(
         call = state.writeCall;
       }
 
-      if (args?.sandbox || args?.network !== undefined) {
+      if (args?.sandbox || args?.network !== undefined || args?.background) {
         const changes = {
           ...args.sandbox,
           ...(args?.network !== undefined ? { network: args.network ? "host" : "none" } : {}),
         };
         const labels = [
+          ...(args?.background ? [`background: ${args.background.title}`] : []),
           ...(changes.maintenance ? ["Pi maintenance · one action"] : []),
           ...(changes.projectFiles ? [`project files: ${changes.projectFiles} · one command`] : []),
           ...(changes.gitConfig === true ? ["git config: read-only · one command"] : []),

@@ -10,6 +10,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { BACKGROUND_TOOLS, backgroundSchema } from "../shared/contracts/jobs.ts";
 import { sandboxRequestSchema } from "../shared/contracts/action.ts";
 import { webTools } from "../web-research/index.ts";
 import { writingCheckTool } from "../public-writing/index.ts";
@@ -60,6 +61,7 @@ export const strictParameters = Type.Union(
           description: "Why this exact action is needed now; explain side effects and scope.",
         }),
         sandbox: Type.Optional(sandboxRequestSchema),
+        ...(BACKGROUND_TOOLS.has(name) ? { background: Type.Optional(backgroundSchema) } : {}),
         ...(["bash", "powershell", "credential_exec", "container_exec"].includes(name)
           ? {
               network: Type.Optional(
@@ -108,6 +110,7 @@ export const parameters = Type.Object(
       description: "Why this exact action is needed now; explain side effects and scope.",
     }),
     sandbox: Type.Optional(sandboxRequestSchema),
+    background: Type.Optional(backgroundSchema),
     network: Type.Optional(
       Type.Boolean({
         description:

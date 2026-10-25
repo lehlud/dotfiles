@@ -24,6 +24,7 @@
     "../subagents/**/*.ts",
     "../context-management/**/*.ts",
     "../remote/**/*.ts",
-    "../container-tools/**/*.ts"
+    "../container-tools/**/*.ts",
+    "../jobs/**/*.ts"
   ]
 }

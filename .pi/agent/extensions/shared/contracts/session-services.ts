@@ -6,6 +6,7 @@ import type { SubagentMode, SubagentActivity } from "./subagents.ts";
 import type { CacheLineage } from "../providers/cache-affinity.ts";
 import type { ContainerAccess } from "./containers.ts";
 import type { RemoteSession } from "./remote.ts";
+import type { JobAccess, ActionResult } from "./jobs.ts";
 import type { Reviewer } from "../review/protocol.ts";
 
 export type ActionLease = {
@@ -16,6 +17,8 @@ export type ActionLease = {
 
 export interface ExecutionServices {
   remote?: RemoteSession;
+  jobs?: JobAccess;
+  publishActionResult?: (result: ActionResult) => void;
   containers?: ContainerAccess;
   cleanup?: () => Promise<void>;
   delegationMode?: SubagentMode;

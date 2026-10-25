@@ -231,6 +231,14 @@ async function fixture(route: { provider?: string; api?: string } = {}) {
                               : { path: "sample.txt" },
                       goal: "Inspect the operator-authorized project",
                       justification: "Independent review of the existing source",
+                      ...(serialized.includes("BACKGROUND-WORK")
+                        ? {
+                            background: {
+                              title: "Child validation",
+                              work: "Review the independent documentation",
+                            },
+                          }
+                        : {}),
                     },
                   },
                 ];
@@ -936,6 +944,69 @@ native(
         state.reviews.filter((review: any) => review.action.tool === "container_exec"),
       ).toHaveLength(1);
     } finally {
+      await state.close();
+    }
+  },
+);
+
+native(
+  "a child's background completion reaches the parent evidence broker and prevents early settlement",
+  async () => {
+    const state = await fixture();
+    let release!: () => void,
+      calls = 0;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    sessionServices(state.ctx()).containers = {
+      async prepare(request) {
+        expect(request.background?.title).toBe("Child validation");
+
+        return {
+          plan: { backend: "synthetic-container" },
+          async assertCurrent() {},
+          async execute() {
+            calls++;
+            await pending;
+
+            return {
+              content: [{ type: "text", text: "CHILD-BACKGROUND-VALIDATED" }],
+              details: { exitCode: 0 },
+            };
+          },
+        };
+      },
+    };
+
+    try {
+      const job = (
+        await state.invoke({
+          operation: "spawn",
+          mode: "work",
+          task: "CONTAINER-WORK BACKGROUND-WORK: validate while reviewing independent docs",
+        })
+      ).details;
+
+      await until(() => calls === 1 && state.contexts.length >= 3);
+      expect((await state.invoke({ operation: "status", id: job.id })).details.state).toBe(
+        "running",
+      );
+      expect(reviewedReceipts(state.session.sessionManager.getBranch())).toHaveLength(0);
+      release();
+      await until(
+        async () =>
+          (await state.invoke({ operation: "status", id: job.id })).details.state === "idle",
+      );
+
+      const receipt = reviewedReceipts(state.session.sessionManager.getBranch()).find((receipt) =>
+        JSON.stringify(receipt.content).includes("CHILD-BACKGROUND-VALIDATED"),
+      );
+
+      expect(receipt?.tool).toBe("container_exec");
+      expect(state.reviews).toHaveLength(1);
+    } finally {
+      release();
       await state.close();
     }
   },

@@ -62,6 +62,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
     "context-management": ["context-management", "shared"],
     remote: ["remote", "shared"],
     "container-tools": ["container-tools", "shared"],
+    jobs: ["jobs", "shared"],
   };
 
   return edges
@@ -74,6 +75,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
         source === "subagents/child.ts" &&
         [
           "auto-approval/index.ts",
+          "jobs/index.ts",
           "public-writing/index.ts",
           "code-quality/index.ts",
           "context-management/index.ts",
@@ -89,6 +91,7 @@ function boundaryViolations(edges: Dependency[]): string[] {
         source === "multiplex/peer.ts" &&
         [
           "auto-approval/index.ts",
+          "jobs/index.ts",
           "public-writing/index.ts",
           "code-quality/index.ts",
           "subagents/index.ts",
@@ -195,6 +198,7 @@ test("the isolated executor cannot reach host approval, configuration loading or
         name === "shared/configuration/load.ts" ||
         [
           "auto-approval/index.ts",
+          "jobs/index.ts",
           "auto-approval/credential-access.ts",
           "auto-approval/git-config.ts",
         ].includes(name),

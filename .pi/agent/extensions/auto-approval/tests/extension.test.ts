@@ -27,6 +27,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { writingCheckTool } from "../../public-writing/index.ts";
 import { Coordination } from "../../multiplex/coordination.ts";
+import { JobManager } from "../../jobs/manager.ts";
+import { reviewedReceipts } from "../../shared/review/receipts.ts";
 import { sessionServices } from "../../shared/session/services.ts";
 
 const root = await mkdtemp(join(tmpdir(), "pi-approval-test-"));
@@ -35,6 +37,7 @@ const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 let validatedScopes: any[] = [];
 let executedRequests: any[] = [];
 let temporaryStores: string[] = [];
+let executionGate: ((request: any, signal?: AbortSignal) => Promise<void>) | undefined;
 let workspaceValidationFails = false;
 let simulatedExecution:
   | { content: { type: string; text: string }[]; details: { exitCode: number } }
@@ -91,6 +94,7 @@ mock.module("../isolation.ts", () => ({
     const cwd = workspace.path;
 
     executedRequests.push(structuredClone(request));
+    await executionGate?.(request, signal);
 
     if (simulatedExecution) return structuredClone(simulatedExecution);
 
@@ -195,6 +199,7 @@ beforeEach(async () => {
   temporaryStores = [];
   workspaceValidationFails = false;
   simulatedExecution = undefined;
+  executionGate = undefined;
   entries = [
     {
       type: "message",
@@ -2026,4 +2031,188 @@ test("approved Pi extension maintenance executes after persisted review and keep
   mode = "deny";
   expect((await call(bash("printf still-gated"))).isError).toBe(true);
   expect(executedRequests).toHaveLength(count);
+});
+
+function supervised() {
+  const notifications: any[] = [];
+  const manager = new JobManager({
+    started: (job) =>
+      entries.push({ type: "custom", customType: "auto-approval-job-start", data: job }),
+    completed: (job, result) =>
+      entries.push({
+        type: "custom",
+        customType: "auto-approval-job-result",
+        data: {
+          job,
+          message: {
+            role: "toolResult",
+            toolName: "approved_action",
+            toolCallId: job.toolCallId,
+            ...result,
+          },
+        },
+      }),
+    notify: (job, result) => {
+      notifications.push({ job, result });
+    },
+    changed() {},
+    error(error) {
+      throw error;
+    },
+  });
+
+  sessionServices(ctx).jobs = manager;
+
+  return { manager, notifications };
+}
+
+test("background review admits once, frees the action queue and holds its lease until cleanup", async () => {
+  const { manager } = supervised();
+  let started!: () => void, release!: () => void;
+  const began = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const leases: { released: boolean }[] = [];
+
+  sessionServices(ctx).acquireActionLease = () => {
+    const lease = { released: false };
+
+    leases.push(lease);
+
+    return {
+      assertCurrent() {},
+      release() {
+        expect(lease.released).toBe(false);
+        lease.released = true;
+      },
+    };
+  };
+
+  let jobSignal: AbortSignal | undefined;
+
+  executionGate = async (request, signal) => {
+    if (request.background) {
+      jobSignal = signal;
+      started();
+      await gate;
+    }
+  };
+
+  const controller = new AbortController();
+  const original = {
+    ...bash("printf completed-background"),
+    background: { title: "Tests", work: "Inspect the independent documentation" },
+  };
+  const admitted: any = await actions.approved_action.execute(
+    "background",
+    original,
+    controller.signal,
+    undefined,
+    ctx,
+  );
+
+  await began;
+  expect(admitted.isError).not.toBe(true);
+  expect(admitted.details.result).toBeUndefined();
+  expect(reviewedReceipts(entries)).toHaveLength(0);
+  expect(requested[0].data.action.background).toEqual(original.background);
+  expect(requested[0].data.action.sandbox.limits.maxOutputBytes).toBe(65536);
+  expect(leases[0].released).toBe(false);
+  controller.abort();
+  expect(jobSignal?.aborted).toBe(false);
+
+  const other: any = await actions.approved_action.execute(
+    "independent",
+    bash("printf independent-work"),
+    undefined,
+    undefined,
+    ctx,
+  );
+
+  expect(other.isError).not.toBe(true);
+  expect(JSON.stringify(other.content)).toContain("independent-work");
+  expect(leases.map((lease) => lease.released)).toEqual([false, true]);
+  release();
+
+  const finished = await manager.wait(admitted.details.backgroundJob.id);
+
+  expect(finished[0].job.state).toBe("succeeded");
+  expect(leases.map((lease) => lease.released)).toEqual([true, true]);
+  expect(reviewedReceipts(entries).at(-1)?.content).toEqual([
+    { type: "text", text: "completed-background" },
+  ]);
+});
+
+test("background denial, invalid tool or missing supervisor cannot start execution", async () => {
+  const request = {
+    ...bash("printf must-not-run"),
+    background: { title: "Tests", work: "Review docs" },
+  };
+
+  expect((await call(request)).isError).toBe(true);
+  expect(requested).toHaveLength(0);
+
+  const { manager } = supervised();
+
+  mode = "deny";
+  expect((await call(request)).isError).toBe(true);
+  expect(manager.list()).toHaveLength(0);
+  expect(executedRequests).toHaveLength(0);
+  mode = "approve";
+  expect((await call({ ...request, tool: "read", arguments: { path: "file" } })).isError).toBe(
+    true,
+  );
+  expect(
+    (await call({ ...request, sandbox: { limits: { maxOutputBytes: 268435456 } } })).isError,
+  ).toBe(true);
+  expect(executedRequests).toHaveLength(0);
+});
+
+test("shutdown aborts background work and waits for cleanup before removing private tmp", async () => {
+  const { manager, notifications } = supervised();
+  let started!: () => void, cleanup!: () => void;
+  const began = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    cleanup = resolve;
+  });
+
+  executionGate = async (_request, signal) => {
+    started();
+    await new Promise<void>((resolve) => {
+      if (signal?.aborted) resolve();
+      else signal?.addEventListener("abort", () => resolve(), { once: true });
+    });
+    await released;
+    signal?.throwIfAborted();
+  };
+
+  const admitted: any = await call({
+    ...bash("printf never"),
+    background: { title: "Test", work: "Review docs" },
+  });
+
+  await began;
+
+  const directory = temporaryStores[0];
+
+  await access(directory);
+
+  let closed = false;
+  const closing = hooks.session_shutdown({}, ctx).then(() => {
+    closed = true;
+  });
+
+  await Promise.resolve();
+  expect(closed).toBe(false);
+  await access(directory);
+  cleanup();
+  await closing;
+  await expect(access(directory)).rejects.toThrow();
+  expect((await manager.wait(admitted.details.backgroundJob.id))[0].job.state).toBe("cancelled");
+  expect(notifications).toHaveLength(0);
 });

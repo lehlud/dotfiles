@@ -453,3 +453,14 @@ Paid configured-reviewer evaluations are separate; none executes proposed action
 | eval:cache                          | Cache layout/usage comparison described above                                                                              |
 
 Offline tests verify transport and boundaries, not a live model's semantic decisions or cache hits.
+
+## Managed background execution
+
+Foreground remains the default. `approved_action.background: {title, work}` starts
+one reviewed command under the session's [job supervisor](../jobs/README.md), naming
+the independent work to do meanwhile. The same exact-action approval, sandbox,
+limits and per-command grants apply. Admission releases the action queue; the job
+keeps its assignment lease until executor cleanup. A start receipt is not success
+evidence. Completion is journaled against the original approval, then delivered
+once or returned by a blocking join. `job wait` and `job sleep` suspend the model;
+neither grants external access. Unmanaged shell detachment remains prohibited.

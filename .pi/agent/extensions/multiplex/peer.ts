@@ -5,6 +5,7 @@ import {
   SessionManager,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import jobs from "../jobs/index.ts";
 import autoApproval from "../auto-approval/index.ts";
 import publicWriting from "../public-writing/index.ts";
 import codeQuality from "../code-quality/index.ts";
@@ -76,6 +77,7 @@ export async function createPeer(
     runtime,
     extensions: [
       autoApproval,
+      jobs,
       publicWriting,
       codeQuality,
       subagents,
@@ -132,6 +134,7 @@ export async function createPeer(
     ],
     tools: [
       "approved_action",
+      "job",
       "mailbox",
       "set_goal",
       "ask_user",

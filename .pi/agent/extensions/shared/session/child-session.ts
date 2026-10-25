@@ -53,6 +53,7 @@ export class ChildSession {
       this.pending > 0 ||
       this.runs.size > 0 ||
       this.session.isStreaming ||
+      !!sessionServices({ sessionManager: this.session.sessionManager }).jobs?.busy ||
       (sessionServices({ sessionManager: this.session.sessionManager }).subagentsBusy?.() ?? false)
     );
   }
