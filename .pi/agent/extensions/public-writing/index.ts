@@ -44,11 +44,18 @@ export const writingCheckTool: ToolDefinition<any, any> = {
 };
 
 export default function publicWriting(pi: ExtensionAPI) {
-  pi.on("before_agent_start", async () => ({
-    message: {
-      customType: "public-writing-policy",
-      display: false,
-      content: PUBLIC_WRITING_INSTRUCTION,
-    },
+  pi.on("context", (event) => ({
+    messages: [
+      ...event.messages.filter(
+        (entry) => entry.role !== "custom" || entry.customType !== "public-writing-policy",
+      ),
+      {
+        role: "custom",
+        customType: "public-writing-policy",
+        content: PUBLIC_WRITING_INSTRUCTION,
+        display: false,
+        timestamp: 0,
+      },
+    ],
   }));
 }

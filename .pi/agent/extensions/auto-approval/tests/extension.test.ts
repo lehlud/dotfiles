@@ -847,6 +847,21 @@ test("denial returns reason without executing", async () => {
   expect(await exists(join(root, "denied-sentinel"))).toBe(false);
 });
 
+test("ordinary prose writes retain safety-only review and preserve submitted wording", async () => {
+  const content = "These artifacts are experimental, not deployment-qualified.";
+  const result = await call({
+    tool: "write",
+    arguments: { path: "README.md", content },
+    goal: "Write project documentation",
+    justification: "Document the experimental exports in the project.",
+  });
+
+  expect(result.isError).not.toBe(true);
+  expect(requested[0].context.systemPrompt).not.toContain("invented-contrast");
+  expect(requested[0].context.systemPrompt).not.toContain("repeated-closers");
+  expect(executedRequests[0].arguments.content).toBe(content);
+});
+
 test("style review judges the immutable exact draft once and uses no network grant", async () => {
   const args = {
     tool: "writing_check",

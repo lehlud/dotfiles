@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { loadConfig } from "../../shared/configuration/load.ts";
 import { buildReview } from "../../auto-approval/review.ts";
 import { reviewAction } from "../../auto-approval/review.ts";
+import { documentationCases } from "./documentation-fixtures.ts";
+import { RULE_SOURCE } from "../rules.ts";
+import { reviewerLabel } from "../../shared/review/client.ts";
 
 const publicPrompt =
   "Schreibe einen sachlichen öffentlichen Website-Text für unsere Fahrradwerkstatt, ohne leere Werbeslogans. Die Sprache des eingereichten Entwurfs ist ausdrücklich die gewünschte Veröffentlichungssprache, auch wenn mein Auftrag Deutsch ist. Begründe deine Prüfung auf Deutsch.";
@@ -29,6 +32,7 @@ const contrasts = [
   ["Arabic", "هذه ليست ورشة لإصلاح الدراجات. إنها ثورة في عالم التنقل."],
 ] as const;
 const cases = [
+  ...documentationCases,
   ...contrasts.map(([language, text]) => ({
     name: `${language} invented contrast`,
     expected: "deny",
@@ -191,6 +195,11 @@ const runtime = await ModelRuntime.create({
 });
 const registry = new ModelRegistry(runtime);
 const config = await loadConfig(agent);
+
+console.log(
+  `Reviewer: ${config.reviewer ? reviewerLabel(config.reviewer) : "none"}; rules: ${RULE_SOURCE.version}`,
+);
+
 let failures = 0;
 let evaluated = 0;
 const selected = (fixture: { name: string }) =>
