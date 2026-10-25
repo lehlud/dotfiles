@@ -4,12 +4,12 @@
 #
 # The original hollywood tiles real terminal tools in a tmux session. This
 # version draws the scene itself: a mosaic of feeds that re-tiles itself every
-# few seconds, a scrolling wire ticker, and now and then a full screen
-# ACCESS GRANTED interlude. No tmux, no extra tools and no container.
+# few seconds, a scrolling wire ticker, animated ASCII widgets, and now and
+# then a full screen ACCESS GRANTED interlude. No tmux, no container.
 
 set -uo pipefail
 
-VERSION='hollywood (bash port) 3.0'
+VERSION='hollywood (bash port) 4.0'
 TICK=0.05
 DEFAULT_DELAY=0.10
 MIN_DELAY_MS=20
@@ -85,11 +85,66 @@ THEMES=(32 36 33 35 31)
 
 BANNER_WORDS=('ACCESS GRANTED' 'TRACE STARTED' 'SECRET DATA')
 
-WIDGETS=(recon exploit trace net wave bars gauge)
+WIDGETS=(recon exploit trace net wave bars gauge donut globe satellite code)
 
 GAUGES=('keys/s' 'hashes/s' 'packets/s' 'flows' 'ops/s')
 
-# Four wide, five tall block letters; the banner only needs A C D E G N R S T.
+# Fast scrolling C, the way stock footage shows it.
+CODE_LINES=(
+  '#include <stdio.h>'
+  '#include <stdlib.h>'
+  '#include <string.h>'
+  ''
+  'static unsigned hash(const unsigned char *buf, size_t len)'
+  '{'
+  '    unsigned acc = 0x811c9dc5u;'
+  '    size_t i;'
+  ''
+  '    for (i = 0; i < len; i++) {'
+  '        acc ^= buf[i];'
+  '        acc *= 16777619u;'
+  '    }'
+  ''
+  '    return acc;'
+  '}'
+  ''
+  'int main(int argc, char **argv)'
+  '{'
+  '    struct payload *p = payload_new();'
+  '    char *key = derive_key(p, 0x20);'
+  ''
+  '    if (!key) {'
+  '        return EXIT_FAILURE;'
+  '    }'
+  ''
+  '    memcpy(p->iv, key, 16);'
+  '    cipher_init(&ctx, CIPHER_AES256, key);'
+  ''
+  '    return cipher_run(&ctx, p);'
+  '}'
+)
+
+# Coarse land mask for the globe, one band per latitude, hash marks land.
+LAND_MAP='....................................'
+LAND_MAP+='|.....####...........######..........'
+LAND_MAP+='|...########.......##########........'
+LAND_MAP+='|..##########....############...##...'
+LAND_MAP+='|...#########...############...####..'
+LAND_MAP+='|....#######...##########......##....'
+LAND_MAP+='|.....#####....#########............. '
+LAND_MAP+='|......###......#######.....####..... '
+LAND_MAP+='|.......##.......#####.....######.... '
+LAND_MAP+='|.......#........####.....#######.... '
+LAND_MAP+='|......###.......####....#######..... '
+LAND_MAP+='|.....#####.......###....######...... '
+LAND_MAP+='|....######........#......####....... '
+LAND_MAP+='|...#######...............###........ '
+LAND_MAP+='|...######.................##........ '
+LAND_MAP+='|....####..................#......... '
+LAND_MAP+='|.....##.............................'
+LAND_MAP+='|....................................'
+
+# Four wide, five tall block letters; the banner needs A C D E G N R S T.
 FONT_ROWS=(
   ' ## ' '#  #' '####' '#  #' '#  #'
   ' ###' '#   ' '#   ' '#   ' ' ###'
@@ -118,9 +173,9 @@ Options:
 Keys:
   q, Esc or Ctrl+C leaves the simulation.
 
-The layout re-tiles itself every few seconds and ACCESS GRANTED drops in
-now and then. Everything shown is fabricated: no network, no files and no
-commands are touched.
+The layout re-tiles itself every few seconds, a donut, globe and orbit spin
+in their tiles, and ACCESS GRANTED drops in now and then. Everything shown
+is fabricated: no network, no files and no commands are touched.
 EOF
 }
 
@@ -389,7 +444,7 @@ layout_hero_bottom() {
 }
 
 pick_layout() {
-  local count choice
+  local count
 
   T_TOP=()
   T_LEFT=()
@@ -549,6 +604,22 @@ kind_label() {
 
     gauge)
       printf '%s' 'COUNTERS'
+      ;;
+
+    donut)
+      printf '%s' 'DONUT'
+      ;;
+
+    globe)
+      printf '%s' 'GLOBE'
+      ;;
+
+    satellite)
+      printf '%s' 'ORBIT'
+      ;;
+
+    code)
+      printf '%s' 'SRC'
       ;;
 
     *)
@@ -834,6 +905,299 @@ gen_gauge() {
   LINE_COLOR=$C_ACCENT
 }
 
+# The code widget dumps several C lines per tick so the tile fills fast.
+gen_code() {
+  local tile=$1
+  local cursor=${code_cursor[tile]:-0}
+  local count i line
+
+  count=$(( RANDOM % 2 + 2 ))
+
+  for ((i = 0; i < count; i++)); do
+    line=${CODE_LINES[cursor]}
+
+    if [[ "$line" == '#'* ]]; then
+      push_line "$tile" "$line" "$C_BOLD$C_GREEN"
+    elif [[ -z "$line" ]]; then
+      push_line "$tile" '' "$C_DIM"
+    else
+      push_line "$tile" "$line" "$C_GREEN"
+    fi
+
+    cursor=$(( (cursor + 1) % ${#CODE_LINES[@]} ))
+  done
+
+  code_cursor[tile]=$cursor
+  render_tile "$tile"
+}
+
+# Orbit geometry is computed once: 28 points on an ellipse in per mille.
+build_satellite_orbit() {
+  local pair
+
+  SAT_X=()
+  SAT_Y=()
+
+  for pair in $(awk 'BEGIN {
+    for (i = 0; i < 28; i++) {
+      a = i * 6.2832 / 28
+      printf "%d:%d ", 500 + 450 * cos(a), 500 + 330 * sin(a)
+    }
+  }'); do
+    SAT_X+=("${pair%%:*}")
+    SAT_Y+=("${pair##*:}")
+  done
+}
+
+# A dashed orbit, a moving satellite marker and a telemetry line.
+render_satellite() {
+  local tile=$1
+  local w=${T_WIDTH[tile]}
+  local h=$(( T_HEIGHT[tile] - 1 ))
+  local step=${sat_step[tile]:-0}
+  local i col row text
+
+  if ((w < 12)) || ((h < 4)); then
+    return 0
+  fi
+
+  for ((i = 0; i < ${#SAT_X[@]}; i++)); do
+    col=$(( T_LEFT[tile] + SAT_X[i] * w / 1000 ))
+    row=$(( T_TOP[tile] + 1 + SAT_Y[i] * h / 1000 ))
+
+    printf '\033[%d;%dH%s.%s' "$row" "$col" "$C_DIM" "$C_RESET"
+  done
+
+  col=$(( T_LEFT[tile] + SAT_X[step] * w / 1000 ))
+  row=$(( T_TOP[tile] + 1 + SAT_Y[step] * h / 1000 ))
+
+  printf '\033[%d;%dH%so%s' "$row" "$col" "$C_ACCENT" "$C_RESET"
+
+  printf -v text 'SAT-7 alt %d km v %d.%d km/s' \
+    "$(( RANDOM % 90 + 380 ))" "$(( RANDOM % 8 + 1 ))" "$(( RANDOM % 9 ))"
+  printf -v text '%-*.*s' "$w" "$w" "$text"
+  printf '\033[%d;%dH%s%s%s' "$(( T_TOP[tile] + h ))" "${T_LEFT[tile]}" \
+    "$C_CYAN" "$text" "$C_RESET"
+}
+
+# A spinning torus. bash has no sin or cos, so the projection runs in awk and
+# comes back as plain ASCII rows scaled to fit the tile.
+render_donut() {
+  local tile=$1
+  local w=${T_WIDTH[tile]}
+  local h=$(( T_HEIGHT[tile] - 1 ))
+  local angle=${donut_angle[tile]:-0}
+  local -a art=()
+  local row
+
+  if ((w < 10)) || ((h < 5)); then
+    return 0
+  fi
+
+  mapfile -t art < <(awk -v w="$w" -v h="$h" -v a="$angle" '
+    BEGIN {
+      pi = 3.14159265
+      chars = ".,-~:;=!*#$@"
+      a1 = a * pi / 180
+      a2 = a * pi / 260
+      ca = cos(a1)
+      sa = sin(a1)
+      cb = cos(a2)
+      sb = sin(a2)
+      n = 0
+
+      for (u = 0; u < 6.2832; u += 0.09) {
+        cu = cos(u)
+        su = sin(u)
+
+        for (v = 0; v < 6.2832; v += 0.05) {
+          cv = cos(v)
+          sv = sin(v)
+          x = (2 + cv) * cu
+          y = (2 + cv) * su
+          z = sv
+
+          x1 = x * ca + z * sa
+          z1 = z * ca - x * sa
+          y1 = y * cb - z1 * sb
+          z2 = y * sb + z1 * cb
+
+          d = 1 / (z2 + 5)
+          px = d * x1
+          py = 0.5 * d * y1
+
+          n += 1
+          xs[n] = px
+          ys[n] = py
+          ds[n] = d
+
+          # Track the projected bounds and the depth range in one pass.
+          if (n == 1 || px < minx) {
+            minx = px
+          }
+
+          if (n == 1 || px > maxx) {
+            maxx = px
+          }
+
+          if (n == 1 || py < miny) {
+            miny = py
+          }
+
+          if (n == 1 || py > maxy) {
+            maxy = py
+          }
+
+          if (n == 1 || d < dmin) {
+            dmin = d
+          }
+
+          if (n == 1 || d > dmax) {
+            dmax = d
+          }
+        }
+      }
+
+      sx = (w - 2) / (maxx - minx + 0.0001)
+      sy = (h - 2) / (maxy - miny + 0.0001)
+      scale = (sx < sy) ? sx : sy
+      midx = (minx + maxx) / 2
+      midy = (miny + maxy) / 2
+
+      for (k = 1; k <= n; k++) {
+        gx = int(w / 2 + (xs[k] - midx) * scale + 1)
+        gy = int((h + 1) / 2 + (ys[k] - midy) * scale + 0.5)
+
+        if (gx < 1 || gx > w || gy < 1 || gy > h) {
+          continue
+        }
+
+        key = gy * 1000 + gx
+
+        if (!(key in depth) || ds[k] > depth[key]) {
+          depth[key] = ds[k]
+        }
+      }
+
+      for (y = 1; y <= h; y++) {
+        line = ""
+
+        for (x = 1; x <= w; x++) {
+          key = y * 1000 + x
+
+          if (key in depth) {
+            lvl = int(9 * (depth[key] - dmin) / (dmax - dmin + 0.0001))
+            line = line substr(chars, lvl + 1, 1)
+          } else {
+            line = line " "
+          }
+        }
+
+        print line
+      }
+    }')
+
+  for ((row = 0; row < h; row++)); do
+    printf '\033[%d;%dH%s%s%s' "$(( T_TOP[tile] + 1 + row ))" \
+      "${T_LEFT[tile]}" "$C_ACCENT" "${art[row]:-}" "$C_RESET"
+  done
+}
+
+# A rotating globe sampled from the coarse land mask. The projection already
+# gives sin(latitude) as the vertical coordinate, so no inverse trig is needed.
+render_globe() {
+  local tile=$1
+  local w=${T_WIDTH[tile]}
+  local h=$(( T_HEIGHT[tile] - 1 ))
+  local angle=${globe_angle[tile]:-0}
+  local -a art=()
+  local row
+
+  if ((w < 12)) || ((h < 5)); then
+    return 0
+  fi
+
+  mapfile -t art < <(awk -v w="$w" -v h="$h" -v a="$angle" -v map="$LAND_MAP" '
+    BEGIN {
+      pi = 3.14159265
+      bands = split(map, rows, "|")
+      spin = a * pi / 180
+      cx = (w + 1) / 2
+      cy = (h + 1) / 2
+      rx = w / 2 - 0.5
+      ry = h / 2 - 0.5
+
+      for (y = 1; y <= h; y++) {
+        line = ""
+
+        for (x = 1; x <= w; x++) {
+          nx = (x - cx) / rx
+          ny = (y - cy) / ry
+          r2 = nx * nx + ny * ny
+
+          if (r2 > 1) {
+            line = line " "
+            continue
+          }
+
+          nz = sqrt(1 - r2)
+          lon = atan2(nx, nz) + spin
+          mx = int(((lon / pi) + 1) / 2 * 36)
+          mx = ((mx % 36) + 36) % 36
+
+          my = int(((ny + 1) / 2) * (bands - 1)) + 1
+
+          if (my < 1) {
+            my = 1
+          }
+
+          if (my > bands) {
+            my = bands
+          }
+
+          land = substr(rows[my], mx + 1, 1)
+
+          if (land == "#" && r2 < 0.92) {
+            line = line "#"
+          } else {
+            line = line "."
+          }
+        }
+
+        print line
+      }
+    }')
+
+  for ((row = 0; row < h; row++)); do
+    printf '\033[%d;%dH%s%s%s' "$(( T_TOP[tile] + 1 + row ))" \
+      "${T_LEFT[tile]}" "$C_ACCENT" "${art[row]:-}" "$C_RESET"
+  done
+}
+
+# Animated tiles redraw on the ticker clock, slower than the text feeds.
+animate_tiles() {
+  local tile
+
+  for ((tile = 0; tile < T_COUNT; tile++)); do
+    case "${T_KIND[tile]}" in
+      donut)
+        donut_angle[tile]=$(( (donut_angle[tile] + 11) % 360 ))
+        render_donut "$tile"
+        ;;
+
+      globe)
+        globe_angle[tile]=$(( (globe_angle[tile] + 9) % 360 ))
+        render_globe "$tile"
+        ;;
+
+      satellite)
+        sat_step[tile]=$(( (sat_step[tile] + 1) % 28 ))
+        render_satellite "$tile"
+        ;;
+    esac
+  done
+}
+
 update_tile() {
   local tile=$1
 
@@ -860,6 +1224,16 @@ update_tile() {
 
     gauge)
       gen_gauge
+      ;;
+
+    code)
+      gen_code "$tile"
+
+      return 0
+      ;;
+
+    donut|globe|satellite)
+      return 0
       ;;
 
     *)
@@ -955,8 +1329,12 @@ banner_paint() {
   printf -v bar '%s+%s+%s' "$border" "$dash" "$C_RESET"
 
   out+=$'\033[2J'
-  out+="\033[1;1H${bar}"
-  out+="\033[${lines};1H${bar}"
+
+  printf -v row '\033[1;1H%s' "$bar"
+  out+=$row
+
+  printf -v row '\033[%d;1H%s' "$lines" "$bar"
+  out+=$row
 
   for ((row = 2; row < lines; row++)); do
     printf -v dash '\033[%d;1H%s|' "$row" "$border"
@@ -1052,9 +1430,17 @@ retile() {
   reset_buffers
 
   hex_offset=()
+  donut_angle=()
+  globe_angle=()
+  sat_step=()
+  code_cursor=()
 
   for ((tile = 0; tile < T_COUNT; tile++)); do
     hex_offset[tile]=$(( (RANDOM % 2048) * 8 ))
+    donut_angle[tile]=$(( RANDOM % 360 ))
+    globe_angle[tile]=$(( RANDOM % 360 ))
+    sat_step[tile]=$(( RANDOM % 28 ))
+    code_cursor[tile]=$(( RANDOM % ${#CODE_LINES[@]} ))
   done
 
   printf '\033[2J'
@@ -1066,6 +1452,8 @@ retile() {
     update_tile "$tile"
     tile_due[tile]=$(( now + RANDOM % 300 ))
   done
+
+  animate_tiles
 }
 
 cleanup() {
@@ -1092,6 +1480,7 @@ main() {
   line=0
 
   layout_probe
+  build_satellite_orbit
 
   delay_ms=$(delay_to_ms "$delay_text")
 
@@ -1171,6 +1560,7 @@ main() {
     if ((line % 2 == 0)); then
       TICKER_TEXT="${TICKER_TEXT:1}${TICKER_TEXT:0:1}"
       draw_ticker
+      animate_tiles
     fi
 
     tick_wait=$TICK
