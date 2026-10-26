@@ -69,6 +69,7 @@ async function fixture(
     api?: string;
     pressure?: boolean;
     usedTokens?: number;
+    contextWindow?: number;
     wire?: boolean;
     login?: boolean;
     id?: string;
@@ -106,7 +107,7 @@ async function fixture(
         name: "working",
         reasoning: false,
         input: ["text"],
-        contextWindow: 65536,
+        contextWindow: setup.contextWindow ?? 65536,
         maxTokens: 4096,
         compat: { supportsExplicitPromptCacheMode: setup.wire === true },
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -521,7 +522,13 @@ test("SDK rotation cannot spin on repeated notes/history-only work", async () =>
       );
 
     expect(markers).toHaveLength(1);
-    expect(JSON.stringify(failures)).toContain("Context already rotated");
+    expect(failures).toHaveLength(0);
+
+    const replies = state.manager
+      .getBranch()
+      .filter((entry) => entry.type === "message" && entry.message.role === "toolResult");
+
+    expect(JSON.stringify(replies)).toContain("no substantial additional context");
     expect(state.contexts).toHaveLength(3);
     expect(state.errors).toEqual([]);
   } finally {
@@ -591,3 +598,176 @@ test.each(["openai-completions", "openai-responses", "anthropic-messages", "goog
     }
   },
 );
+
+test("SDK can rotate again at 83.2% after notes-only context growth without another user prompt or external action", async () => {
+  const state = await fixture(
+    (turn) =>
+      turn === 1
+        ? tool("notes", {
+            operation: "set",
+            key: "continuation-priority",
+            text: "Keep the authorized task and validate the remaining implementation.",
+          })
+        : turn === 2 || turn === 4
+          ? tool("new_context", {})
+          : turn === 3
+            ? [
+                {
+                  type: "thinking",
+                  thinking: "Bounded investigation and handoff reasoning. ".repeat(2500),
+                },
+                ...tool("notes", {
+                  operation: "set",
+                  key: "handoff-urgent",
+                  text: "Continue implementation, then execute the required tests. No completion claim yet.",
+                }),
+              ]
+            : [{ type: "text", text: "Continue the original task with both saved notes." }],
+    { usedTokens: 226304, contextWindow: 272000 },
+  );
+
+  try {
+    const id = state.manager.getSessionId();
+
+    await state.session.prompt("Complete the original task. Preserve all user constraints.");
+
+    const markers = state.manager
+      .getBranch()
+      .filter(
+        (entry) => entry.type === "custom" && entry.customType === "context-memory-rotation-state",
+      );
+
+    expect(markers).toHaveLength(2);
+    expect(state.contexts).toHaveLength(5);
+    expect(JSON.stringify(state.contexts[4]).length).toBeLessThan(16000);
+    expect(JSON.stringify(state.contexts[4])).toContain("Preserve all user constraints");
+    expect(JSON.stringify(state.contexts[4])).toContain("No completion claim yet");
+    expect([...readNotes(state.manager.getBranch())].map(([key]) => key)).toEqual([
+      "continuation-priority",
+      "handoff-urgent",
+    ]);
+    expect(state.manager.getSessionId()).toBe(id);
+    expect(state.errors).toEqual([]);
+  } finally {
+    await state.close();
+  }
+});
+
+test("SDK can reclaim a full notes echo after notes, rotation, notes, rotation", async () => {
+  const state = await fixture(
+    (turn) =>
+      turn === 1
+        ? tool("notes", {
+            operation: "set",
+            key: "primary-research",
+            text: "Research facts and exact citations. ".repeat(220),
+          })
+        : turn === 2
+          ? tool("notes", {
+              operation: "set",
+              key: "continuation-priority",
+              text: "Remaining implementation and tests. ".repeat(220),
+            })
+          : turn === 3 || turn === 5
+            ? tool("new_context", {})
+            : turn === 4
+              ? tool("notes", {
+                  operation: "set",
+                  key: "handoff-urgent",
+                  text: "Continue the still-authorized work.",
+                })
+              : [{ type: "text", text: "Continue from the saved handoff." }],
+    { usedTokens: 226304, contextWindow: 272000 },
+  );
+
+  try {
+    await state.session.prompt("Complete the authorized project work and preserve the research.");
+    expect(
+      state.manager
+        .getBranch()
+        .filter(
+          (entry) =>
+            entry.type === "custom" && entry.customType === "context-memory-rotation-state",
+        ),
+    ).toHaveLength(2);
+    expect(readNotes(state.manager.getBranch()).get("handoff-urgent")).toBe(
+      "Continue the still-authorized work.",
+    );
+    expect(state.contexts[5].some((message: any) => message.role === "toolResult")).toBe(false);
+    expect(state.errors).toEqual([]);
+  } finally {
+    await state.close();
+  }
+});
+
+test("SDK coalesces rotations in one tool batch and preserves notes saved between requests", async () => {
+  const state = await fixture((turn) =>
+    turn === 1
+      ? [
+          ...tool("new_context", {}),
+          ...tool("notes", {
+            operation: "set",
+            key: "handoff-urgent",
+            text: "Preserve the final note in this batch.",
+          }),
+          ...tool("new_context", {}),
+        ]
+      : [{ type: "text", text: "Continue from the handoff." }],
+  );
+
+  try {
+    await state.session.prompt("Continue the existing task after saving its handoff.");
+
+    const markers = state.manager
+      .getBranch()
+      .filter(
+        (entry) => entry.type === "custom" && entry.customType === "context-memory-rotation-state",
+      );
+
+    expect(markers).toHaveLength(1);
+    expect(state.contexts).toHaveLength(2);
+    expect(JSON.stringify(state.contexts[1])).toContain("Preserve the final note in this batch");
+    expect(
+      state.manager
+        .getBranch()
+        .some(
+          (entry) =>
+            entry.type === "message" &&
+            entry.message.role === "toolResult" &&
+            entry.message.isError,
+        ),
+    ).toBe(false);
+    expect(state.errors).toEqual([]);
+  } finally {
+    await state.close();
+  }
+});
+
+test("SDK history search returns original user messages after rotation", async () => {
+  const state = await fixture((turn) =>
+    turn === 1
+      ? tool("new_context", {})
+      : turn === 2
+        ? tool("history", { query: "original-user-search" })
+        : [{ type: "text", text: "Recovered the original user instruction." }],
+  );
+
+  try {
+    const user = state.manager.appendMessage({
+      role: "user",
+      content: "ORIGINAL-USER-SEARCH: Keep Nürnberg and the user's exact constraints.",
+      timestamp: 0,
+    });
+
+    await state.session.prompt(
+      "Continue the original task and recover its instruction from history.",
+    );
+    expect(JSON.stringify(state.contexts[2])).toContain(`${user} · user`);
+    expect(JSON.stringify(state.contexts[2])).toContain(
+      "Keep Nürnberg and the user's exact constraints",
+    );
+    expect(state.errors).toEqual([]);
+  } finally {
+    await state.close();
+  }
+});

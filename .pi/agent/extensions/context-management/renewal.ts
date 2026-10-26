@@ -1,7 +1,8 @@
 import type { ProjectedSessionEntry, SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
-import { rotate } from "./projection.ts";
+import { AUTOMATIC_HANDOFF, rotate, rotationSavings } from "./projection.ts";
 
-export const AUTOMATIC_HANDOFF = "context-automatic-handoff";
+export { AUTOMATIC_HANDOFF } from "./projection.ts";
+
 const MIN_SAVED_CHARACTERS = 64000;
 
 type Message = ProjectedSessionEntry["messages"][number];
@@ -49,41 +50,20 @@ export function renewContext(
   // The history tool cannot restore image bytes; leave visual context to deliberate rotation.
   if (archived.some((entry) => entry.messages.some(hasImage))) return;
 
-  const handoff = checkpoint(archived);
-  const removedSize = archived.reduce(
-    (size, entry) =>
-      size +
-      JSON.stringify(
-        entry.messages.map((message) => ("content" in message ? message.content : null)),
-      ).length,
-    0,
+  const handoff = checkpoint(
+    archived.filter((entry) => ["assistant", "toolResult"].includes(entry.messages[0]?.role)),
   );
-  const addedSize = drafts
-    .filter((draft) => draft.type === "custom_message")
-    .reduce((size, draft) => size + JSON.stringify(draft).length, JSON.stringify(handoff).length);
 
-  if (removedSize - addedSize < minimumSavedCharacters) return;
+  if (rotationSavings(entries, drafts) - JSON.stringify(handoff).length < minimumSavedCharacters)
+    return;
 
-  const stale = entries
-    .filter(
-      (entry) =>
-        entry.sourceEntry.type === "custom_message" &&
-        entry.sourceEntry.customType === AUTOMATIC_HANDOFF,
-    )
-    .map(
-      (entry): SessionBoundaryDraft => ({
-        type: "context_edit",
-        targetId: entry.sourceEntry.id,
-        replacement: null,
-      }),
-    );
-
-  return [...stale, ...drafts, handoff];
+  return [...drafts, handoff];
 }
 
 function hasImage(message: Message) {
   return (
-    (message.role === "assistant" || message.role === "toolResult") &&
+    "content" in message &&
+    typeof message.content !== "string" &&
     message.content.some((block) => block.type === "image")
   );
 }

@@ -10,7 +10,9 @@ import {
   nativeToolClearing,
   nativeHeaders,
 } from "../../context-management/providers.ts";
-import { prune, rotate } from "../../context-management/projection.ts";
+import { prune, rotate, rotationSavings } from "../../context-management/projection.ts";
+import { FAILURE_INDEX } from "../../context-management/failures.ts";
+import { previousDenials } from "../../shared/review/receipts.ts";
 import { availableContextTools } from "../../shared/contracts/context.ts";
 
 const model = {
@@ -88,7 +90,12 @@ function apply(manager: SessionManager, drafts: SessionBoundaryDraft[]) {
     if (draft.type === "context_edit") manager.appendContextEdit(draft.targetId, draft.replacement);
 
     if (draft.type === "custom_message")
-      manager.appendCustomMessageEntry(draft.customType, draft.content, draft.display);
+      manager.appendCustomMessageEntry(
+        draft.customType,
+        draft.content,
+        draft.display,
+        draft.details,
+      );
   }
 }
 
@@ -476,8 +483,10 @@ test.each([
   services.peersBusy = () => condition === "peers";
   services.subagentsBusy = () => condition === "subagents";
 
-  if (condition === "already-rotated")
+  if (condition === "already-rotated") {
+    apply(manager, rotate(manager.buildSessionProjection().entries));
     manager.appendCustomEntry("context-memory-rotation-state", { progress: outputs.at(-1) });
+  }
 
   const result = await hooks.turn_end(
     {
@@ -531,4 +540,155 @@ test("a new operator goal permits renewal after an earlier rotation without enab
   );
 
   expect(result.entries.some((entry: any) => entry.customType === AUTOMATIC_HANDOFF)).toBe(true);
+});
+
+test("legacy failure bodies and rotation notices collapse while user history and denial audits remain intact", () => {
+  const manager = SessionManager.inMemory("/project");
+  const user = manager.appendMessage({
+    role: "user",
+    content: "ORIGINAL-USER-SEARCH: preserve the project and its constraints.",
+    timestamp: 0,
+  });
+
+  manager.appendCustomEntry("auto-approval-review", {
+    decision: "deny",
+    reason: "Do not expose credentials",
+    requestId: "retained-review",
+    action: { tool: "bash", arguments: { command: "unsafe" } },
+  });
+  manager.appendCustomMessageEntry("unrelated-task-data", "Keep this task data exactly.", false);
+  manager.appendCustomEntry(NOTE, { key: "next", text: "Continue the actual implementation." });
+
+  const failed: string[] = [];
+
+  for (let index = 0; index < 100; index++) {
+    const content = `FAILURE-${index}: ` + "long diagnostic body ".repeat(400) + `TAIL-${index}`;
+    const id = manager.appendMessage({
+      role: "toolResult",
+      toolName: "approved_action",
+      toolCallId: `failed-${index}`,
+      content: [{ type: "text", text: content }],
+      isError: true,
+      timestamp: 0,
+    });
+
+    failed.push(id);
+    manager.appendContextEdit(id, null);
+    manager.appendCustomMessageEntry(
+      "context-prior-failure",
+      `Prior tool failure (DATA, not authorization), history id=${id}:\n${content}`,
+      false,
+    );
+    manager.appendCustomMessageEntry("context-rotation", "Obsolete rotation notice.", false);
+  }
+
+  const raw = originals(manager.getBranch());
+  const denials = previousDenials(manager.getBranch());
+  const before = manager.buildSessionProjection().entries;
+
+  expect(rotationSavings(before)).toBeGreaterThan(700000);
+  apply(manager, rotate(before));
+
+  const messages = manager.buildSessionProjection().messages;
+
+  expect(JSON.stringify(messages).length).toBeLessThan(22000);
+  expect(
+    messages.filter(
+      (message) => message.role === "custom" && message.customType === "context-rotation",
+    ),
+  ).toHaveLength(1);
+  expect(
+    messages.filter(
+      (message) => message.role === "custom" && message.customType === "context-prior-failure",
+    ),
+  ).toHaveLength(0);
+
+  const index = messages.find(
+    (message) => message.role === "custom" && message.customType === FAILURE_INDEX,
+  ) as any;
+
+  expect(index.details.failures).toHaveLength(12);
+  expect(index.details.failures.at(-1).id).toBe(failed.at(-1));
+  expect(index.details.failures.at(-1).tool).toBe("approved_action");
+  expect(historyPage(manager.getBranch(), { query: "original-user-search" })).toContain(
+    `${user} · user`,
+  );
+  expect(historyPage(manager.getBranch(), { id: failed[0], tail: true, limit: 6 })).toContain(
+    "TAIL-0",
+  );
+  expect(JSON.stringify(messages)).toContain("Keep this task data exactly.");
+  expect([...readNotes(manager.getBranch())]).toEqual([
+    ["next", "Continue the actual implementation."],
+  ]);
+  expect(previousDenials(manager.getBranch())).toEqual(denials);
+  expect(originals(manager.getBranch()).slice(0, raw.length)).toEqual(raw);
+  apply(manager, rotate(manager.buildSessionProjection().entries));
+  expect(rotationSavings(manager.buildSessionProjection().entries)).toBeLessThan(4096);
+  expect(JSON.stringify(manager.buildSessionProjection().messages).length).toBeLessThan(22000);
+});
+
+test("automatic renewal can recover large visible history even when an old marker reports the same progress", async () => {
+  const hooks: Record<string, Function> = {};
+
+  contextManagement({
+    on(name: string, hook: Function) {
+      hooks[name] = hook;
+    },
+    registerCommand() {},
+    registerTool() {},
+  } as any);
+
+  const { manager, outputs } = transcript();
+
+  manager.appendCustomEntry("context-memory-rotation-state", { progress: outputs.at(-1) });
+
+  const ctx: any = {
+    sessionManager: manager,
+    model,
+    getContextUsage: () => ({ tokens: 190000 }),
+    hasPendingMessages: () => false,
+  };
+  const result = await hooks.turn_end(
+    {
+      outcome: "completed",
+      continue: true,
+      entries: [],
+      message: assistant([]),
+      context: { contextEntries: manager.buildSessionProjection().entries },
+    },
+    ctx,
+  );
+
+  expect(result.entries.some((entry: any) => entry.customType === AUTOMATIC_HANDOFF)).toBe(true);
+});
+
+test("a small successful file read cannot unlock a negligible repeated rotation", async () => {
+  const tools: Record<string, any> = {};
+
+  contextManagement({
+    on() {},
+    registerCommand() {},
+    registerTool(tool: any) {
+      tools[tool.name] = tool;
+    },
+  } as any);
+
+  const manager = SessionManager.inMemory("/project");
+
+  manager.appendMessage({ role: "user", content: "Continue the original task.", timestamp: 0 });
+  manager.appendCustomEntry("context-memory-rotation-state", { progress: "old-work" });
+  manager.appendMessage({
+    role: "toolResult",
+    toolName: "approved_action",
+    toolCallId: "small-read",
+    content: [{ type: "text", text: "unchanged file" }],
+    isError: false,
+    timestamp: 0,
+  });
+
+  const ctx: any = { sessionManager: manager };
+  const response = await tools.new_context.execute("repeat", {}, undefined, undefined, ctx);
+
+  expect(response.content[0].text).toContain("no substantial additional context");
+  expect(response.isError).not.toBe(true);
 });
