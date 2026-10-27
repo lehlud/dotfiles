@@ -179,6 +179,54 @@ test("commands select slots while file edits use the shared workspace on allocat
   expect(() => prepared.assertCurrent()).toThrow("changed");
 });
 
+test("ordinary CIP inspections use existing slots without acquiring hardware or another pool slot", async () => {
+  const f = fixture();
+
+  await Promise.all(
+    Array.from({ length: 3 }, () => f.pool.acquire({ gpuModel: "3070", minRamGiB: 64 })),
+  );
+
+  const originalHosts = f.pool.state.nodes.map((node) => node.target.host);
+  const probes = f.calls.filter((call) => call.input.operation === "cip_probe").length;
+  const inspect = {
+    ...request(),
+    arguments: { command: "git status --short; sed -n '1,175p' src/training.py" },
+    sandbox: { cip: { node: "cip-3" } },
+  };
+
+  for (const action of [inspect, request("read", { path: "src/training.py", limit: 175 })]) {
+    const prepared = await f.pool.prepare(action, f.build);
+
+    expect(prepared.plan.cipRouting).toMatchObject({
+      operation: "use-existing-slot",
+      addsPoolSlot: false,
+      reservesHardware: false,
+      sharedFilesystem: true,
+    });
+    expect(prepared.plan.cipNode).toBeUndefined();
+    expect(f.pool.state.nodes.map((node) => node.target.host)).toEqual(originalHosts);
+    expect(f.calls.filter((call) => call.input.operation === "cip_probe")).toHaveLength(probes);
+    await prepared.execute();
+    expect(f.pool.state.nodes.map((node) => node.target.host)).toEqual(originalHosts);
+  }
+
+  const acquisition = await f.pool.prepare(
+    request("cip_nodes", { operation: "acquire", gpuModel: "3070" }),
+    f.build,
+  );
+
+  expect(acquisition.plan).toMatchObject({
+    source: "executor-preflight",
+    backend: "cip-scheduler",
+    schedulerOperation: "acquire",
+    addsPoolSlot: true,
+    reservesHardware: false,
+  });
+  expect(f.pool.state.nodes).toHaveLength(3);
+  await acquisition.execute();
+  expect(f.pool.state.nodes).toHaveLength(4);
+});
+
 test("login replacements preserve requested GPU/RAM capabilities and invalidate pending reviewed commands", async () => {
   const f = fixture();
   const node = await f.pool.acquire({ host: "cip7b1", gpuModel: "3070", minRamGiB: 64 });

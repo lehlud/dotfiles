@@ -13,6 +13,7 @@
     "eval:cache": "bun tests/cache-review.eval.ts",
     "format": "bun development/format.ts --write",
     "check:format": "bun development/format.ts --check",
+    "eval:cip": "bun tests/cip-review.eval.ts",
     "eval:cgroups": "bun tests/cgroup-review.eval.ts",
     "eval:jobs": "bun tests/jobs-review.eval.ts",
     "eval:goal-proposals": "bun tests/goal-proposal-review.eval.ts"

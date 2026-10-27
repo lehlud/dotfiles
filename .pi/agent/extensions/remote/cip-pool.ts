@@ -337,11 +337,7 @@ export class CipPool {
     const assert = prepared.assertCurrent;
 
     prepared.plan.cipQuota = node.health;
-    prepared.plan.cipNode = {
-      id: node.id,
-      capabilities: node.machine,
-      requirements: node.requirements,
-    };
+    prepared.plan.cipRouting = existingCipRouting(target);
     prepared.assertCurrent = () => {
       assert();
 
@@ -389,7 +385,11 @@ export class CipPool {
     return {
       target,
       plan: {
+        source: "executor-preflight",
         backend: "cip-scheduler",
+        schedulerOperation: request.arguments.operation,
+        addsPoolSlot: request.arguments.operation === "acquire",
+        reservesHardware: false,
         workspace: target.root,
         request: request.arguments,
         maxNodes: 4,
@@ -441,4 +441,18 @@ export class CipPool {
       },
     };
   }
+}
+
+/** Placement metadata is separate from slot acquisition and the command's resource use. */
+export function existingCipRouting(target: RemoteTarget) {
+  if (!target.cip) throw new Error("CIP routing requires an existing slot");
+
+  return {
+    operation: "use-existing-slot",
+    node: target.cip.node,
+    host: target.host,
+    addsPoolSlot: false,
+    reservesHardware: false,
+    sharedFilesystem: true,
+  };
 }

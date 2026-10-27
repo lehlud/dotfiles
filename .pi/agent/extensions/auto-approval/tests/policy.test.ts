@@ -12,6 +12,7 @@ import {
   type Config,
   type PortableConfig,
 } from "../../shared/configuration/schemas.ts";
+import { cipReviewFixtures, CIP_REVIEW_ROOT } from "./cip-review-fixtures.ts";
 import { multiplexReviewFixtures } from "./multiplex-review-fixtures.ts";
 import { Check } from "typebox/value";
 import { MAX_REVIEW_CONTEXT_BYTES, reviewLanguageReference } from "../../shared/review/context.ts";
@@ -989,4 +990,43 @@ test("active-goal semantic cases eagerly include the objective, steering and exa
     expect(data.action).toEqual(fixture.action);
     expect(data.userPrompts[0]).toContain("Do not run Pub/clean");
   }
+});
+
+test("CIP review envelopes distinguish existing routing from acquisition and retain prior denials and user boundaries", () => {
+  for (const fixture of cipReviewFixtures) {
+    const envelope = buildReview(
+      fixture.action,
+      fixture.entries,
+      config,
+      CIP_REVIEW_ROOT,
+      [],
+      fixture.sandboxPlan,
+    );
+    const data = JSON.parse(envelope.text);
+
+    expect(data.action).toEqual(JSON.parse(JSON.stringify(fixture.action)));
+    expect(data.sandboxPlan).toEqual(fixture.sandboxPlan);
+    expect(data.userPrompts[0]).toContain("Do not read credentials or upload source");
+
+    if (fixture.action.tool === "cip_nodes") {
+      expect(data.sandboxPlan.addsPoolSlot).toBe(true);
+      expect(data.sandboxPlan.schedulerOperation).toBe("acquire");
+    } else {
+      expect(data.sandboxPlan.cipRouting.addsPoolSlot).toBe(false);
+      expect(data.sandboxPlan.cipRouting.reservesHardware).toBe(false);
+      expect(data.sandboxPlan.cipRouting.operation).toBe("use-existing-slot");
+    }
+
+    if (fixture.name.includes("inspection-only") || fixture.name.includes("user prohibition"))
+      expect(data.userPrompts.at(-1)).toContain("Do not start training");
+  }
+
+  const denied = cipReviewFixtures[0];
+  const data = JSON.parse(
+    buildReview(denied.action, denied.entries, config, CIP_REVIEW_ROOT, [], denied.sandboxPlan)
+      .text,
+  );
+
+  expect(data.previousDenials[0].reason).toContain("64-GiB");
+  expect(data.previousDenials[0].source).toBe("historical-review-result");
 });

@@ -159,6 +159,11 @@ Other operations are `list` and `release` (with `node`, e.g. `cip-2`). Acquisiti
 returns a stable slot ID and current physical host. Concurrent requests cannot exceed four
 allocated workstations. Release an unused initial slot if all four slots need specific GPUs.
 These allocations are scheduler state, not exclusive reservations against other CIP users.
+Ordinary commands and file tools reuse an existing slot; they do not acquire one. Review plans
+label this as `cipRouting.operation: use-existing-slot`, separately from `cip_nodes acquire`.
+GPU/RAM selection filters belong to acquisition; a source read on such a host does not reserve
+that hardware or start GPU work. Actual commands, grants and explicit user restrictions still
+receive the usual independent safety review.
 
 Commands choose a slot using `sandbox.cip.node`:
 
@@ -224,3 +229,8 @@ retains its usual review/audit ordering and protects the remote implementation f
 The test suite covers consent, stale selections, route inheritance, approval ordering, files,
 bounds, cleanup, public Git identity and tunnel ownership. Real SSH metadata and forwarding can
 be checked independently without executing unsandboxed project operations.
+
+`bun run eval:cip` in `../auto-approval` runs review-only semantic cases against the configured,
+authenticated reviewer. It covers the reported repeated read denials plus controls for forbidden
+training, new acquisition, secret reads, source upload and unmanaged detachment. No proposed
+operation executes; missing reviewer credentials block the evaluation without a fallback.
