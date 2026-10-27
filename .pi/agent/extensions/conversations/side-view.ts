@@ -1,14 +1,15 @@
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
   Editor,
   CURSOR_MARKER,
-  Markdown,
   matchesKey,
   stripTerminalSequences,
   truncateToWidth,
   type TUI,
 } from "@earendil-works/pi-tui";
 import {
-  getMarkdownTheme,
+  AssistantMessageComponent,
+  UserMessageComponent,
   type ExtensionCommandContext,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
@@ -36,7 +37,7 @@ export class SideView {
   ) {
     this.conversation = new SideConversation(ctx, () => this.update(), profile);
     this.editor = new Editor(tui, {
-      borderColor: (value) => theme.fg("accent", value),
+      borderColor: (value) => theme.fg(profile.borderColor ?? "accent", value),
       selectList: {
         selectedPrefix: (value) => theme.fg("accent", value),
         selectedText: (value) => theme.fg("accent", value),
@@ -168,7 +169,10 @@ export class SideView {
   }
 
   render(width: number): string[] {
-    const height = Math.max(1, Math.floor(this.tui.terminal.rows * 0.8));
+    const height = Math.max(
+      1,
+      Math.floor(this.tui.terminal.rows * (this.profile.fullscreen ? 1 : 0.8)),
+    );
     const parent = this.ctx.isIdle() ? "ready" : "still working";
     const snapshot = this.conversation.snapshot;
     const title = `${this.profile.title} · Main conversation ${parent} · ${this.conversation.model.id}`;
@@ -177,31 +181,20 @@ export class SideView {
     const body: string[] = [];
 
     for (const turn of this.conversation.turns) {
-      body.push(
-        ...new Markdown(`**You:**\n${clean(turn.question)}`, 0, 0, getMarkdownTheme()).render(
-          width,
-        ),
-      );
+      body.push(...new UserMessageComponent(clean(turn.question)).render(width));
 
-      if (turn.answer || !turn.error)
-        body.push(
-          ...new Markdown(
-            `${this.profile.replyLabel ? `**${this.profile.replyLabel}:**\n` : ""}${clean(turn.answer || "…")}`,
-            0,
-            0,
-            getMarkdownTheme(),
-          ).render(width),
-        );
+      if (turn.response && turn.answer) {
+        const response: AssistantMessage = {
+          ...turn.response,
+          content: [{ type: "text", text: clean(turn.answer) }],
+          errorMessage: undefined,
+          stopReason: turn.truncated ? "length" : "stop",
+        };
+
+        body.push(...new AssistantMessageComponent(response, true).render(width));
+      } else if (!turn.error) body.push(this.theme.fg("dim", "…"));
 
       if (turn.error) body.push(this.theme.fg("warning", turn.error));
-
-      if (turn.truncated)
-        body.push(
-          this.theme.fg(
-            "warning",
-            "Response truncated at the output limit; you can ask a follow-up question.",
-          ),
-        );
 
       body.push("");
     }
@@ -225,12 +218,13 @@ export class SideView {
 
     const end = Math.max(0, body.length - this.scroll);
 
-    return [
-      ...headerRows,
-      ...body.slice(Math.max(0, end - room), end),
-      ...editor,
-      this.theme.fg("dim", hint),
-    ]
+    const visible = body.slice(Math.max(0, end - room), end);
+    // Cover every row in full-screen mode and keep its composer at the bottom.
+    const padding = this.profile.fullscreen
+      ? Array(Math.max(0, room - visible.length)).fill("")
+      : [];
+
+    return [...headerRows, ...visible, ...padding, ...editor, this.theme.fg("dim", hint)]
       .slice(0, height)
       .map((line) => truncateToWidth(line, Math.max(1, width)));
   }

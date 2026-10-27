@@ -38,7 +38,13 @@ async function showDialogue(
     },
     {
       overlay: true,
-      overlayOptions: { anchor: "top-left", row: 0, col: 0, width: "100%", maxHeight: "80%" },
+      overlayOptions: {
+        anchor: "top-left",
+        row: 0,
+        col: 0,
+        width: "100%",
+        maxHeight: profile.fullscreen ? "100%" : "80%",
+      },
     },
   );
 }

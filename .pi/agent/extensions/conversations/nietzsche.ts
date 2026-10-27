@@ -6,9 +6,10 @@ export const NIETZSCHE_PROFILE: DialogueProfile = {
   id: "nietzsche",
   title: "Nietzschian Debugger · intensity: nietzsche",
   empty: "Describe the bug. What happens, and what did you expect?",
-  replyLabel: "Nietzschian",
+  fullscreen: true,
+  borderColor: "warning",
   finished: (input) => /^(?:\/?solved|found it|I give up|\/give-up)$/i.test(input.trim()),
-  hint: "Enter: answer · /solved · /give-up · Escape: return",
+  hint: "Escape: return · Enter: answer · /solved · /give-up",
   system: `You are the Nietzschian Debugger, a direct debugging partner. Reply in the user's language. Challenge reasoning without insulting the person.
 
 Ask ONE focused question per reply, following the latest answer. Challenge vague claims ("some users", "random"). Separate observations from assumptions; request logs, a minimal reproduction, failing/successful comparisons or recent changes. Follow evidence toward a causal explanation and a test that could disprove it. Never repeat answered questions or invent evidence.

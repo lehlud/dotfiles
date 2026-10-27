@@ -14,6 +14,7 @@ import {
   initTheme,
   theme,
 } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import { registerDialogues } from "../../conversations/side.ts";
 import { watchInterrupt } from "../../shared/session/interrupt.ts";
@@ -172,6 +173,7 @@ for (const command of ["side", "nietzsche"]) {
     const state = await fixture(directory);
     let view: any, main: Promise<void> | undefined, side: Promise<void> | undefined;
     const statuses = new Map<string, string>([["00-goal", "goal: parser"]]);
+    let overlay: any;
 
     try {
       initTheme("dark", false);
@@ -187,8 +189,9 @@ for (const command of ["side", "nietzsche"]) {
             throw new Error(text);
           },
 
-          custom: (factory: Function) =>
+          custom: (factory: Function, options: any) =>
             new Promise<void>((done) => {
+              overlay = options;
               view = factory(
                 { terminal: { rows: 24, columns: 80 }, requestRender() {} },
                 theme,
@@ -206,6 +209,13 @@ for (const command of ["side", "nietzsche"]) {
       expect(state.session.isStreaming).toBe(true);
       expect(JSON.stringify(state.sideContexts[0])).toContain("MAIN-INTENT");
       expect(view.conversation.profile.id).toBe(command);
+      expect(overlay.overlayOptions.maxHeight).toBe(command === "nietzsche" ? "100%" : "80%");
+
+      if (command === "nietzsche") {
+        expect(view.render(80)).toHaveLength(24);
+        expect(view.render(80).map(stripTerminalSequences).join("\n")).not.toContain("You:");
+      }
+
       expect(state.sideContexts[0].tools).toBeUndefined();
 
       if (command === "nietzsche") {

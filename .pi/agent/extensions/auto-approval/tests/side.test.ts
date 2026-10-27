@@ -1,4 +1,5 @@
 import { beforeEach, expect, test } from "bun:test";
+import { AssistantMessageComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent";
 import {
   initTheme,
   theme,
@@ -32,7 +33,7 @@ let ctx: any,
   notices: string[],
   changes: number;
 let replyText: string;
-let mode: "ok" | "pending" | "tool" | "error" | "throw";
+let mode: "ok" | "pending" | "tool" | "error" | "throw" | "length";
 let release: (() => void) | undefined;
 const tick = () => new Promise<void>((done) => setTimeout(done, 0));
 
@@ -80,7 +81,8 @@ beforeEach(() => {
           provider: "fixture",
           model: model.id,
           timestamp: Date.now(),
-          stopReason: activeMode === "error" ? "error" : "stop",
+          stopReason:
+            activeMode === "error" ? "error" : activeMode === "length" ? "length" : "stop",
           usage,
         };
 
@@ -546,10 +548,10 @@ test("Nietzsche completion is explicit, failed closing replies can retry, and /n
   }
 });
 
-test("/nietzsche opens a labelled dialogue, shares the overlay lock, and closes on navigation", async () => {
+test("/nietzsche opens full screen with native messages, shares the dialogue lock, and closes on navigation", async () => {
   const commands = new Map<string, Function>();
   const hooks: Record<string, Function> = {};
-  let view: any;
+  let view: any, options: any;
 
   registerDialogues({
     on: (name: string, handler: Function) => {
@@ -560,8 +562,9 @@ test("/nietzsche opens a labelled dialogue, shares the overlay lock, and closes 
     },
   } as any);
   initTheme("dark", false);
-  ctx.ui.custom = (factory: Function) =>
+  ctx.ui.custom = (factory: Function, supplied: any) =>
     new Promise<void>((done) => {
+      options = supplied;
       view = factory({ terminal: { rows: 30, columns: 120 }, requestRender() {} }, theme, {}, done);
     });
   replyText = "What do the failing users have in common?";
@@ -571,7 +574,27 @@ test("/nietzsche opens a labelled dialogue, shares the overlay lock, and closes 
   await tick();
   expect(view.conversation.profile).toBe(NIETZSCHE_PROFILE);
   expect(view.render(120).map(stripTerminalSequences).join("\n")).toContain("intensity: nietzsche");
-  expect(view.render(120).map(stripTerminalSequences).join("\n")).toContain("Nietzschian:");
+
+  const rendered = view.render(120);
+  const plain = rendered.map(stripTerminalSequences).join("\n");
+  const user = new UserMessageComponent("Some users receive 403").render(120);
+  const response = new AssistantMessageComponent(view.conversation.turns[0].response, true).render(
+    120,
+  );
+
+  expect(options.overlayOptions).toMatchObject({
+    row: 0,
+    col: 0,
+    width: "100%",
+    maxHeight: "100%",
+  });
+  expect(rendered).toHaveLength(30);
+  expect(rendered.slice(2, 2 + user.length)).toEqual(user);
+  expect(rendered.slice(2 + user.length, 2 + user.length + response.length)).toEqual(response);
+  expect(plain).not.toContain("You:");
+  expect(plain).not.toContain("Nietzschian:");
+  expect(view.editor.borderColor("border")).toBe(theme.fg("warning", "border"));
+  expect(view.editor.borderColor("border")).not.toBe(theme.fg("accent", "border"));
   expect(statuses.get("01-side")).toBe("nietzsche: open");
   await commands.get("side")!("nested", ctx);
   expect(notices.at(-1)).toContain("already open");
@@ -581,4 +604,42 @@ test("/nietzsche opens a labelled dialogue, shares the overlay lock, and closes 
   expect(view.conversation.closed).toBe(true);
   expect(statuses.has("01-side")).toBe(false);
   expect(branch).toHaveLength(2);
+});
+
+test("full-screen debugger covers resized viewports and keeps its input and exit hint visible", () => {
+  initTheme("dark", false);
+
+  const tui: any = { terminal: { rows: 24, columns: 80 }, requestRender() {} };
+  const view = new SideView(tui, theme, ctx, () => {}, "", NIETZSCHE_PROFILE);
+
+  view.focused = true;
+  view.editor.setText(Array.from({ length: 20 }, (_, i) => `draft line ${i}`).join("\n"));
+  view.handleInput("\x1b[H");
+
+  for (const rows of [6, 8, 12, 24, 50]) {
+    for (const width of [40, 80, 120]) {
+      tui.terminal.rows = rows;
+
+      const lines = view.render(width);
+
+      expect(lines).toHaveLength(rows);
+      expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+      expect(lines.some((line) => line.includes(CURSOR_MARKER))).toBe(true);
+      expect(stripTerminalSequences(lines.at(-1)!)).toContain("Escape");
+    }
+  }
+
+  view.dispose();
+});
+
+test("dialogue truncation uses Pi's regular assistant warning", async () => {
+  mode = "length";
+
+  const { view } = panel("Question");
+
+  await tick();
+  expect(view.render(120).map(stripTerminalSequences).join("\n")).toContain(
+    "Response was truncated before completion.",
+  );
+  view.dispose();
 });

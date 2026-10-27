@@ -164,14 +164,17 @@ See the [Codex interface reference](https://learn.chatgpt.com/docs/developer-com
 
 ## Question-driven debugging with `/nietzsche`
 
-`/nietzsche [problem]` opens a separate dialogue inspired by the
+`/nietzsche [problem]` opens a full-screen dialogue inspired by the
 [Nietzschian Debugger](https://github.com/DilawarShafiq/nietzschian-debugger).
 Describe the bug, then answer each question. The model challenges vague claims,
 asks for evidence and follows your answers toward a root cause. It is instructed
 not to supply fixes or code. Tone is direct; replies follow your language.
+An amber composer border distinguishes this mode. User prompts and model replies
+use Pi's regular message components, without speaker labels. The composer stays
+at the bottom as the terminal resizes; closing restores the main view.
 
 The dialogue uses Pi's selected model/thinking level and existing authentication,
-with no extra package or API key. It shares `/side`'s terminal, cancellation,
+with no extra package or API key. It shares `/side`'s cancellation,
 context limits and temporary history. Main work can continue; dialogue replies
 never enter the main transcript. Neither mode has tools or execution authority.
 Only one dialogue can be open at a time.

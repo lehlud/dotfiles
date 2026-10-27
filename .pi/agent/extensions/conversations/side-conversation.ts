@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { PUBLIC_WRITING_SCOPE, WRITING_RULEBOOK } from "../public-writing/rules.ts";
 import { textContent, withWatchdog } from "../shared/review/protocol.ts";
 import { sideSnapshot, type SideSnapshot } from "./side-context.ts";
@@ -18,7 +18,8 @@ export type DialogueProfile = {
   title: string;
   system: string;
   empty: string;
-  replyLabel?: string;
+  fullscreen?: boolean;
+  borderColor?: ThemeColor;
   hint?: string;
   finished?: (input: string) => boolean;
 };
@@ -30,7 +31,13 @@ export const SIDE_PROFILE: DialogueProfile = {
   empty: "Ask a question about the main conversation context.",
 };
 
-export type SideTurn = { question: string; answer: string; error?: string; truncated?: boolean };
+export type SideTurn = {
+  question: string;
+  answer: string;
+  response?: AssistantMessage;
+  error?: string;
+  truncated?: boolean;
+};
 
 export class SideConversation {
   readonly id = randomUUID();
@@ -159,11 +166,13 @@ export class SideConversation {
 
       if (!turn.answer.trim()) throw new Error("Empty dialogue response");
 
+      turn.response = answer;
       this.history.push(user, answer);
       this.completed = this.profile.finished?.(question) ?? false;
     } catch {
       if (!this.closed) {
         turn.answer = "";
+        turn.response = undefined;
         turn.error = controller.signal.aborted
           ? "Dialogue request cancelled."
           : "Dialogue request failed or timed out. Check authentication and the provider; the main conversation continues.";
@@ -201,6 +210,7 @@ export class SideConversation {
 
       if (["text_delta", "text_end"].includes(event.type) && "partial" in event) {
         turn.answer = textContent(event.partial.content);
+        turn.response = event.partial;
         this.changed();
       }
     }
