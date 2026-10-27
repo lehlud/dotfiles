@@ -25,15 +25,25 @@ import { providerAvailability } from ${JSON.stringify(availabilityPath)};
 import { registerContinue } from ${JSON.stringify(continuePath)};
 
 export default function(pi) {
-  let now = 0, calls = 0, failing = true;
+  let now = 0, calls = 0, waits = 0, failing = true, resume;
   providerAvailability.clock = {
     now: () => now,
-    wait: async (ms) => { now += ms; },
+    wait: async (ms, signal) => {
+      now += ms;
+      pi.appendEntry("standby-delay", {ms});
+      if (++waits <= 11) return;
+      await new Promise((resolve,reject) => {
+        const stop = () => {signal?.removeEventListener("abort", stop); reject(new Error("cancelled"));};
+        resume = () => {signal?.removeEventListener("abort", stop); resolve();};
+        signal?.addEventListener("abort", stop, {once:true});
+        if (signal?.aborted) stop();
+        else pi.appendEntry("standby-waiting", {});
+      });
+    },
   };
   registerContinue(pi);
-  pi.registerCommand("recover-fixture", {
-    handler: async () => { failing = false; },
-  });
+  pi.registerCommand("recover-fixture", {handler: async()=>{failing=false; resume?.();}});
+  pi.registerCommand("outage-fixture", {handler: async()=>{failing=true; waits=11;}});
   pi.registerProvider("standby-fixture", {
     api: "standby-fixture", apiKey: "synthetic", baseUrl: "https://example.invalid",
     models: [{ id: "working", name: "working", reasoning: false, input: ["text"],
@@ -41,17 +51,18 @@ export default function(pi) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
     streamSimple(model) {
       calls++;
-      pi.appendEntry("standby-call", { calls });
+      pi.appendEntry("standby-call", {calls});
+      const failed = failing;
       const stream = createAssistantMessageEventStream();
       const message = {
         role: "assistant", api: model.api, provider: model.provider, model: model.id,
-        timestamp: Date.now(), stopReason: failing ? "error" : "stop",
-        content: [{ type: "text", text: failing ? "" : "RESUMED" }],
-        errorMessage: failing ? "HTTP 507" : undefined,
+        timestamp: Date.now(), stopReason: failed ? "error" : "stop",
+        content: [{ type: "text", text: failed ? "" : "RESUMED" }],
+        errorMessage: failed ? "HTTP 507" : undefined,
         usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
       };
-      queueMicrotask(() => stream.push(failing
+      queueMicrotask(() => stream.push(failed
         ? { type: "error", reason: "error", error: message }
         : { type: "done", reason: "stop", message }));
       return stream;
@@ -61,7 +72,7 @@ export default function(pi) {
 `;
 
 binaryTest(
-  "compiled Pi continues an unavailable session without restarting or losing its task",
+  "compiled Pi retries through all levels, recovers automatically and cancels or resumes without restarting",
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-standby-binary-"));
     const fixture = join(directory, "provider.ts");
@@ -135,25 +146,38 @@ binaryTest(
     const messages = () => events.filter((event) => event.type === "message_end");
 
     try {
+      const recorded = (kind: string) =>
+        events.filter(
+          (event) => event.type === "entry_appended" && event.entry?.customType === kind,
+        );
+
       prompt("task", "Continue this synthetic task when the provider recovers.");
-      await until(() => ended().length === 1);
-      expect(messages().at(-1).message.errorMessage).toContain("availability guard");
-      prompt("held", "Try the same task again.");
-      await until(() => ended().length === 2);
-      expect(messages().at(-1).message.errorMessage).toContain("availability guard");
+      await until(() => recorded("standby-waiting").length === 1);
+      expect(ended()).toHaveLength(0);
+      expect(recorded("standby-delay").map((event) => event.entry.data.ms)).toEqual([
+        15000, 15000, 60000, 150000, 300000, 300000, 300000, 900000, 900000, 900000, 1800000,
+        1800000,
+      ]);
       prompt("recover", "/recover-fixture");
-      await until(() => events.some((event) => event.id === "recover" && event.success));
+      await until(() => ended().length === 1);
+      expect(messages().at(-1).message.content).toEqual([{ type: "text", text: "RESUMED" }]);
+      expect(recorded("standby-call").at(-1).entry.data.calls).toBe(13);
+      expect(JSON.stringify(events)).not.toContain("held by availability guard");
+
+      prompt("outage", "/outage-fixture");
+      await until(() => events.some((event) => event.id === "outage" && event.success));
+      prompt("cancel-task", "Keep this task while testing cancellation.");
+      await until(() => recorded("standby-waiting").length === 2);
+      expect(recorded("standby-delay").at(-1).entry.data.ms).toBe(15000);
+      child.stdin.write(JSON.stringify({ id: "abort", type: "abort" }) + "\n");
+      await until(() => ended().length === 2);
+      expect(messages().at(-1).message.stopReason).toBe("aborted");
+      prompt("recover-again", "/recover-fixture");
+      await until(() => events.some((event) => event.id === "recover-again" && event.success));
       prompt("continue", "/continue");
       await until(() => ended().length === 3);
       expect(messages().at(-1).message.content).toEqual([{ type: "text", text: "RESUMED" }]);
-      expect(
-        events
-          .filter(
-            (event) =>
-              event.type === "entry_appended" && event.entry?.customType === "standby-call",
-          )
-          .map((event) => event.entry.data.calls),
-      ).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      expect(recorded("standby-call").at(-1).entry.data.calls).toBe(15);
     } finally {
       child.stdin.end();
       child.kill();

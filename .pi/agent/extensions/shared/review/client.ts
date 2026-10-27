@@ -5,7 +5,6 @@ import { promptOriginalTool } from "./originals.ts";
 import { ReviewerToolError } from "./original-turn.ts";
 import {
   providerAvailability,
-  isProviderHeldError,
   isRecoveryAuditError,
   RecoveryAuditError,
   providerRefusal,
@@ -203,9 +202,8 @@ export async function requestVerdict(
       throw new ReviewError(reason, attempts, exchange.usage);
     }
 
-    reason = isProviderHeldError(error)
-      ? error.message
-      : error instanceof Error && error.message === "Reviewer request timed out"
+    reason =
+      error instanceof Error && error.message === "Reviewer request timed out"
         ? error.message
         : `Reviewer provider request failed${providerFailureDetail(error)}`;
   } finally {

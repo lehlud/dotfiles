@@ -8,7 +8,7 @@ import type { Reviewer } from "../shared/review/protocol.ts";
 import { startReviewDisplay } from "./display.ts";
 import type { ActionSession } from "./action-session.ts";
 import type { buildReview } from "./review.ts";
-import type { AvailabilityNotice } from "../shared/providers/availability.ts";
+import { recoveryLabel, type AvailabilityNotice } from "../shared/providers/availability.ts";
 
 type Update = AgentToolUpdateCallback<unknown> | undefined;
 
@@ -44,7 +44,7 @@ export class ReviewDisplay {
           content: [
             {
               type: "text",
-              text: `Provider recovery · ${event.provider}/${event.model} · ${event.retry}/${event.maxRetries} · ${event.delayMs / 1000}s`,
+              text: `Provider recovery · ${recoveryLabel(event)}`,
             },
           ],
           details: { phase: "reviewing", retry: event },

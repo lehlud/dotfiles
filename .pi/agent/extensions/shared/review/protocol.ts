@@ -1,3 +1,4 @@
+import { requestDeadline } from "../providers/request-deadline.ts";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
 
@@ -153,7 +154,7 @@ export async function withWatchdog<T>(
     rejectAbort(new Error(parent?.aborted ? "Approval cancelled" : "Reviewer request timed out"));
   };
 
-  const timer = setTimeout(abort, timeoutMs);
+  const closeDeadline = requestDeadline(controller.signal, timeoutMs, abort, parent);
 
   parent?.addEventListener("abort", abort, { once: true });
 
@@ -168,7 +169,7 @@ export async function withWatchdog<T>(
       cancelled,
     ]);
   } finally {
-    clearTimeout(timer);
+    closeDeadline();
     parent?.removeEventListener("abort", abort);
     controller.abort();
   }

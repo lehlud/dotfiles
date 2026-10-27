@@ -11,7 +11,7 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { ProviderHeldError } from "../../shared/providers/availability.ts";
+import { reviewAction, buildReview } from "../review.ts";
 import { registerProviderRecovery } from "../../shared/providers/stream.ts";
 import { expiredTokenResponse } from "./provider-error-fixtures.ts";
 import { registerContinue } from "../../conversations/continue.ts";
@@ -28,10 +28,28 @@ for (const [label, failure] of [
     let now = 0,
       calls = 0,
       fail = 2;
+    const delays: number[] = [];
+    let hold = false,
+      waiting!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      waiting = resolve;
+    });
+    let realDelay = false;
     const availability = new other.ProviderAvailability({
       now: () => now,
-      wait: async (ms) => {
+      wait: async (ms, signal) => {
+        delays.push(ms);
         now += ms;
+
+        if (realDelay) await new Promise((resolve) => setTimeout(resolve, 80));
+
+        if (hold) {
+          waiting();
+          await new Promise<void>((_resolve, reject) => {
+            if (signal?.aborted) reject(signal.reason);
+            else signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        }
       },
     });
     const runtime = await ModelRuntime.create({
@@ -56,18 +74,29 @@ for (const [label, failure] of [
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         },
       ],
-      streamSimple(model) {
+      streamSimple(model, context) {
         calls++;
 
         const stream = createAssistantMessageEventStream(),
           failed = fail-- > 0;
+        let requestId: string | undefined;
+
+        try {
+          requestId = JSON.parse(
+            String(context.messages.find((entry) => entry.role === "user")?.content),
+          ).requestId;
+        } catch {}
+
+        const success = requestId
+          ? JSON.stringify({ requestId, decision: "approve", reason: "Synthetic safe action" })
+          : "success";
         const message: any = {
           role: "assistant",
           api: model.api,
           provider: model.provider,
           model: model.id,
           timestamp: Date.now(),
-          content: [{ type: "text", text: failed ? "discarded partial" : "success" }],
+          content: [{ type: "text", text: failed ? "discarded partial" : success }],
           stopReason: failed ? "error" : "stop",
           errorMessage: failed ? failure : undefined,
           usage: {
@@ -143,23 +172,31 @@ for (const [label, failure] of [
       expect(messages).toHaveLength(1);
       expect(messages[0].message.content[0].text).toBe("success");
       expect(messages[0].message.usage.totalTokens).toBe(9);
-      fail = 100;
-      await session.prompt("Synthetic outage check");
-      expect(calls).toBe(9);
-      await session.prompt("Still in cooldown");
-      expect(calls).toBe(9);
-      expect(other.ProviderHeldError).not.toBe(ProviderHeldError);
-      expect((session.messages.at(-1) as any).errorMessage).toContain("availability guard");
-      now += 300000;
-      await session.prompt("Single expired-cooldown probe");
-      expect(calls).toBe(10);
-      now += 300000;
-      fail = 0;
-      await session.prompt("Probe succeeds");
-      expect(calls).toBe(11);
-      fail = 100;
-      await session.prompt("New outage gets five retries again");
+      fail = 13;
+
+      const before = delays.length;
+
+      await session.prompt("Recover automatically through every retry level.");
       expect(calls).toBe(17);
+      expect(delays.slice(before)).toEqual([
+        15000, 15000, 60000, 150000, 300000, 300000, 300000, 900000, 900000, 900000, 1800000,
+        1800000, 1800000,
+      ]);
+      fail = 1;
+      await session.prompt("A subsequent outage starts at the first level again.");
+      expect(calls).toBe(19);
+      expect(delays.at(-1)).toBe(15000);
+      hold = true;
+      fail = Infinity;
+
+      const pending = session.prompt("Cancel this pending recovery and resume the same task.");
+
+      await paused;
+      expect(calls).toBe(20);
+      await session.abort();
+      await pending;
+      expect(session.messages.at(-1)).toMatchObject({ stopReason: "aborted" });
+      hold = false;
       fail = 0;
 
       let completed!: () => void;
@@ -177,11 +214,45 @@ for (const [label, failure] of [
         unsubscribe();
       }
 
-      expect(calls).toBe(18);
+      expect(calls).toBe(21);
       expect(session.messages.at(-1)).toMatchObject({
         stopReason: "stop",
         content: [{ type: "text", text: "success" }],
       });
+      fail = 1;
+      realDelay = true;
+
+      const selected = { provider: "availability-sdk", model: "working", thinking: "off" as const };
+      const config: any = {
+        reviewer: selected,
+        requestTimeoutMs: 30,
+        recentUserPrompts: 2,
+        sandbox: { backend: "bwrap" },
+      };
+      const envelope = buildReview(
+        {
+          tool: "read",
+          arguments: { path: "sample.txt" },
+          goal: "Read the sample",
+          justification: "Synthetic validation",
+        },
+        [{ type: "message", message: { role: "user", content: "Read the sample safely." } }],
+        config,
+        directory,
+        [],
+      );
+      const checked = await reviewAction(
+        config,
+        new ModelRegistry(runtime),
+        envelope,
+        { start() {}, finish() {}, failed() {} },
+        undefined,
+        undefined,
+        availability,
+      );
+
+      expect(checked.verdict.decision).toBe("approve");
+      expect(calls).toBe(23);
     } finally {
       session.dispose();
       await rm(directory, { recursive: true, force: true });

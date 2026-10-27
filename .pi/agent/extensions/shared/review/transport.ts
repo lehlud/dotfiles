@@ -47,9 +47,16 @@ export class ReviewExchange {
   }
 
   async run(model: ReviewModel) {
-    const { envelope, timeoutMs, observer } = this.options;
+    return withWatchdog(
+      (signal) => this.exchange(model, signal),
+      this.options.timeoutMs,
+      this.options.signal,
+    );
+  }
+
+  private async exchange(model: ReviewModel, signal: AbortSignal) {
+    const { envelope, observer } = this.options;
     const context = structuredClone(this.options.context);
-    const started = Date.now();
     const lookupBudget = originalLookupBudget(envelope);
     const lookups = {
       attempts: 0,
@@ -60,14 +67,12 @@ export class ReviewExchange {
     };
 
     for (let round = 0; round <= lookupBudget; round++) {
-      const remaining = timeoutMs - (Date.now() - started);
-
-      if (remaining <= 0) throw new Error("Reviewer request timed out");
+      signal.throwIfAborted();
 
       if (reviewCapacityIssue(context, model))
         throw new ReviewerToolError("Reviewer lookup context exceeds model capacity");
 
-      const response = await this.request(model, context, remaining);
+      const response = await this.request(model, context, signal);
       const calls = response.content.filter((block) => block.type === "toolCall");
 
       if (!calls.length) return response;
@@ -97,52 +102,43 @@ export class ReviewExchange {
     throw new ReviewerToolError("Reviewer original-prompt lookup rounds exceeded");
   }
 
-  private async request(model: ReviewModel, context: Context, timeoutMs: number) {
-    const { registry, candidate, envelope, signal, availability, observer, processing } =
-      this.options;
+  private async request(model: ReviewModel, context: Context, signal: AbortSignal) {
+    const { registry, candidate, envelope, availability, observer, processing } = this.options;
     const managed = installProviderStreams(registry, availability, observer.retry);
-
-    return await withWatchdog(
-      async (reviewSignal) => {
-        const work = async () => {
-          const fast = processing.fastMode?.() ?? false;
-          const response = await registry
-            .streamSimple(model, structuredClone(context), {
-              reasoning: candidate.thinking === "off" ? undefined : candidate.thinking,
-              signal: reviewSignal,
-              maxTokens: REVIEW_OUTPUT_TOKENS,
-              cacheRetention: reviewCacheRetention(model),
-              sessionId: reviewCacheKey(envelope, context),
-              onPayload: (payload, providerModel) => {
-                const cached = cacheReviewPayload(
-                  constrainReviewPayload(payload, providerModel, envelope.goalCheck) ?? payload,
-                  providerModel,
-                  envelope,
-                );
-
-                return fastPayload(cached, providerModel, fast) ?? cached;
-              },
-            })
-            .result();
-
-          this.usage = sumUsage(this.usage, response.usage);
-
-          return response;
-        };
-
-        return managed
-          ? await work()
-          : await availability.run(
-              model,
-              work,
-              (response) => unavailableResponse(response, context),
-              reviewSignal,
-              observer.retry,
+    const work = async () => {
+      const fast = processing.fastMode?.() ?? false;
+      const response = await registry
+        .streamSimple(model, structuredClone(context), {
+          reasoning: candidate.thinking === "off" ? undefined : candidate.thinking,
+          signal,
+          maxTokens: REVIEW_OUTPUT_TOKENS,
+          cacheRetention: reviewCacheRetention(model),
+          sessionId: reviewCacheKey(envelope, context),
+          onPayload: (payload, providerModel) => {
+            const cached = cacheReviewPayload(
+              constrainReviewPayload(payload, providerModel, envelope.goalCheck) ?? payload,
+              providerModel,
+              envelope,
             );
-      },
 
-      timeoutMs,
-      signal,
-    );
+            return fastPayload(cached, providerModel, fast) ?? cached;
+          },
+        })
+        .result();
+
+      this.usage = sumUsage(this.usage, response.usage);
+
+      return response;
+    };
+
+    return managed
+      ? work()
+      : availability.run(
+          model,
+          work,
+          (response) => unavailableResponse(response, context),
+          signal,
+          observer.retry,
+        );
   }
 }

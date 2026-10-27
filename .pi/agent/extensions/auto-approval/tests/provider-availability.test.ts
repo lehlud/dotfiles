@@ -1,7 +1,8 @@
 import { beforeEach, expect, spyOn, test } from "bun:test";
 import {
   ProviderAvailability,
-  ProviderHeldError,
+  providerAvailability,
+  providerRetryDelay,
   transientProviderError,
 } from "../../shared/providers/availability.ts";
 import { resilientStream } from "../../shared/providers/stream.ts";
@@ -29,95 +30,107 @@ beforeEach(() => {
 
 const down = (value: number) => value === 507;
 
-test("five retries follow the initial failure, then five minutes without requests and one probe", async () => {
+test("retry delays follow every requested level and continue at thirty minutes without exhaustion", async () => {
   let calls = 0;
-  const work = async () => {
-    calls++;
+  const notices: any[] = [];
 
-    return 507;
-  };
+  expect(
+    await gate.run(
+      pair,
+      async () => (++calls <= 25 ? 507 : 200),
+      down,
+      undefined,
+      (event) => notices.push(event),
+    ),
+  ).toBe(200);
+  expect(calls).toBe(26);
+  expect(delays).toEqual([
+    15000,
+    15000,
+    60000,
+    150000,
+    300000,
+    300000,
+    300000,
+    900000,
+    900000,
+    900000,
+    ...Array(15).fill(1800000),
+  ]);
+  expect(notices.map((event) => event.retry)).toEqual(Array.from({ length: 25 }, (_, i) => i + 1));
+  expect(providerRetryDelay(100000)).toBe(1800000);
+});
 
-  expect(await gate.run(pair, work, down)).toBe(507);
-  expect(calls).toBe(6);
-  expect(delays).toEqual(Array(5).fill(3000));
+test("successful responses reset the schedule independently per provider/model pair", async () => {
+  for (const selected of [pair, { ...pair, id: "model-b" }, { ...pair, provider: "other" }, pair]) {
+    let calls = 0;
 
-  for (const offset of [0, 1000, 299999]) {
-    now = 15000 + offset;
-    await expect(gate.run(pair, work, down)).rejects.toBeInstanceOf(ProviderHeldError);
+    expect(await gate.run(selected, async () => (++calls === 1 ? 507 : 200), down)).toBe(200);
   }
 
-  expect(calls).toBe(6);
-  now = 315000;
-  expect(await gate.run(pair, work, down)).toBe(507);
-  expect(calls).toBe(7);
-  expect(delays).toHaveLength(5);
-  now += 300000;
-  expect(await gate.run(pair, work, down)).toBe(507);
-  expect(calls).toBe(8);
+  expect(delays).toEqual([15000, 15000, 15000, 15000]);
 });
 
-test("successful probe resets the full retry budget, independently per provider and model", async () => {
-  await gate.run(pair, async () => 507, down);
-  expect(await gate.run({ ...pair, id: "model-b" }, async () => 200, down)).toBe(200);
-  expect(await gate.run({ ...pair, provider: "other" }, async () => 200, down)).toBe(200);
-  now += 300000;
-  expect(await gate.run(pair, async () => 200, down)).toBe(200);
-
-  let calls = 0;
-
-  await gate.run(
-    pair,
-    async () => {
-      calls++;
-
-      return 507;
-    },
-
-    down,
-  );
-  expect(calls).toBe(6);
-  expect(delays).toHaveLength(10);
-});
-
-test("one expired-pair probe is admitted while healthy conversations can run concurrently", async () => {
-  await gate.run(pair, async () => 507, down);
-  now += 300000;
-
-  let release!: () => void;
-  const pending = gate.run(
-    pair,
-    async () => {
-      await new Promise<void>((done) => {
-        release = done;
+test("one recovery owns an unavailable pair; queued calls retain their own work and healthy pairs proceed", async () => {
+  let release!: () => void,
+    waiting!: () => void,
+    leaderCalls = 0,
+    queuedCalls = 0;
+  const started = new Promise<void>((resolve) => {
+    waiting = resolve;
+  });
+  const availability = new ProviderAvailability({
+    now: () => now,
+    wait: async (ms) => {
+      waiting();
+      await new Promise<void>((resolve) => {
+        release = resolve;
       });
-
-      return 200;
+      now += ms;
     },
+  });
+  const leader = availability.run(pair, async () => (++leaderCalls === 1 ? 507 : 200), down);
 
+  await started;
+
+  const queued = availability.run(
+    pair,
+    async () => {
+      queuedCalls++;
+
+      return 201;
+    },
     down,
   );
 
-  await Promise.resolve();
-  await expect(gate.run(pair, async () => 200, down)).rejects.toBeInstanceOf(ProviderHeldError);
+  expect(queuedCalls).toBe(0);
+  expect(availability.requestProbe(pair)).toBe(false);
+  expect(await availability.run({ ...pair, id: "healthy" }, async () => 202, down)).toBe(202);
   release();
-  expect(await pending).toBe(200);
+  expect(await leader).toBe(200);
+  expect(await queued).toBe(201);
+  expect(leaderCalls).toBe(2);
+  expect(queuedCalls).toBe(1);
 
-  let finish!: () => void;
-  const healthy = gate.run(
+  let finish!: () => void, began!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    began = resolve;
+  });
+  const healthy = availability.run(
     pair,
     async () => {
-      await new Promise<void>((done) => {
-        finish = done;
+      began();
+      await new Promise<void>((resolve) => {
+        finish = resolve;
       });
 
       return 200;
     },
-
     down,
   );
 
-  await Promise.resolve();
-  expect(await gate.run(pair, async () => 200, down)).toBe(200);
+  await ready;
+  expect(await availability.run(pair, async () => 203, down)).toBe(203);
   finish();
   await healthy;
 });
@@ -167,37 +180,71 @@ test("reported coded 401 failures are recoverable; unrelated authentication and 
     expect(transientProviderError(error)).toBe(false);
 });
 
-test("coded token expiry gets five retries, a five-minute hold, one probe and a reset after recovery", async () => {
+test("thrown coded token expiry uses the same levels and resets only after a valid response", async () => {
   let calls = 0;
-  let failing = true;
   const work = async () => {
-    calls++;
-
-    if (failing) throw new Error(expiredTokenResponse);
+    if (++calls <= 12) throw new Error(expiredTokenResponse);
 
     return 200;
   };
 
-  await expect(gate.run(pair, work, down)).rejects.toBeInstanceOf(ProviderHeldError);
-  expect(calls).toBe(6);
-  expect(delays).toEqual(Array(5).fill(3000));
-  await expect(gate.run(pair, work, down)).rejects.toBeInstanceOf(ProviderHeldError);
-  expect(calls).toBe(6);
-  now += 300000;
-  await expect(gate.run(pair, work, down)).rejects.toBeInstanceOf(ProviderHeldError);
-  expect(calls).toBe(7);
-  expect(delays).toHaveLength(5);
-  now += 300000;
-  failing = false;
   expect(await gate.run(pair, work, down)).toBe(200);
-  expect(calls).toBe(8);
-  failing = true;
-  await expect(gate.run(pair, work, down)).rejects.toBeInstanceOf(ProviderHeldError);
-  expect(calls).toBe(14);
-  expect(delays).toHaveLength(10);
+  expect(calls).toBe(13);
+  expect(delays).toEqual([
+    15000, 15000, 60000, 150000, 300000, 300000, 300000, 900000, 900000, 900000, 1800000, 1800000,
+  ]);
+
+  let next = 0;
+
+  await gate.run(pair, async () => (++next === 1 ? 507 : 200), down);
+  expect(delays.at(-1)).toBe(15000);
 });
 
-test("abort during backoff leaves no false cooldown and retry-audit failure admits no further call", async () => {
+test("queued cancellation leaves the recovery owner intact; owner cancellation hands off its remaining wait", async () => {
+  let began!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    began = resolve;
+  });
+  const recovery = new ProviderAvailability({
+    now: () => now,
+    wait: async (_ms, signal) => {
+      began();
+      await new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    },
+  });
+  const owner = new AbortController();
+  const queued = new AbortController();
+  const first = recovery.run(pair, async () => 507, down, owner.signal);
+  const firstFailure = first.catch((error) => error);
+
+  await waiting;
+
+  let calls = 0;
+  const work = async () => {
+    calls++;
+
+    return 200;
+  };
+  const abandoned = recovery.run(pair, work, down, queued.signal);
+  const cancelled = abandoned.catch((error) => error);
+
+  queued.abort();
+  expect(await cancelled).toBeInstanceOf(Error);
+  expect(calls).toBe(0);
+  expect(recovery.requestProbe(pair)).toBe(false);
+
+  const successor = recovery.run(pair, work, down);
+
+  now = 15000;
+  owner.abort();
+  expect(await firstFailure).toBeInstanceOf(Error);
+  expect(await successor).toBe(200);
+  expect(calls).toBe(1);
+});
+
+test("backoff cancellation preserves recovery and retry-audit failure admits no further call", async () => {
   const controller = new AbortController();
   let calls = 0;
 
@@ -298,7 +345,8 @@ test("stream retries retain one message start, final content, immutable input an
   expect(context.messages).toHaveLength(1);
 });
 
-test("final exhaustion suppresses SDK outer retries and reuses cooldown without extra calls", async () => {
+test("cancelling an indefinite stream stops retries, retains billing and emits no held diagnostic", async () => {
+  const controller = new AbortController();
   let calls = 0;
   const wrapped = resilientStream(
     (() => {
@@ -307,15 +355,18 @@ test("final exhaustion suppresses SDK outer retries and reuses cooldown without 
       return source("error", "", "HTTP 507 synthetic-private-provider-data");
     }) as any,
     gate,
+    (event) => {
+      if (event.retry === 14) controller.abort();
+    },
   );
-  const result = await wrapped(model, context).result();
+  const result = await wrapped(model, context, { signal: controller.signal }).result();
 
-  expect(calls).toBe(6);
+  expect(calls).toBe(14);
+  expect(result.stopReason).toBe("aborted");
   expect(isRetryableAssistantError(result)).toBe(false);
   expect(result.errorMessage).not.toContain("synthetic-private-provider-data");
-  expect(result.usage.totalTokens).toBe(18);
-  await wrapped(model, context).result();
-  expect(calls).toBe(6);
+  expect(result.errorMessage).not.toContain("availability guard");
+  expect(result.usage.totalTokens).toBe(42);
 });
 
 test("a goal blocker delivered before a transport error stays final without retries", async () => {
@@ -463,89 +514,101 @@ test("raw refusal markers prevent retries even if a transport throw follows the 
   }
 });
 
-test("a cooldown from another extension copy retains its diagnostic across continuation", async () => {
-  const modulePath = "../../shared/providers/availability.ts?standby-copy";
+test("separate extension copies share availability identity and the leveled recovery implementation", async () => {
+  const modulePath = "../../shared/providers/availability.ts?leveled-copy";
   const other: typeof import("../../shared/providers/availability.ts") = await import(modulePath);
+
+  expect(other.providerAvailability).toBe(providerAvailability);
+  expect(other.ProviderAvailability).not.toBe(ProviderAvailability);
+
+  const waits: number[] = [];
   const foreignGate = new other.ProviderAvailability({
     now: () => now,
     wait: async (ms) => {
+      waits.push(ms);
       now += ms;
     },
   });
   let calls = 0;
   const wrapped = resilientStream(
-    (() => {
-      calls++;
-
-      return source("error", "", "HTTP 507");
-    }) as any,
+    (() => (++calls <= 11 ? source("error", "", "HTTP 507") : source("stop", "recovered"))) as any,
     foreignGate,
   );
 
-  expect(other.ProviderHeldError).not.toBe(ProviderHeldError);
-  expect((await wrapped(model, context).result()).errorMessage).toContain("availability guard");
-  expect(calls).toBe(6);
-  expect((await wrapped(model, context).result()).errorMessage).toContain("availability guard");
-  expect(calls).toBe(6);
+  expect((await wrapped(model, context).result()).stopReason).toBe("stop");
+  expect(waits.at(-1)).toBe(1800000);
 });
 
-test("standby time counts toward the default five-minute cooldown", async () => {
+test("wall time spent in standby counts toward an interrupted retry's remaining delay", async () => {
   let wall = 1000000;
   const nowSpy = spyOn(Date, "now").mockImplementation(() => wall);
-  const availability = new ProviderAvailability({ wait: async () => {} });
+  const waits: number[] = [];
+  const availability = new ProviderAvailability({
+    wait: async (ms) => {
+      waits.push(ms);
+      wall += ms;
+    },
+  });
+  const controller = new AbortController();
 
   try {
-    expect(await availability.run(pair, async () => 507, down)).toBe(507);
-    wall += 299999;
-    await expect(availability.run(pair, async () => 200, down)).rejects.toBeInstanceOf(
-      ProviderHeldError,
-    );
-    wall++;
+    await expect(
+      availability.run(
+        pair,
+        async () => 507,
+        down,
+        controller.signal,
+        () => controller.abort(),
+      ),
+    ).rejects.toThrow();
+    wall += 60000;
     expect(await availability.run(pair, async () => 200, down)).toBe(200);
+    expect(waits).toEqual([]);
   } finally {
     nowSpy.mockRestore();
   }
 });
 
-test("explicit continuation admits one early probe and cannot duplicate an active recovery", async () => {
-  let calls = 0;
-  const fail = async () => {
-    calls++;
+test("cancellation retains the retry level; explicit continuation advances only an idle attempt", async () => {
+  const controller = new AbortController();
 
-    return 507;
-  };
+  await expect(
+    gate.run(
+      pair,
+      async () => 507,
+      down,
+      controller.signal,
+      (event) => {
+        if (event.retry === 12) controller.abort();
+      },
+    ),
+  ).rejects.toThrow();
 
-  await gate.run(pair, fail, down, undefined, () => {
-    expect(gate.requestProbe(pair)).toBe(false);
-  });
+  const before = delays.length;
+
+  now += 5000;
+  expect(await gate.run(pair, async () => 200, down)).toBe(200);
+  expect(delays.slice(before)).toEqual([1795000]);
+  expect(gate.requestProbe(pair)).toBe(false);
+
+  const cancelled = new AbortController();
+
+  await expect(
+    gate.run(
+      pair,
+      async () => 507,
+      down,
+      cancelled.signal,
+      () => cancelled.abort(),
+    ),
+  ).rejects.toThrow();
   expect(gate.requestProbe({ ...pair, id: "another-model" })).toBe(false);
   expect(gate.requestProbe(pair)).toBe(true);
-  expect(await gate.run(pair, fail, down)).toBe(507);
-  expect(calls).toBe(7);
-  expect(delays).toHaveLength(5);
-  await expect(gate.run(pair, fail, down)).rejects.toBeInstanceOf(ProviderHeldError);
-  expect(calls).toBe(7);
-  expect(gate.requestProbe(pair)).toBe(true);
 
-  let release!: (value: number) => void;
-  const probe = gate.run(
-    pair,
-    () =>
-      new Promise<number>((resolve) => {
-        release = resolve;
-      }),
-    down,
-  );
+  const count = delays.length;
 
-  await Promise.resolve();
-  expect(gate.requestProbe(pair)).toBe(false);
-  await expect(gate.run(pair, fail, down)).rejects.toBeInstanceOf(ProviderHeldError);
-  release(200);
-  expect(await probe).toBe(200);
-  expect(gate.requestProbe(pair)).toBe(false);
-  await gate.run(pair, fail, down);
-  expect(calls).toBe(13);
-  expect(delays).toHaveLength(10);
+  expect(await gate.run(pair, async () => 200, down)).toBe(200);
+  expect(delays).toHaveLength(count);
 });
 
 test("retry audit failures from another extension copy retain their fail-closed identity", async () => {

@@ -9,16 +9,28 @@ chats. See the [architecture guide](../README.md).
 Availability is tracked per **provider and model ID**, independent of thinking level.
 Healthy calls may run concurrently; one unavailable pair does not block another.
 
-1. A temporary failure gets up to **five retries**, **three seconds** apart.
-2. Exhaustion holds that pair for **five minutes**, measured by wall time, including standby.
-3. The next requested call gets **one** exclusive probe. Failure restarts cooldown;
-   success restores the full retry budget for a future outage.
+Temporary failures retry automatically, using these delays after successive failures:
 
-There are no background probes/actions. Explicit operator `/continue` or `/goal resume`
-permits one early probe of the current working model. Model continuations, agent goals
-and ordinary prompts do not shorten cooldown; concurrent recovery cannot duplicate it.
+| Delay        | Retries at this level |
+| ------------ | --------------------- |
+| 15 seconds   | 2                     |
+| 60 seconds   | 1                     |
+| 150 seconds  | 1                     |
+| 300 seconds  | 3                     |
+| 900 seconds  | 3                     |
+| 1800 seconds | Indefinitely          |
+
+A successful response resets the schedule. Requests for the same unavailable pair wait
+behind one recovery owner; each retains its own request. Other pairs remain independent.
+Waits use wall time, including standby, and are interruptible without model polling.
+Working models, reviewers and other shared provider clients use the same lifecycle.
+
+There are no background probes/actions. Cancelling preserves the pair's retry level and
+remaining delay; it does not mark an otherwise healthy pair unavailable. Explicit operator
+`/continue` or `/goal resume` can advance one idle retry, but cannot duplicate active recovery.
 State survives reload/session replacement within the process, but not restart.
-Cross-loader guard errors retain their diagnostic instead of becoming generic failures.
+Review deadlines bound active requests and original-prompt lookups; provider backoff and
+queued recovery do not consume that deadline. Cancellation remains effective throughout.
 
 Recoverable failures include connections, temporary 429s, 5xx/507 request-buffer errors,
 and HTTP 401 explicitly coded `token_expired`, `server_is_overloaded`,
@@ -29,7 +41,7 @@ Refusal/permanent-error markers take precedence.
 Denials (including complete request-bound denials before stream failure), invalid
 verdicts, forbidden reviewer calls, local auth/model failures, plain 401/403, invalid
 credentials, schema/context-capacity errors and exhausted quotas are final. Cancellation
-and timeouts apply during waits; cancellation does not mark an outage. Retry-audit
+applies during waits; active request timeouts remain enforced. Retry-audit
 failure stops review. No path selects another working/review model or weakens approval.
 
 Retries preserve the request and yield one assistant message; tokens/costs sum across
@@ -40,7 +52,7 @@ omit private provider data and prevent another SDK retry series.
 
 [OpenAI guidance](https://developers.openai.com/api/docs/guides/error-codes) classifies
 expired tokens as authentication failures; `token_expired` alone proves no capacity
-incident. The bounded exception accommodates reported transient behavior. Recovery uses
+incident. The coded exception accommodates reported transient behavior. Recovery uses
 existing SDK authentication; it never renews/erases credentials, initiates login or
 changes accounts. Persistent expiration may still require `/login`; revoked credentials
 and access denial receive no broad retry exception.

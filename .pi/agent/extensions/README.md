@@ -12,7 +12,7 @@ is a library, not an extension; its contracts/infrastructure never import featur
 | [Context management](context-management/README.md) | Budgets, history, notes, eviction and rotation                         |
 | [Fast mode](fast-mode/README.md)                   | Session speed preference for working/review requests                   |
 | [Model selection](model-selection/README.md)       | Persistent model/thinking pairs and live selections                    |
-| [Provider recovery](provider-recovery/README.md)   | Bounded retries and availability tracking                              |
+| [Provider recovery](provider-recovery/README.md)   | Leveled retries and availability tracking                              |
 | [Code quality](code-quality/README.md)             | Standing multilingual readability instruction                          |
 | [Public writing](public-writing/README.md)         | Frozen editorial rules and explicit draft checks                       |
 | [Web research](web-research/README.md)             | DDGS and public-page text extraction                                   |

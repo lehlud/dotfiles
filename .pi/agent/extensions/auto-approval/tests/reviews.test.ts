@@ -389,22 +389,18 @@ test("missing auth, missing models and unsupported thinking fail without selecti
   expect(calls).toHaveLength(0);
 });
 
-test("provider failure retries only the selected model and redacts raw error content", async () => {
+test("provider failures keep the selected reviewer through long recovery and redact failed-attempt details", async () => {
   modes.openai = "throw";
+  onResponse = () => {
+    if (calls.length === 13) modes.openai = "approve";
+  };
 
-  try {
-    await run();
+  const checked = await run();
 
-    throw new Error("Expected review failure");
-  } catch (error) {
-    expect(error).toBeInstanceOf(ReviewError);
-    expect((error as ReviewError).attempts).toHaveLength(1);
-    expect((error as Error).message).toContain("availability guard for 300 seconds");
-    expect((error as Error).message).not.toContain("synthetic-private-error-content");
-  }
-
-  expect(calls).toHaveLength(6);
+  expect(checked.selectedReviewer).toEqual(primary);
+  expect(calls).toHaveLength(13);
   expect(calls.every((item) => item.model.provider === "openai")).toBe(true);
+  expect(JSON.stringify(checked)).not.toContain("synthetic-private-error-content");
 });
 
 test("failed responses retain billed usage without consulting another reviewer", async () => {
@@ -674,7 +670,7 @@ test("coded token expiry retries the same model while a delivered denial remains
 
   expect(recovered.selectedReviewer).toEqual(primary);
   expect(calls).toHaveLength(2);
-  expect(clock).toBe(3000);
+  expect(clock).toBe(15000);
   expect(calls[0].context).toEqual(calls[1].context);
 
   calls = [];
@@ -688,21 +684,45 @@ test("coded token expiry retries the same model while a delivered denial remains
   expect(calls).toHaveLength(1);
 });
 
-test("exhausted token-expiry retries fail closed without selecting another model", async () => {
+test("persistent token expiry remains cancelable without selecting another model", async () => {
   modes[primary.provider] = "expired";
 
-  try {
-    await run();
+  const controller = new AbortController();
 
-    throw new Error("Expected review failure");
-  } catch (error) {
-    const attempt = (error as ReviewError).attempts[0];
+  onResponse = () => {
+    if (calls.length === 14) controller.abort();
+  };
 
-    expect(attempt.reason).toContain("temporarily unavailable");
-    expect(attempt.reason).not.toContain("/login");
-  }
+  await expect(
+    reviewAction(config, registry, envelope, observer, controller.signal, undefined, availability),
+  ).rejects.toThrow(/abort|cancel/i);
 
-  expect(calls).toHaveLength(6);
+  expect(calls).toHaveLength(14);
   expect(calls.every((call) => call.model.provider === primary.provider)).toBe(true);
-  expect(clock).toBe(15000);
+  expect(clock).toBeGreaterThan(3 * 1800000);
+});
+
+test("review deadlines exclude provider backoff but still bound actual requests", async () => {
+  modes.openai = "expired";
+  onResponse = () => {
+    if (calls.length === 2) modes.openai = "approve";
+  };
+
+  const availability = new ProviderAvailability({
+    wait: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    },
+  });
+  const checked = await reviewAction(
+    { ...config, requestTimeoutMs: 30 },
+    registry,
+    envelope,
+    observer,
+    undefined,
+    undefined,
+    availability,
+  );
+
+  expect(checked.verdict.decision).toBe("approve");
+  expect(calls).toHaveLength(2);
 });

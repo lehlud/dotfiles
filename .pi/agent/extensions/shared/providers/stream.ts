@@ -13,8 +13,7 @@ import type {
 import { parseVerdict, textContent } from "../review/protocol.ts";
 import {
   providerAvailability,
-  ProviderHeldError,
-  isProviderHeldError,
+  recoveryLabel,
   isRecoveryAuditError,
   providerRefusal,
   transientProviderError,
@@ -143,9 +142,6 @@ export function resilientStream(
             "Provider safety check refused the request; no automatic retry or fallback. Check the provider's supported access configuration.";
         }
 
-        if (unavailableResponse(response, immutable))
-          message.errorMessage = new ProviderHeldError(300000).message;
-
         if (message.stopReason === "error" || message.stopReason === "aborted")
           stream.push({ type: "error", reason: message.stopReason, error: message });
         else if (message.stopReason === "pending") stream.end(message);
@@ -161,12 +157,11 @@ export function resilientStream(
           content: [],
           usage: usage ?? zeroUsage(),
           stopReason: aborted ? "aborted" : "error",
-          errorMessage:
-            isProviderHeldError(error) || isRecoveryAuditError(error)
-              ? error.message
-              : aborted
-                ? "Model request cancelled"
-                : "Model request failed without a transport recovery route",
+          errorMessage: isRecoveryAuditError(error)
+            ? error.message
+            : aborted
+              ? "Model request cancelled"
+              : "Model request failed without a transport recovery route",
         };
 
         if (!aborted && providerRefusal(error)) {
@@ -254,7 +249,7 @@ export function registerProviderRecovery(pi: ExtensionAPI, availability = provid
       (event) => {
         ctx.ui.setStatus(
           statusKey({ provider: event.provider, id: event.model }),
-          `${event.provider}/${event.model}: ${event.retry}/${event.maxRetries} · ${event.delayMs / 1000}s`,
+          recoveryLabel(event),
         );
         pi.appendEntry("auto-approval-provider-retry", event);
       },

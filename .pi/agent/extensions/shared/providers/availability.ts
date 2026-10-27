@@ -1,35 +1,32 @@
 import { isRetryableAssistantError } from "@earendil-works/pi-ai";
+import { providerWait } from "./request-deadline.ts";
 import { providerErrorMessage, providerErrorStatus, retryableProvider401 } from "./error-code.ts";
 
-export const PROVIDER_RETRIES = 5;
-export const PROVIDER_RETRY_DELAY_MS = 3000;
-export const PROVIDER_COOLDOWN_MS = 300000;
+export const PROVIDER_RETRY_DELAYS_MS = [
+  15000, 15000, 60000, 150000, 300000, 300000, 300000, 900000, 900000, 900000,
+] as const;
+export const PROVIDER_PERSISTENT_DELAY_MS = 1800000;
+
+export function providerRetryDelay(retry: number): number {
+  return PROVIDER_RETRY_DELAYS_MS[retry - 1] ?? PROVIDER_PERSISTENT_DELAY_MS;
+}
 
 type Pair = { provider: string; id: string };
 
-type State = { until: number; probing: boolean; recovering: boolean };
-
 type Clock = { now(): number; wait(ms: number, signal?: AbortSignal): Promise<void> };
+
+type State = { retry: number; until: number; owner?: symbol; changed: Promise<void>; wake(): void };
 
 export type AvailabilityNotice = {
   provider: string;
   model: string;
   retry: number;
-  maxRetries: number;
   delayMs: number;
+  waitingForRecovery?: boolean;
 };
 
-export class ProviderHeldError extends Error {
-  constructor(
-    public remainingMs: number,
-    public recovering = false,
-  ) {
-    super(
-      recovering
-        ? "Model recovery already in progress"
-        : `Model request held by availability guard for ${Math.ceil(remainingMs / 1000)} seconds`,
-    );
-  }
+export function recoveryLabel(event: AvailabilityNotice) {
+  return `${event.provider}/${event.model} · ${event.waitingForRecovery ? "waiting for recovery" : `retry ${event.retry} in ${event.delayMs / 1000}s`}`;
 }
 
 export class RecoveryAuditError extends Error {
@@ -38,21 +35,6 @@ export class RecoveryAuditError extends Error {
   constructor() {
     super("Provider recovery audit failed; no fallback, nothing executed");
   }
-}
-
-/** Compiled extensions have separate constructors, but share availability state. */
-export function isProviderHeldError(error: unknown): error is ProviderHeldError {
-  if (!(error instanceof Error)) return false;
-
-  const candidate = error as Partial<ProviderHeldError>;
-
-  return (
-    typeof candidate.remainingMs === "number" &&
-    Number.isFinite(candidate.remainingMs) &&
-    candidate.remainingMs >= 0 &&
-    typeof candidate.recovering === "boolean" &&
-    error.message === new ProviderHeldError(candidate.remainingMs, candidate.recovering).message
-  );
 }
 
 export function isRecoveryAuditError(error: unknown): error is RecoveryAuditError {
@@ -92,22 +74,30 @@ export function transientProviderError(error: unknown): boolean {
 }
 
 function abortableWait(ms: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+
   return new Promise((resolve, reject) => {
-    signal?.throwIfAborted();
-
-    const finish = () => {
-      signal?.removeEventListener("abort", abort);
-      resolve();
-    };
-
-    const timer = setTimeout(finish, ms);
-    const abort = () => {
+    const until = Date.now() + ms;
+    let timer: ReturnType<typeof setTimeout>;
+    const cleanup = () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
+    };
+    const abort = () => {
+      cleanup();
       reject(signal?.reason ?? new Error("Operation aborted"));
+    };
+    const tick = () => {
+      const remaining = until - Date.now();
+
+      if (remaining <= 0) {
+        cleanup();
+        resolve();
+      } else timer = setTimeout(tick, Math.min(remaining, 15000));
     };
 
     signal?.addEventListener("abort", abort, { once: true });
+    tick();
   });
 }
 
@@ -137,23 +127,29 @@ async function interruptible<T>(work: () => Promise<T>, signal?: AbortSignal): P
   }
 }
 
-/** State is scoped to each provider/model pair; a successful response ends the outage. */
+function wake(state: State) {
+  state.wake();
+  state.changed = new Promise<void>((resolve) => {
+    state.wake = resolve;
+  });
+}
+
+/** One recovery owner per provider/model pair; successful transport resets its schedule. */
 export class ProviderAvailability {
   private readonly states = new Map<string, State>();
   private readonly clock: Clock;
-
   constructor(clock: Partial<Clock> = {}) {
-    // Wall time includes machine standby on platforms where performance.now() pauses.
     this.clock = { now: () => Date.now(), wait: abortableWait, ...clock };
   }
 
-  /** Explicit operator continuation permits one early probe, never a parallel recovery. */
+  /** Explicit operator continuation can advance one idle retry, never an active recovery. */
   requestProbe(pair: Pair): boolean {
     const state = this.states.get(JSON.stringify([pair.provider, pair.id]));
 
-    if (!state || state.probing || state.recovering) return false;
+    if (!state || state.owner) return false;
 
     state.until = 0;
+    wake(state);
 
     return true;
   }
@@ -165,99 +161,139 @@ export class ProviderAvailability {
     signal?: AbortSignal,
     notice?: (event: AvailabilityNotice) => void,
   ): Promise<T> {
-    signal?.throwIfAborted();
-
     const key = JSON.stringify([pair.provider, pair.id]);
-    let state = this.states.get(key);
-    const probe = !!state && !state.recovering;
-
-    if (state && (state.probing || state.recovering || state.until > this.clock.now()))
-      throw new ProviderHeldError(
-        Math.max(0, state.until - this.clock.now()),
-        state.probing || state.recovering,
-      );
-
-    if (state) state.probing = true;
-
-    const retries = probe ? 0 : PROVIDER_RETRIES;
+    const owner = Symbol();
 
     try {
-      for (let attempt = 0; attempt <= retries; attempt++) {
-        let result: T;
+      while (true) {
+        signal?.throwIfAborted();
+
+        const state = this.states.get(key);
+
+        if (state?.owner && state.owner !== owner) {
+          this.notify(pair, state, notice, true);
+          await providerWait(signal, () => interruptible(() => state.changed, signal));
+
+          continue;
+        }
+
+        if (state) {
+          state.owner = owner;
+
+          const delay = Math.max(0, state.until - this.clock.now());
+
+          this.notify(pair, state, notice);
+
+          if (delay) await this.wait(state, delay, signal);
+
+          signal?.throwIfAborted();
+
+          if (this.states.get(key) !== state) continue;
+        }
 
         try {
-          result = await interruptible(work, signal);
+          const result = await interruptible(work, signal);
+
           signal?.throwIfAborted();
 
           if (!unavailable(result)) {
-            this.states.delete(key);
+            this.recovered(key);
 
             return result;
           }
         } catch (error) {
           signal?.throwIfAborted();
 
-          if (isProviderHeldError(error) || !transientProviderError(error)) {
-            this.states.delete(key);
+          if (!transientProviderError(error)) {
+            this.recovered(key);
 
             throw error;
           }
-
-          if (attempt === retries) {
-            this.markDown(key, state);
-
-            throw new ProviderHeldError(PROVIDER_COOLDOWN_MS);
-          }
-
-          result = undefined as T;
         }
 
-        if (attempt === retries) {
-          this.markDown(key, state);
-
-          return result;
-        }
-
-        if (!state) {
-          if (this.states.has(key)) throw new ProviderHeldError(0, true);
-
-          state = { until: 0, probing: false, recovering: true };
-          this.states.set(key, state);
-        }
-
-        try {
-          notice?.({
-            provider: pair.provider,
-            model: pair.id,
-            retry: attempt + 1,
-            maxRetries: retries,
-            delayMs: PROVIDER_RETRY_DELAY_MS,
-          });
-        } catch {
-          throw new RecoveryAuditError();
-        }
-
-        await this.clock.wait(PROVIDER_RETRY_DELAY_MS, signal);
+        this.failed(key, owner);
       }
-
-      throw new Error("Availability attempt limit violated");
     } finally {
-      if (state && this.states.get(key) === state && (state.recovering || state.probing))
-        this.states.delete(key);
+      const state = this.states.get(key);
+
+      if (state?.owner === owner) {
+        state.owner = undefined;
+        wake(state);
+      }
     }
   }
 
-  private markDown(key: string, owner?: State) {
-    if (owner && this.states.get(key) !== owner) return;
+  private failed(key: string, owner: symbol) {
+    let state = this.states.get(key);
 
-    this.states.set(key, {
-      until: this.clock.now() + PROVIDER_COOLDOWN_MS,
-      probing: false,
-      recovering: false,
-    });
+    // Other healthy calls may already have been in flight when the outage began.
+    // Their failures join the owner, rather than consuming extra retry levels.
+    if (state?.owner && state.owner !== owner) return;
+
+    if (!state) {
+      let resolve!: () => void;
+      const changed = new Promise<void>((done) => {
+        resolve = done;
+      });
+
+      state = { retry: 0, until: 0, changed, wake: resolve };
+      this.states.set(key, state);
+    }
+
+    state.owner = owner;
+    state.retry++;
+    state.until = this.clock.now() + providerRetryDelay(state.retry);
+  }
+
+  private recovered(key: string) {
+    const state = this.states.get(key);
+
+    this.states.delete(key);
+
+    if (state) wake(state);
+  }
+
+  private notify(
+    pair: Pair,
+    state: State,
+    notice?: (event: AvailabilityNotice) => void,
+    waitingForRecovery = false,
+  ) {
+    try {
+      notice?.({
+        provider: pair.provider,
+        model: pair.id,
+        retry: state.retry,
+        delayMs: Math.max(0, state.until - this.clock.now()),
+        ...(waitingForRecovery ? { waitingForRecovery: true } : {}),
+      });
+    } catch {
+      throw new RecoveryAuditError();
+    }
+  }
+
+  private async wait(state: State, ms: number, signal?: AbortSignal) {
+    const controller = new AbortController();
+    const stop = () => controller.abort(signal?.reason);
+
+    signal?.addEventListener("abort", stop, { once: true });
+
+    if (signal?.aborted) stop();
+
+    try {
+      await providerWait(signal, () =>
+        interruptible(
+          () => Promise.race([this.clock.wait(ms, controller.signal), state.changed]),
+          signal,
+        ),
+      );
+    } finally {
+      signal?.removeEventListener("abort", stop);
+      controller.abort();
+    }
   }
 }
 
-const sharedKey = Symbol.for("pi.auto-approval.provider-availability.v1");
+const sharedKey = Symbol.for("pi.auto-approval.provider-availability.v2");
 const shared = globalThis as typeof globalThis & { [sharedKey]?: ProviderAvailability };
 export const providerAvailability = (shared[sharedKey] ??= new ProviderAvailability());

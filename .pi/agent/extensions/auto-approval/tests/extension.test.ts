@@ -585,6 +585,20 @@ test("Git configuration cannot be attached to bash or hidden in unknown private 
 
 test("GitHub API calls reach independent review without an endpoint exception; denial never resolves credentials", async () => {
   await configureGitFixture();
+  await writeFile(
+    localConfigPath,
+    JSON.stringify({
+      sandbox: { executable: process.execPath, runnerExecutable: process.execPath },
+      credentialProfiles: [
+        {
+          name: "github",
+          executable: process.execPath,
+          argumentPolicy: "review",
+          secrets: { GH_TOKEN: { type: "file", path: join(agentRoot, "must-not-read") } },
+        },
+      ],
+    }),
+  );
   mode = "deny";
 
   const argv = ["api", "--paginate", "repos/stuck-lehnert/sortsys/dependabot/alerts?state=open"];
