@@ -1,7 +1,7 @@
 import { randomInt } from "node:crypto";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { Request } from "../shared/contracts/action.ts";
-import type { RemotePrepared, RemoteTarget } from "../shared/contracts/remote.ts";
+import type { CipNodeRequest, RemotePrepared, RemoteTarget } from "../shared/contracts/remote.ts";
 import { remoteCall } from "./client.ts";
 import { acceptCipHostKey, knownHostKeys } from "./host-keys.ts";
 import {
@@ -69,7 +69,7 @@ export class CipPool {
   context() {
     return [
       `FAU CIP pool (max 4 workstations): ${this.state.nodes.map((node) => `${node.id}=${node.machine.host}${node.machine.gpu ? ` GPU ${node.machine.gpu}` : ""}${node.unavailable ? " [needs replacement]" : ""}`).join(", ")}.`,
-      "Use approved_action tool cip_nodes to list inventory/quotas, acquire a specific host or GPU, or release an idle slot. Command routing: sandbox.cip.node = allocated slot ID (or its host). File tools choose a random allocated node; all use the same shared files.",
+      "Use direct cip_nodes (no auto-approval) to list inventory/quotas, acquire a specific host or GPU, or release an idle slot. Commands and file operations still require approved_action. Command routing: sandbox.cip.node = allocated slot ID (or its host). File tools choose a random allocated node; all use the same shared files.",
       "Run independent parallel work with supervised approved_action.background jobs on separate slots and distinct shared output directories. Do not detach shell/SSH jobs; await job completion instead of polling.",
       "For datasets/venvs/caches outside the workspace request existing canonical shared paths with sandbox.paths (read/write). With bwrap, only the workspace and reviewed paths are mounted; account mode retains normal account permissions. GPU nodes expose their NVIDIA devices.\nHome and /proj/ciptmp are SHARED, including quotas. Check cip-quota before storage-heavy work. Keep caches/checkpoints small; remove only your own disposable artifacts. /tmp is node-local and unsuitable for checkpoints or migration.",
       "Interactive sessions take priority. The worker monitors login state, stops owned work and replaces occupied nodes. Process RAM/GPU state is lost; inspect shared checkpoints and obtain fresh approval to resume. No automatic command replay. Sessions may be killed after one day; commands are bounded to 23 hours.",
@@ -329,8 +329,6 @@ export class CipPool {
   ): Promise<RemotePrepared> {
     signal = this.signal(signal);
 
-    if (request.tool === "cip_nodes") return this.management(request, signal);
-
     const node = await this.node(request, signal);
     const target = structuredClone(node.target);
     const prepared = build(target);
@@ -372,73 +370,53 @@ export class CipPool {
     return prepared;
   }
 
-  private management(request: Request, signal?: AbortSignal): RemotePrepared {
-    if (request.sandbox && Object.keys(request.sandbox).length)
-      throw new Error(
-        "CIP scheduling takes only operation arguments; put execution grants on the actual command",
-      );
+  async manage(args: CipNodeRequest, signal?: AbortSignal) {
+    signal = this.signal(signal);
+    signal.throwIfAborted();
 
-    const target = this.target();
+    if (args.operation === "acquire") {
+      const { operation: _operation, ...requirements } = args;
 
-    if (!target) throw new Error("No CIP pool selected");
+      await this.acquire(requirements, signal);
+    } else if (args.operation === "release") {
+      await this.locked(async () => {
+        signal.throwIfAborted();
+
+        if (this.active.get(args.node)) throw new Error("Cannot release a busy CIP node");
+
+        const index = this.state.nodes.findIndex((node) => node.id === args.node);
+
+        if (index < 0) throw new Error("Unknown CIP node");
+
+        const [released] = this.state.nodes.splice(index, 1);
+
+        this.changed(undefined, released.target);
+      });
+    } else {
+      this.machines = await this.io.inventory(signal);
+
+      for (const node of this.state.nodes) {
+        const health = cipHealth(
+          await this.io.call(node.target, { operation: "cip_status" }, signal, 15000),
+        );
+
+        signal.throwIfAborted();
+        node.health = health;
+      }
+    }
 
     return {
-      target,
-      plan: {
-        source: "executor-preflight",
-        backend: "cip-scheduler",
-        schedulerOperation: request.arguments.operation,
-        addsPoolSlot: request.arguments.operation === "acquire",
-        reservesHardware: false,
-        workspace: target.root,
-        request: request.arguments,
-        maxNodes: 4,
-        domain: "*.cip.cs.fau.de",
-        authentication: "local public-key agent; never forwarded",
-        nodes: this.state.nodes.map((node) => ({ id: node.id, host: node.target.host })),
-      },
-      assertCurrent: () => {},
-      execute: async (executionSignal) => {
-        const args = request.arguments;
-
-        if (args.operation === "acquire")
-          await this.acquire(args as CipRequirements, executionSignal ?? signal);
-        else if (args.operation === "release")
-          await this.locked(async () => {
-            if (this.active.get(String(args.node)))
-              throw new Error("Cannot release a busy CIP node");
-
-            const index = this.state.nodes.findIndex((node) => node.id === args.node);
-
-            if (index < 0) throw new Error("Unknown CIP node");
-
-            const [released] = this.state.nodes.splice(index, 1);
-
-            this.changed(undefined, released.target);
-          });
-        else if (args.operation === "list") {
-          this.machines = await this.io.inventory(executionSignal);
-
-          for (const node of this.state.nodes)
-            node.health = cipHealth(
-              await this.io.call(node.target, { operation: "cip_status" }, executionSignal, 15000),
-            );
-        } else throw new Error("Unknown CIP pool operation");
-
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                this.context() +
-                (args.operation === "list"
-                  ? `\nInventory:\n${this.machines!.map((machine) => `${machine.host} · ${machine.ramGiB} GiB · ${machine.gpu || "CPU"}`).join("\n")}`
-                  : ""),
-            },
-          ],
-          details: this.snapshot(),
-        };
-      },
+      content: [
+        {
+          type: "text" as const,
+          text:
+            this.context() +
+            (args.operation === "list"
+              ? `\nInventory:\n${this.machines!.map((machine) => `${machine.host} · ${machine.ramGiB} GiB · ${machine.gpu || "CPU"}`).join("\n")}`
+              : ""),
+        },
+      ],
+      details: this.snapshot(),
     };
   }
 }

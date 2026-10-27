@@ -29,6 +29,7 @@ import { writingCheckTool } from "../../public-writing/index.ts";
 import { Coordination } from "../../multiplex/coordination.ts";
 import { JobManager } from "../../jobs/manager.ts";
 import { reviewedReceipts } from "../../shared/review/receipts.ts";
+import { registerCipTools } from "../../shared/session/cip-tools.ts";
 import { sessionServices } from "../../shared/session/services.ts";
 
 const root = await mkdtemp(join(tmpdir(), "pi-approval-test-"));
@@ -169,6 +170,7 @@ let mode: "approve" | "deny" | "invalid" | "error" | "mismatch" = "approve";
 let requested: any[];
 let hooks: Record<string, Function>;
 let actions: Record<string, ToolDefinition<any, any>>;
+let extensionPi: ExtensionAPI;
 let entries: any[];
 let active: string[];
 let auditFails: boolean;
@@ -229,6 +231,7 @@ beforeEach(async () => {
     },
 
     registerCommand: () => {},
+    getAllTools: () => Object.values(actions),
 
     setActiveTools: (names: string[]) => {
       active = names;
@@ -323,6 +326,7 @@ beforeEach(async () => {
       },
     },
   } as unknown as ExtensionToolContext;
+  extensionPi = pi;
   extension(pi);
 });
 
@@ -2231,12 +2235,13 @@ test("shutdown aborts background work and waits for cleanup before removing priv
   expect(notifications).toHaveLength(0);
 });
 
-test("CIP allocation stays behind exact-action approval and a denial starts no scheduler work", async () => {
-  let allocations = 0;
+test("operator-enabled CIP controls skip review while project commands still require it", async () => {
+  const operations: unknown[] = [];
+  let enabled = true;
   const target: any = {
     user: "synthetic",
     host: "cip7b0.cip.cs.fau.de",
-    root: "/home/cip/test/project",
+    root,
     folder: "project",
     isolation: "bwrap",
     knownHosts: "public key",
@@ -2245,36 +2250,57 @@ test("CIP allocation stays behind exact-action approval and a denial starts no s
 
   sessionServices(ctx).remote = {
     target: () => target,
+    cip: {
+      active: () => enabled,
+      manage: async (args) => {
+        operations.push(args);
+
+        return { content: [{ type: "text", text: "pool updated" }], details: {} };
+      },
+    },
     prepare: async (request) => ({
       target,
-      plan: {
-        source: "executor-preflight",
-        backend: "cip-scheduler",
-        maxNodes: 4,
-        request: request.arguments,
-      },
+      plan: { source: "executor-preflight", request },
       assertCurrent() {},
       execute: async () => {
-        allocations++;
-
-        return { content: [{ type: "text", text: "cip-2 allocated" }], details: {} };
+        throw new Error("Denied remote command must not execute");
       },
     }),
     cleanup: async () => {},
   };
-
-  const action = {
-    tool: "cip_nodes",
-    arguments: { operation: "acquire", gpuModel: "3070" },
-    goal: "Train the model",
-    justification: "Use an unoccupied workstation with the required GPU",
-  };
+  registerCipTools(extensionPi);
 
   mode = "deny";
-  expect((await call(action)).isError).toBe(true);
-  expect(allocations).toBe(0);
-  expect(requested[0].data.action.arguments).toEqual(action.arguments);
-  mode = "approve";
-  expect((await call(action)).isError).not.toBe(true);
-  expect(allocations).toBe(1);
+
+  await hooks.before_agent_start({}, ctx);
+  expect(active).toContain("cip_nodes");
+  expect(await hooks.tool_call({ toolName: "cip_nodes" }, ctx)).toBeUndefined();
+
+  for (const args of [
+    { operation: "acquire", gpuModel: "3070" },
+    { operation: "release", node: "cip-2" },
+    { operation: "list" },
+  ])
+    await actions.cip_nodes.execute("direct", args, undefined, undefined, ctx);
+
+  expect(operations).toHaveLength(3);
+  expect(requested).toHaveLength(0);
+  expect((await call(bash("python train.py"))).isError).toBe(true);
+  expect(requested).toHaveLength(1);
+  expect(executedRequests).toHaveLength(0);
+  expect(
+    (await call({ ...bash("unused"), tool: "cip_nodes", arguments: { operation: "acquire" } }))
+      .isError,
+  ).toBe(true);
+  expect(operations).toHaveLength(3);
+
+  enabled = false;
+
+  await hooks.before_agent_start({}, ctx);
+  expect(active).not.toContain("cip_nodes");
+  expect(await hooks.tool_call({ toolName: "cip_nodes" }, ctx)).toMatchObject({ block: true });
+  await expect(
+    actions.cip_nodes.execute("direct", { operation: "acquire" }, undefined, undefined, ctx),
+  ).rejects.toThrow("Enable /cip");
+  expect(operations).toHaveLength(3);
 });

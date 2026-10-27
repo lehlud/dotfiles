@@ -53,6 +53,7 @@ function fixture() {
     on(name: string, handler: Function) {
       hooks.set(name, [...(hooks.get(name) ?? []), handler]);
     },
+    registerTool() {},
     registerCommand(name: string, command: unknown) {
       commands[name] = command;
     },

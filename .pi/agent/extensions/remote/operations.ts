@@ -22,8 +22,7 @@ export function executionTimeout(request: Request) {
 }
 
 export function validateRemoteRequest(request: Request, target: RemoteTarget) {
-  if ((request.tool === "cip_nodes" || request.sandbox?.cip) && !target.cip)
-    throw new Error("CIP node selection requires /cip mode");
+  if (request.sandbox?.cip && !target.cip) throw new Error("CIP node selection requires /cip mode");
 
   if (!REMOTE_TOOLS.has(request.tool)) throw new Error("Unsupported remote tool");
 

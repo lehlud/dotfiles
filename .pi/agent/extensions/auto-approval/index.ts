@@ -1,3 +1,5 @@
+import { availableCipTools } from "../shared/session/cip-tools.ts";
+import { CIP_NODES } from "../shared/contracts/remote.ts";
 import { availableJobTools, JOB_TOOL } from "../shared/contracts/jobs.ts";
 import { availableQuestionTools, QUESTION_TOOLS } from "../shared/contracts/questions.ts";
 import { join } from "node:path";
@@ -39,6 +41,7 @@ export default function autoApproval(pi: ExtensionAPI) {
       ...availableSubagentTools(pi),
       ...availableContextTools(pi),
       ...availableJobTools(pi),
+      ...availableCipTools(pi, ctx),
       ...(sessionServices(ctx).mailbox?.active() ? ["mailbox"] : []),
     ]);
     // Clear a widget left by an older version after /reload.
@@ -83,7 +86,7 @@ export default function autoApproval(pi: ExtensionAPI) {
     };
   });
 
-  pi.on("tool_call", (event) => {
+  pi.on("tool_call", (event, ctx) => {
     // Goal proposals have their own mandatory independent review in the controller.
     // Other internal metadata tools grant no external-action permissions.
     if (
@@ -95,6 +98,8 @@ export default function autoApproval(pi: ExtensionAPI) {
       QUESTION_TOOLS.some((name) => name === event.toolName)
     )
       return;
+
+    if (event.toolName === CIP_NODES && availableCipTools(pi, ctx).includes(CIP_NODES)) return;
 
     if (event.toolName !== TOOL_NAME || event.parentToolCallId)
       return { block: true, reason: LOCK_MESSAGE };

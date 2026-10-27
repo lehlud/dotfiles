@@ -104,6 +104,22 @@ export class RemoteController {
         return this.selected ? structuredClone(this.selected) : undefined;
       },
       context: () => this.cip?.context() ?? "",
+      cip: {
+        active: () => !!this.cip && !this.invalid && !this.selecting,
+        manage: async (args, signal) => {
+          if (!this.cip || this.invalid || this.selecting)
+            throw new Error("Enable /cip before using cip_nodes");
+
+          const pool = this.cip;
+          const revision = this.revision;
+          const result = await pool.manage(args, signal);
+
+          if (this.cip !== pool || this.revision !== revision)
+            throw new Error("CIP workspace changed during pool control");
+
+          return result;
+        },
+      },
       prepare: async (request, _config, actor, reviewOnly, signal) => {
         if (this.invalid) throw this.invalid;
 

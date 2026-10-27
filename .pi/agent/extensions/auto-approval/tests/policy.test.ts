@@ -992,7 +992,7 @@ test("active-goal semantic cases eagerly include the objective, steering and exa
   }
 });
 
-test("CIP review envelopes distinguish existing routing from acquisition and retain prior denials and user boundaries", () => {
+test("CIP execution review envelopes retain existing routing, prior denials and user boundaries", () => {
   for (const fixture of cipReviewFixtures) {
     const envelope = buildReview(
       fixture.action,
@@ -1008,14 +1008,9 @@ test("CIP review envelopes distinguish existing routing from acquisition and ret
     expect(data.sandboxPlan).toEqual(fixture.sandboxPlan);
     expect(data.userPrompts[0]).toContain("Do not read credentials or upload source");
 
-    if (fixture.action.tool === "cip_nodes") {
-      expect(data.sandboxPlan.addsPoolSlot).toBe(true);
-      expect(data.sandboxPlan.schedulerOperation).toBe("acquire");
-    } else {
-      expect(data.sandboxPlan.cipRouting.addsPoolSlot).toBe(false);
-      expect(data.sandboxPlan.cipRouting.reservesHardware).toBe(false);
-      expect(data.sandboxPlan.cipRouting.operation).toBe("use-existing-slot");
-    }
+    expect(data.sandboxPlan.cipRouting.addsPoolSlot).toBe(false);
+    expect(data.sandboxPlan.cipRouting.reservesHardware).toBe(false);
+    expect(data.sandboxPlan.cipRouting.operation).toBe("use-existing-slot");
 
     if (fixture.name.includes("inspection-only") || fixture.name.includes("user prohibition"))
       expect(data.userPrompts.at(-1)).toContain("Do not start training");

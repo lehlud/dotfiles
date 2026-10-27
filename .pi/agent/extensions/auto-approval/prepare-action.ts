@@ -95,7 +95,7 @@ export async function prepareAction(
   if (request.sandbox?.cip && !remoteTool)
     throw new Error("CIP node selection applies only to remote project commands");
 
-  if ((name === "remote_tunnel" || name === "cip_nodes" || request.sandbox?.cip) && !remoteTarget)
+  if ((name === "remote_tunnel" || request.sandbox?.cip) && !remoteTarget)
     throw new Error("Select a remote workspace with /remote first");
 
   if (remoteTarget && remoteTool) {

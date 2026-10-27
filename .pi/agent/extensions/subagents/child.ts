@@ -107,7 +107,15 @@ export async function createChild(
       contextManagement,
       bindings(parent, job, hooks),
     ],
-    tools: ["approved_action", "job", PARENT_MAILBOX, "history", "notes", "new_context"],
+    tools: [
+      "cip_nodes",
+      "approved_action",
+      "job",
+      PARENT_MAILBOX,
+      "history",
+      "notes",
+      "new_context",
+    ],
     errors: {
       report: hooks.failed,
       extension: "Subagent extension failed",

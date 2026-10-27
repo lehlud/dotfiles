@@ -142,15 +142,16 @@ explicit trust requirement. Operator `~/.ssh/known_hosts` entries take precedenc
 re-read public trust for each preparation, so adding a key no longer requires restarting Pi.
 Agent forwarding, passwords and GSSAPI remain disabled.
 
-The model requests capabilities through independently reviewed `approved_action` calls:
+Enabling `/cip` authorizes direct `cip_nodes` pool controls for this workspace. List, acquire
+and release do not call the approval model; they retain schema validation, the four-node cap,
+cancellation and busy-slot protection. They cannot execute project commands. `/remote off`
+disables them. Plain `/remote` access to a CIP hostname does not enable pool controls.
+Inherited peers and subagents use the same pool and consent.
+
+For example, call `cip_nodes` with:
 
 ```json
-{
-  "tool": "cip_nodes",
-  "arguments": { "operation": "acquire", "gpuModel": "3070", "minRamGiB": 32 },
-  "goal": "Train the requested model",
-  "justification": "Use a free workstation with the required GPU"
-}
+{ "operation": "acquire", "gpuModel": "3070", "minRamGiB": 32 }
 ```
 
 Other operations are `list` and `release` (with `node`, e.g. `cip-2`). Acquisition accepts

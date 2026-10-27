@@ -329,6 +329,7 @@ test("invalid saved target fails closed and a session change cancels an outstand
 test("child sessions inherit the trusted remote route; contextual instructions do not grant execution", () => {
   const parent = controllerFixture();
   const events: Record<string, Function> = {};
+  const tools: any[] = [];
   const child: any = { sessionManager: {} };
 
   registerInheritedRemote(
@@ -336,10 +337,12 @@ test("child sessions inherit the trusted remote route; contextual instructions d
       on: (name: string, handler: Function) => {
         events[name] = handler;
       },
+      registerTool: (tool: any) => tools.push(tool),
     } as any,
     parent.ctx,
   );
   events.session_start({}, child);
+  expect(tools.map((tool) => tool.name)).toEqual(["cip_nodes"]);
   expect(sessionServices(child).remote).toBe(sessionServices(parent.ctx).remote);
   sessionServices(parent.ctx).remote = { target: () => account } as any;
   registerRemoteContext({

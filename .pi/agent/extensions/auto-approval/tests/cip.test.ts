@@ -9,9 +9,12 @@ import { parseCipInventory, cipCandidates } from "../../remote/cip-inventory.ts"
 import { restoreCipState } from "../../remote/cip-state.ts";
 import { RemoteController } from "../../remote/controller.ts";
 import { sessionServices } from "../../shared/session/services.ts";
+import { registerCipTools, availableCipTools } from "../../shared/session/cip-tools.ts";
+import { registerInheritedRemote } from "../../shared/session/remote.ts";
 import { workerSource } from "../../remote/source.ts";
 import {
   cipNodesTool,
+  cipNodeOperations,
   type RemotePrepared,
   type RemoteTarget,
 } from "../../shared/contracts/remote.ts";
@@ -170,12 +173,7 @@ test("commands select slots while file edits use the shared workspace on allocat
     expect(edit.target.root).toBe("/home/cip/test/project");
   }
 
-  const release = await f.pool.prepare(
-    request("cip_nodes", { operation: "release", node: second.id }),
-    f.build,
-  );
-
-  await release.execute();
+  await f.pool.manage({ operation: "release", node: second.id });
   expect(() => prepared.assertCurrent()).toThrow("changed");
 });
 
@@ -210,20 +208,7 @@ test("ordinary CIP inspections use existing slots without acquiring hardware or 
     expect(f.pool.state.nodes.map((node) => node.target.host)).toEqual(originalHosts);
   }
 
-  const acquisition = await f.pool.prepare(
-    request("cip_nodes", { operation: "acquire", gpuModel: "3070" }),
-    f.build,
-  );
-
-  expect(acquisition.plan).toMatchObject({
-    source: "executor-preflight",
-    backend: "cip-scheduler",
-    schedulerOperation: "acquire",
-    addsPoolSlot: true,
-    reservesHardware: false,
-  });
-  expect(f.pool.state.nodes).toHaveLength(3);
-  await acquisition.execute();
+  await f.pool.manage({ operation: "acquire", gpuModel: "3070" });
   expect(f.pool.state.nodes).toHaveLength(4);
 });
 
@@ -312,12 +297,7 @@ test("four supervised commands run concurrently and a busy slot cannot be releas
 
   expect(releases).toHaveLength(4);
 
-  const release = await f.pool.prepare(
-    request("cip_nodes", { operation: "release", node: "cip-1" }),
-    f.build,
-  );
-
-  await expect(release.execute()).rejects.toThrow("busy");
+  await expect(f.pool.manage({ operation: "release", node: "cip-1" })).rejects.toThrow("busy");
   releases.forEach((finish) => finish());
   await Promise.all(jobs.map((job) => job.pending));
 });
@@ -403,11 +383,10 @@ test("remote supervisor stops its owned process after login, allows checkpoint h
   const patched = code.replace(
     'sys.modules["pi_remote.worker"].run()',
     `
-import time
-started=time.monotonic()
+from pathlib import Path
 module=sys.modules["pi_remote.cip"]
 def synthetic_guard():
-    if time.monotonic()-started>0.5: raise module.CipOccupied("Synthetic local login")
+    if Path(${JSON.stringify(join(directory, "ready"))}).exists(): raise module.CipOccupied("Synthetic local login")
 module.guard=synthetic_guard
 sys.modules["pi_remote.worker"].run()`,
   );
@@ -419,7 +398,8 @@ sys.modules["pi_remote.worker"].run()`,
     isolation: "confirmed-account",
     cip: { gpu: false, home: directory, tmp: "/proj/ciptmp" },
     request: request("bash", {
-      command: "trap 'printf checkpoint > checkpoint; exit 0' TERM; while :; do sleep 0.1; done",
+      command:
+        "trap 'printf checkpoint > checkpoint; exit 0' TERM; printf ready > ready; while :; do sleep 0.1; done",
       timeout: 10,
     }),
   };
@@ -578,14 +558,8 @@ test("operator /cip takes only a workspace path, uses the cached account and can
 
     expect(route.target()).toMatchObject({ user: "synthetic", folder: "project with spaces" });
 
-    const prepared = await route.prepare(
-      request("cip_nodes", { operation: "release", node: "cip-1" }),
-      {} as any,
-      "actor",
-      false,
-    );
-
-    await prepared.execute();
+    expect(route.cip?.active()).toBe(true);
+    await route.cip!.manage({ operation: "release", node: "cip-1" });
     expect(route.context?.()).toContain("max 4");
     expect(route.target()).toBeDefined();
     await expect(route.prepare(request(), {} as any, "actor", false)).rejects.toThrow(
@@ -593,6 +567,8 @@ test("operator /cip takes only a workspace path, uses the cached account and can
     );
     await controller.command("off", f.ctx);
     expect(route.target()).toBeUndefined();
+    expect(route.cip?.active()).toBe(false);
+    await expect(route.cip!.manage({ operation: "acquire" })).rejects.toThrow("Enable /cip");
   } finally {
     if (previous === undefined) delete process.env.FAUCIP_USER_CACHE_FILE;
     else process.env.FAUCIP_USER_CACHE_FILE = previous;
@@ -728,8 +704,112 @@ test("an occupied idle slot with no replacement is dropped before a command can 
   await expect(f.pool.prepare(request(), f.build)).rejects.toThrow("slot dropped");
   expect(f.pool.state.nodes).toHaveLength(0);
 
-  const listing = await f.pool.prepare(request("cip_nodes", { operation: "list" }), f.build);
+  const listing = await f.pool.manage({ operation: "list" });
 
-  expect((await listing.execute()).content[0]).toMatchObject({ type: "text" });
+  expect(listing.content[0]).toMatchObject({ type: "text" });
   expect(f.calls.some((call) => call.input.operation === "execute")).toBe(false);
+});
+
+test("direct CIP controls enforce strict operations, active mode, cancellation and the shared four-slot cap", async () => {
+  const f = fixture();
+  const tools: any[] = [];
+  const pi = { ...f.pi, registerTool: (tool: any) => tools.push(tool), getAllTools: () => tools };
+
+  registerCipTools(pi);
+
+  const tool = tools[0];
+  const run = (args: unknown, signal?: AbortSignal) =>
+    tool.execute("control", args, signal, undefined, f.ctx);
+
+  expect(availableCipTools(pi, f.ctx)).toEqual([]);
+  await expect(run({ operation: "acquire" })).rejects.toThrow("Enable /cip");
+
+  let active = true;
+
+  sessionServices(f.ctx).remote = {
+    target: () => f.pool.target(),
+    cip: { active: () => active, manage: (args, signal) => f.pool.manage(args, signal) },
+    prepare: async () => {
+      throw new Error("Direct controls must not enter action preparation");
+    },
+    cleanup: async () => {},
+  };
+
+  expect(availableCipTools(pi, f.ctx)).toEqual(["cip_nodes"]);
+
+  for (const args of [
+    { operation: "execute", command: "train" },
+    { operation: "acquire", host: "evil.example" },
+    { operation: "acquire", command: "train" },
+    { operation: "release" },
+    { operation: "release", node: "cip-1", gpu: true },
+    { operation: "list", host: "cip7b0" },
+  ]) {
+    expect(Check(cipNodeOperations, args)).toBe(false);
+    await expect(run(args)).rejects.toThrow("Invalid CIP");
+  }
+
+  expect(f.calls).toHaveLength(0);
+  await expect(run({ operation: "acquire" }, AbortSignal.abort())).rejects.toThrow();
+  await Promise.all(
+    Array.from({ length: 4 }, () => run({ operation: "acquire", gpuModel: "3070" })),
+  );
+  await expect(run({ operation: "acquire" })).rejects.toThrow("four");
+  expect(f.pool.state.nodes).toHaveLength(4);
+  await run({ operation: "release", node: "cip-2" });
+  await run({ operation: "acquire", minRamGiB: 64 });
+  expect((await run({ operation: "list" })).content[0].text).toContain("Inventory:");
+  expect(f.calls.every((call) => ["cip_probe", "cip_status"].includes(call.input.operation))).toBe(
+    true,
+  );
+  expect(
+    f.entries.some(
+      (entry) => entry.customType === "cip-control" && entry.data.phase === "completed",
+    ),
+  ).toBe(true);
+
+  active = false;
+
+  expect(availableCipTools(pi, f.ctx)).toEqual([]);
+  await expect(run({ operation: "release", node: "cip-1" })).rejects.toThrow("Enable /cip");
+  expect(f.pool.state.nodes).toHaveLength(4);
+});
+
+test("inherited CIP controls share the operator pool and lose access when the parent disables it", async () => {
+  const f = fixture();
+  const hooks: Record<string, Function[]> = {};
+  const tools: any[] = [];
+  const child: any = { sessionManager: {} };
+  const pi: any = {
+    ...f.pi,
+    on: (event: string, handler: Function) => (hooks[event] ??= []).push(handler),
+    registerTool: (tool: any) => tools.push(tool),
+    getAllTools: () => tools,
+  };
+
+  let active = true;
+
+  sessionServices(f.ctx).remote = {
+    target: () => f.pool.target(),
+    cip: { active: () => active, manage: (args, signal) => f.pool.manage(args, signal) },
+    prepare: async () => {
+      throw new Error("Not a project action");
+    },
+    cleanup: async () => {},
+  };
+  registerInheritedRemote(pi, f.ctx);
+
+  for (const hook of hooks.session_start) await hook({}, child);
+
+  const tool = tools.find((tool) => tool.name === "cip_nodes");
+
+  await tool.execute("child", { operation: "acquire" }, undefined, undefined, child);
+  expect(f.pool.state.nodes).toHaveLength(1);
+  expect(availableCipTools(pi, child)).toEqual(["cip_nodes"]);
+
+  active = false;
+
+  await expect(
+    tool.execute("child", { operation: "release", node: "cip-1" }, undefined, undefined, child),
+  ).rejects.toThrow("Enable /cip");
 });

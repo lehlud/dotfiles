@@ -1,3 +1,4 @@
+import { registerCipTools } from "./cip-tools.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { sessionServices } from "./services.ts";
 import type { RemoteSession } from "../contracts/remote.ts";
@@ -66,6 +67,7 @@ export function registerRemoteContext(pi: ExtensionAPI) {
 }
 
 export function registerInheritedRemote(pi: ExtensionAPI, parent: ExtensionContext) {
+  registerCipTools(pi);
   pi.on("session_start", (_event, child) => {
     sessionServices(child).remote = remoteSession(parent);
   });

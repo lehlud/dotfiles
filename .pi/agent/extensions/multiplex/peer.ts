@@ -133,6 +133,7 @@ export async function createPeer(
       },
     ],
     tools: [
+      "cip_nodes",
       "approved_action",
       "job",
       "mailbox",

@@ -1,4 +1,4 @@
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { Request } from "./action.ts";
 import type { Config } from "../configuration/schemas.ts";
@@ -14,7 +14,6 @@ export const REMOTE_TOOLS: ReadonlySet<string> = new Set([
   "grep",
   "git",
   "remote_tunnel",
-  "cip_nodes",
 ]);
 
 export type RemoteTarget = {
@@ -44,6 +43,10 @@ export type RemoteSession = {
     reviewOnly: boolean,
     signal?: AbortSignal,
   ): RemotePrepared | Promise<RemotePrepared>;
+  cip?: {
+    active(): boolean;
+    manage(args: CipNodeRequest, signal?: AbortSignal): Promise<AgentToolResult<any>>;
+  };
   context?(): string;
   cleanup(actor: string): Promise<void>;
 };
@@ -76,32 +79,40 @@ export const tunnelTool = {
   },
 };
 
+export const CIP_NODES = "cip_nodes";
+const host = Type.String({ pattern: /^cip[0-9][a-z0-9-]*(\.cip\.cs\.fau\.de)?$/.source });
+const node = Type.String({ pattern: "^cip-[1-4]$" });
+const capabilityFields = {
+  host: Type.Optional(host),
+  gpu: Type.Optional(Type.Boolean()),
+  minCores: Type.Optional(Type.Integer({ minimum: 1, maximum: 1024 })),
+  minRamGiB: Type.Optional(Type.Integer({ minimum: 1, maximum: 2048 })),
+  gpuModel: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
+};
+
+export const cipNodeOperations = Type.Union([
+  Type.Object({ operation: Type.Literal("list") }, { additionalProperties: false }),
+  Type.Object(
+    { operation: Type.Literal("acquire"), ...capabilityFields },
+    { additionalProperties: false },
+  ),
+  Type.Object({ operation: Type.Literal("release"), node }, { additionalProperties: false }),
+]);
+
+export type CipNodeRequest = Static<typeof cipNodeOperations>;
+
 export const cipNodesTool = {
-  name: "cip_nodes",
+  name: CIP_NODES,
   label: "CIP workstation pool",
   description:
-    "In /cip mode: list inventory, allocated slots and shared quotas; acquire up to four nodes, optionally choosing a workstation/GPU/RAM; release an idle slot. All requests use independent approval. Use returned slot IDs in sandbox.cip.node for commands; files are shared. Occupied nodes are replaced; interrupted commands are never replayed automatically. Keep resumable checkpoints in the shared workspace/ciptmp, never node-local /tmp.",
-  parameters: Type.Union([
-    Type.Object({ operation: Type.Literal("list") }, { additionalProperties: false }),
-    Type.Object(
-      {
-        operation: Type.Literal("acquire"),
-        host: Type.Optional(
-          Type.String({ pattern: /^cip[0-9][a-z0-9-]*(\.cip\.cs\.fau\.de)?$/.source }),
-        ),
-        gpu: Type.Optional(Type.Boolean()),
-        minCores: Type.Optional(Type.Integer({ minimum: 1, maximum: 1024 })),
-        minRamGiB: Type.Optional(Type.Integer({ minimum: 1, maximum: 2048 })),
-        gpuModel: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
-      },
-      { additionalProperties: false },
-    ),
-    Type.Object(
-      { operation: Type.Literal("release"), node: Type.String({ pattern: "^cip-[1-4]$" }) },
-      { additionalProperties: false },
-    ),
-  ]),
-  async execute(): Promise<never> {
-    throw new Error("CIP scheduling requires approved_action in /cip mode");
-  },
+    "Direct pool controls in operator-enabled /cip mode: list inventory/shared quotas, acquire up to four nodes by host or GPU/RAM capabilities, release an idle slot. No auto-approval required. Commands and file operations still require approved_action. Use returned slot IDs in sandbox.cip.node. Occupied nodes are replaced; commands are never replayed. Keep resumable checkpoints on shared storage, never node-local /tmp.",
+  // Flat root objects work across providers; the operation union is validated locally.
+  parameters: Type.Object(
+    {
+      operation: Type.String({ enum: ["list", "acquire", "release"] }),
+      ...capabilityFields,
+      node: Type.Optional(node),
+    },
+    { additionalProperties: false },
+  ),
 };

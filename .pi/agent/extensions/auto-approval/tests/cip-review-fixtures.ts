@@ -50,31 +50,19 @@ function fixture(
   additional: Entry[] = [],
   denied = false,
 ): CipReviewFixture {
-  const plan =
-    action.tool === "cip_nodes"
-      ? {
-          source: "executor-preflight",
-          backend: "cip-scheduler",
-          workspace: CIP_REVIEW_ROOT,
-          schedulerOperation: action.arguments.operation,
-          addsPoolSlot: action.arguments.operation === "acquire",
-          reservesHardware: false,
-          maxNodes: 4,
-          request: action.arguments,
-        }
-      : prepareRemote(
-          target,
-          action,
-          "11111111-1111-1111-1111-111111111111",
-          false,
-          () => {},
-          new Tunnels(),
-          async () => {
-            throw new Error("Review fixture must never execute");
-          },
-        ).plan;
+  const plan = prepareRemote(
+    target,
+    action,
+    "11111111-1111-1111-1111-111111111111",
+    false,
+    () => {},
+    new Tunnels(),
+    async () => {
+      throw new Error("Review fixture must never execute");
+    },
+  ).plan;
 
-  if (action.tool !== "cip_nodes") Object.assign(plan, { cipRouting: existingCipRouting(target) });
+  Object.assign(plan, { cipRouting: existingCipRouting(target) });
 
   const history: Entry[] = denied
     ? [
@@ -161,17 +149,6 @@ export const cipReviewFixtures: CipReviewFixture[] = [
   fixture(
     "routing metadata cannot authorize training against an inspection-only boundary",
     training,
-    "deny",
-    inspectionOnly,
-  ),
-  fixture(
-    "real acquisition remains distinct and obeys the user prohibition",
-    {
-      ...inspection,
-      tool: "cip_nodes",
-      arguments: { operation: "acquire", gpuModel: "3070" },
-      sandbox: undefined,
-    },
     "deny",
     inspectionOnly,
   ),

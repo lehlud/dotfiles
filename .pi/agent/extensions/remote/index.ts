@@ -1,3 +1,4 @@
+import { registerCipTools } from "../shared/session/cip-tools.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RemoteController } from "./controller.ts";
 import { registerRemoteContext } from "../shared/session/remote.ts";
@@ -5,6 +6,7 @@ import { registerRemoteContext } from "../shared/session/remote.ts";
 export default function remoteWorkspace(pi: ExtensionAPI) {
   const controller = new RemoteController(pi);
 
+  registerCipTools(pi);
   registerRemoteContext(pi);
   pi.on("session_start", (_event, ctx) => controller.bind(ctx));
   pi.on("session_tree", (_event, ctx) => controller.bind(ctx));
