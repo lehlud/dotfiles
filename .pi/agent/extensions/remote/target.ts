@@ -1,3 +1,4 @@
+import { CIP_HOST } from "./host-keys.ts";
 import { isIP } from "node:net";
 import type { RemoteTarget } from "../shared/contracts/remote.ts";
 
@@ -60,11 +61,23 @@ export function validateTarget(value: unknown): RemoteTarget {
   )
     throw new Error("Unsandboxed remote execution requires operator UI confirmation");
 
+  if (
+    item.cip &&
+    (!CIP_HOST.test(item.host) ||
+      !/^cip-[1-4]$/.test(item.cip.node) ||
+      typeof item.cip.gpu !== "boolean" ||
+      !item.cip.home?.startsWith("/") ||
+      item.cip.tmp !== "/proj/ciptmp" ||
+      /[\u0000-\u001f\u007f]/.test(item.cip.home))
+  )
+    throw new Error("Invalid saved CIP target");
+
   return {
     ...parsed,
     root: item.root,
     isolation: item.isolation,
     knownHosts: item.knownHosts,
     confirmation: item.confirmation,
+    ...(item.cip ? { cip: structuredClone(item.cip) } : {}),
   };
 }

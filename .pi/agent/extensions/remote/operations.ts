@@ -22,11 +22,19 @@ export function executionTimeout(request: Request) {
 }
 
 export function validateRemoteRequest(request: Request, target: RemoteTarget) {
+  if ((request.tool === "cip_nodes" || request.sandbox?.cip) && !target.cip)
+    throw new Error("CIP node selection requires /cip mode");
+
   if (!REMOTE_TOOLS.has(request.tool)) throw new Error("Unsupported remote tool");
 
   const sandbox = request.sandbox ?? {};
 
-  if (sandbox.paths || sandbox.tools || sandbox.executableSearchPaths || sandbox.projectFiles)
+  if (
+    (sandbox.paths && !target.cip) ||
+    sandbox.tools ||
+    sandbox.executableSearchPaths ||
+    sandbox.projectFiles
+  )
     throw new Error(
       "Remote actions use remote-installed tools and the selected folder; local bundles, extra mounts and project credential mounts are unavailable",
     );
@@ -90,6 +98,7 @@ export function prepareRemote(
       root: target.root,
       isolation: target.isolation,
       confirmation: target.confirmation,
+      cip: target.cip,
       authentication: "local SSH agent only; never forwarded",
       hostVerification: "pinned OpenSSH known-host keys",
       hostKeysHash: createHash("sha256").update(target.knownHosts).digest("hex"),
@@ -192,6 +201,7 @@ export function prepareRemote(
         action,
         request,
         readOnly,
+        ...(target.cip ? { cip: target.cip } : {}),
         ...(gitConfig ? { gitConfig } : {}),
       };
       const output = request.sandbox?.limits?.maxOutputBytes ?? 1048576;

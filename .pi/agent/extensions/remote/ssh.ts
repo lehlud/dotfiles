@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RemoteTarget } from "../shared/contracts/remote.ts";
 
@@ -196,32 +196,4 @@ export function killSsh(child: ChildProcessWithoutNullStreams) {
   }
 }
 
-export async function knownHostKeys(host: string) {
-  const executable = Bun.which("ssh-keygen");
-
-  if (!executable?.startsWith("/usr/")) throw new Error("Native OpenSSH ssh-keygen is required");
-
-  const path = join(homedir(), ".ssh", "known_hosts");
-
-  // Public host keys only; do not read private keys or SSH configuration.
-  await readFile(path);
-
-  const child = Bun.spawn([executable, "-F", host, "-f", path], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { PATH: "/usr/bin:/bin" },
-  });
-  const output = await new Response(child.stdout).text();
-
-  if ((await child.exited) !== 0 || !output.trim())
-    throw new Error(
-      `Host key for ${host} is not trusted. Verify/add it with OpenSSH outside Pi, then retry /remote.`,
-    );
-
-  return (
-    output
-      .split("\n")
-      .filter((line) => line && !line.startsWith("#"))
-      .join("\n") + "\n"
-  );
-}
+export { knownHostKeys, acceptCipHostKey } from "./host-keys.ts";

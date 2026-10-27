@@ -1,6 +1,15 @@
 import { readFile } from "node:fs/promises";
 
-const modules = ["protocol", "processes", "files", "search", "commands", "worker"];
+const modules = [
+  "protocol",
+  "processes",
+  "files",
+  "search",
+  "commands",
+  "cip",
+  "cip_paths",
+  "worker",
+];
 
 /** Load a small package in memory: explicit Python imports without remote installation or files. */
 export const workerSource = Promise.all(

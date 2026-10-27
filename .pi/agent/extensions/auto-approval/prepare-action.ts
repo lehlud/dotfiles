@@ -92,22 +92,26 @@ export async function prepareAction(
 
   const remoteTool = REMOTE_TOOLS.has(name);
 
-  if (name === "remote_tunnel" && !remoteTarget)
+  if (request.sandbox?.cip && !remoteTool)
+    throw new Error("CIP node selection applies only to remote project commands");
+
+  if ((name === "remote_tunnel" || name === "cip_nodes" || request.sandbox?.cip) && !remoteTarget)
     throw new Error("Select a remote workspace with /remote first");
 
   if (remoteTarget && remoteTool) {
     stage("remote workspace validation");
 
-    const remote: RemotePrepared = remoteRoute!.prepare(
+    const remote: RemotePrepared = await remoteRoute!.prepare(
       request,
       config,
       ctx.sessionManager.getSessionId(),
       sessionServices(ctx).delegationMode === "review",
+      signal,
     );
     const workspace: Workspace = {
-      path: remoteTarget.root,
-      cwd: remoteTarget.root,
-      bindings: [remoteTarget.root],
+      path: remote.target.root,
+      cwd: remote.target.root,
+      bindings: [remote.target.root],
       masked: [],
     };
     const localGitWorkspace = request.sandbox?.gitConfig

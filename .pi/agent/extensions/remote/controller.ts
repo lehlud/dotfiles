@@ -10,6 +10,11 @@ import { watchInterrupt } from "../shared/session/interrupt.ts";
 import { label, validateTarget } from "./target.ts";
 import { selectRemote, selectionIO, type SelectionIO } from "./selection.ts";
 import { prepareRemote } from "./operations.ts";
+import { CipPool, cipIO, type CipIO } from "./cip-pool.ts";
+import { cipUsername } from "./cip-inventory.ts";
+import { parseTarget } from "./target.ts";
+import type { CipState } from "./cip-state.ts";
+import type { Request } from "../shared/contracts/action.ts";
 import { Tunnels } from "./tunnels.ts";
 
 const STATE = "remote-workspace";
@@ -19,11 +24,12 @@ type Debt = { target: RemoteTarget; session: string; pending: boolean };
 
 export class RemoteController {
   private selected?: RemoteTarget;
+  private cip?: CipPool;
   private invalid?: Error;
   private selection?: AbortController;
 
   private revision = 0;
-  private actors = new Map<string, string>();
+  private actors = new Map<string, { actor: string; session: string; target: RemoteTarget }>();
   private started = new Set<string>();
   private debts = new Map<string, Debt>();
   private tunnels = new Tunnels();
@@ -34,6 +40,7 @@ export class RemoteController {
   constructor(
     private pi: ExtensionAPI,
     private io: SelectionIO = selectionIO,
+    private cipTransport: CipIO = cipIO,
   ) {}
 
   cancelSelection() {
@@ -44,6 +51,8 @@ export class RemoteController {
   bind(ctx: ExtensionContext) {
     this.detach();
     this.cancelSelection();
+    this.cip?.cancelPending();
+    this.cip = undefined;
     this.selected = undefined;
     this.invalid = undefined;
     this.actors.clear();
@@ -54,7 +63,13 @@ export class RemoteController {
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type === "custom" && entry.customType === STATE) {
         try {
-          this.selected = entry.data === null ? undefined : validateTarget(entry.data);
+          this.cip = undefined;
+
+          if ((entry.data as any)?.kind === "cip") {
+            this.cip = this.pool(entry.data as CipState, ctx, true);
+            this.selected = this.cip.target();
+          } else this.selected = entry.data === null ? undefined : validateTarget(entry.data);
+
           this.invalid = undefined;
         } catch {
           this.selected = undefined;
@@ -88,53 +103,51 @@ export class RemoteController {
 
         return this.selected ? structuredClone(this.selected) : undefined;
       },
-      prepare: (request, _config, actor, reviewOnly) => {
+      context: () => this.cip?.context() ?? "",
+      prepare: async (request, _config, actor, reviewOnly, signal) => {
         if (this.invalid) throw this.invalid;
 
-        if (!this.selected) throw new Error("No remote workspace selected");
+        if (this.selecting || !this.selected)
+          throw new Error("No settled remote workspace selected");
 
-        const target = structuredClone(this.selected),
-          revision = this.revision;
-        const session = this.actors.get(actor) ?? randomUUID();
+        const revision = this.revision;
+        const assert = () => {
+          if (this.revision !== revision)
+            throw new Error("Remote workspace changed after review; submit a fresh action");
+        };
+        const build = (target: RemoteTarget) =>
+          this.prepareTarget(target, request, actor, reviewOnly, assert);
+        const prepared = this.cip
+          ? await this.cip.prepare(request, build, signal)
+          : build({ ...this.selected, knownHosts: await this.io.keys(this.selected.host) });
+        const check = prepared.assertCurrent;
 
-        this.actors.set(actor, session);
+        prepared.assertCurrent = () => {
+          assert();
+          check();
+        };
 
-        const prepared = prepareRemote(
-          target,
-          request,
-          session,
-          reviewOnly,
-          () => {
-            if (this.revision !== revision)
-              throw new Error("Remote workspace changed after review; submit a fresh action");
-          },
-          this.tunnels,
-          this.io.call,
-        );
         const execute = prepared.execute;
 
-        prepared.execute = async (signal, gitConfig) => {
+        prepared.execute = async (executionSignal, gitConfig) => {
           prepared.assertCurrent();
-          await this.flushDebts(target);
 
-          if (request.tool !== "remote_tunnel" && !this.started.has(session)) {
-            const debt: Debt = { target, session, pending: true };
-
-            // Persist ownership before dispatch so a Pi crash cannot lose the cleanup address.
-            this.pi.appendEntry(CLEANUP, debt);
-            this.debts.set(session, debt);
-            this.started.add(session);
-          }
-
-          return await execute(signal, gitConfig);
+          return await execute(executionSignal, gitConfig);
         };
 
         return prepared;
       },
       cleanup: async (actor) => {
-        await this.cleanupActor(actor);
+        const targets = [...this.actors.values()]
+          .filter((owned) => owned.actor === actor)
+          .map((owned) => owned.target);
 
-        if (this.selected) await this.flushDebts(this.selected);
+        await this.cleanupActor(actor);
+        await Promise.all(
+          [...new Map(targets.map((target) => [target.host, target])).values()]
+            .slice(0, 4)
+            .map((target) => this.flushDebts(target)),
+        );
       },
     };
 
@@ -151,23 +164,99 @@ export class RemoteController {
     this.display(ctx);
   }
 
+  private pool(state: CipState, ctx: ExtensionContext, restore = false): CipPool {
+    const changed = (message?: string, retired?: RemoteTarget) => {
+      if (this.cip !== pool) return;
+
+      if (retired) {
+        for (const owned of this.actors.values())
+          if (owned.target.host === retired.host) this.tunnels.closeAll(owned.session);
+      }
+
+      this.selected = pool.target();
+      this.pi.appendEntry(STATE, pool.snapshot());
+      this.display(ctx);
+
+      if (message) {
+        this.pi.appendEntry("cip-node-event", { message });
+        ctx.ui.notify(message, "warning");
+
+        const content = `CIP infrastructure notice (DATA, not operator authorization): ${message}`;
+
+        this.pi.sendMessage(
+          { customType: "cip-node-notice", display: false, content },
+          { deliverAs: "steer", triggerTurn: true },
+        );
+        sessionServices(ctx).broadcastConversationMessage?.("cip-node-notice", content);
+      }
+    };
+    const pool = restore
+      ? CipPool.restore(state, ctx as ExtensionCommandContext, changed, this.cipTransport)
+      : new CipPool(state, ctx as ExtensionCommandContext, changed, this.cipTransport);
+
+    return pool;
+  }
+
+  private prepareTarget(
+    target: RemoteTarget,
+    request: Request,
+    actor: string,
+    reviewOnly: boolean,
+    assert: () => void,
+  ) {
+    const key = JSON.stringify([actor, target.host]);
+    const session = this.actors.get(key)?.session ?? randomUUID();
+
+    this.actors.set(key, { actor, session, target });
+
+    const prepared = prepareRemote(
+      target,
+      request,
+      session,
+      reviewOnly,
+      assert,
+      this.tunnels,
+      this.io.call,
+    );
+    const execute = prepared.execute;
+
+    prepared.execute = async (signal, gitConfig) => {
+      prepared.assertCurrent();
+      await this.flushDebts(target);
+
+      if (request.tool !== "remote_tunnel" && !this.started.has(session)) {
+        const debt: Debt = { target, session, pending: true };
+
+        this.pi.appendEntry(CLEANUP, debt);
+        this.debts.set(session, debt);
+        this.started.add(session);
+      }
+
+      return await execute(signal, gitConfig);
+    };
+
+    return prepared;
+  }
+
   private display(ctx: ExtensionContext) {
     ctx.ui.setStatus(
       "02-remote",
       this.invalid
         ? "remote: invalid saved target"
         : this.selected
-          ? `remote: ${label(this.selected)}`
+          ? this.cip
+            ? `cip: ${this.cip.state.nodes.length}/4 · ${this.selected.folder}`
+            : `remote: ${label(this.selected)}`
           : undefined,
     );
   }
 
-  async command(args: string, ctx: ExtensionCommandContext) {
+  async command(args: string, ctx: ExtensionCommandContext, cip = false) {
     const input = args.trim();
 
-    if (input === "status" || input === "tunnels") {
+    if (!cip && (input === "status" || input === "tunnels")) {
       ctx.ui.notify(
-        `${this.selected ? `${label(this.selected)}\nDirectory: ${this.selected.root}\nIsolation: ${this.selected.isolation}` : "Local workspace."}\nPending remote tmp cleanups: ${[...this.debts.values()].filter((debt) => debt.pending).length}\n${this.tunnels
+        `${this.cip ? this.cip.context() + "\n" : ""}${this.selected ? `${label(this.selected)}\nDirectory: ${this.selected.root}\nIsolation: ${this.selected.isolation}` : "Local workspace."}\nPending remote tmp cleanups: ${[...this.debts.values()].filter((debt) => debt.pending).length}\n${this.tunnels
           .list()
           .map(
             (job) =>
@@ -180,7 +269,7 @@ export class RemoteController {
       return;
     }
 
-    if (input.startsWith("close ")) {
+    if (!cip && input.startsWith("close ")) {
       this.tunnels.close(input.slice(6).trim());
 
       return;
@@ -203,11 +292,26 @@ export class RemoteController {
 
     try {
       let selected: RemoteTarget | undefined;
+      let pool: CipPool | undefined;
 
-      if (input === "off") {
+      if (!cip && input === "off") {
         await this.stop();
       } else {
-        selected = await selectRemote(input, ctx, opening.signal, this.io);
+        if (cip) {
+          if (!input)
+            throw new Error("Use /cip <workspace-path>, relative to your CIP home or absolute");
+
+          const user =
+            (await cipUsername()) ||
+            (await ctx.ui.input("CIP username", "e.g. at69yvos", { signal: opening.signal }));
+
+          if (!user) return;
+
+          parseTarget(`${user}@cip1a0.cip.cs.fau.de:${input}`);
+          pool = this.pool({ kind: "cip", user, folder: input, nodes: [] }, ctx);
+          await pool.acquire({}, opening.signal);
+          selected = pool.target();
+        } else selected = await selectRemote(input, ctx, opening.signal, this.io);
 
         if (!selected) return;
 
@@ -220,7 +324,8 @@ export class RemoteController {
 
       if (this.revision !== revision) throw new Error("Session changed during remote selection");
 
-      this.pi.appendEntry(STATE, selected ?? null);
+      this.pi.appendEntry(STATE, pool?.snapshot() ?? selected ?? null);
+      this.cip = pool;
       this.selected = selected;
       this.invalid = undefined;
       this.revision++;
@@ -252,7 +357,7 @@ export class RemoteController {
       pending.map(async (debt) => {
         try {
           const result = await this.io.call(
-            debt.target,
+            { ...debt.target, knownHosts: await this.io.keys(debt.target.host) },
             { operation: "cleanup", session: debt.session },
             undefined,
             10000,
@@ -270,26 +375,39 @@ export class RemoteController {
   }
 
   private async cleanupActor(actor: string) {
-    const session = this.actors.get(actor);
+    for (const [key, owned] of this.actors) {
+      if (owned.actor !== actor) continue;
 
-    this.actors.delete(actor);
+      this.actors.delete(key);
+      this.tunnels.closeAll(owned.session);
 
-    if (session) this.tunnels.closeAll(session);
+      if (!this.started.delete(owned.session)) continue;
 
-    if (!session || !this.started.delete(session) || !this.selected) return;
+      const debt: Debt = { target: owned.target, session: owned.session, pending: true };
 
-    const debt: Debt = { target: structuredClone(this.selected), session, pending: true };
-
-    this.debts.set(session, debt);
-    this.pi.appendEntry(CLEANUP, debt);
+      this.debts.set(owned.session, debt);
+      this.pi.appendEntry(CLEANUP, debt);
+    }
   }
 
   async stop() {
+    this.cip?.cancelPending();
     this.tunnels.closeAll();
 
-    for (const actor of [...this.actors.keys()]) await this.cleanupActor(actor);
+    for (const owned of [...this.actors.values()]) await this.cleanupActor(owned.actor);
 
-    if (this.selected) await this.flushDebts(this.selected);
+    const targets = [
+      ...(this.cip?.state.nodes.map((node) => node.target) ?? []),
+      ...[...this.debts.values()].filter((debt) => debt.pending).map((debt) => debt.target),
+    ];
+
+    if (this.selected) targets.push(this.selected);
+
+    await Promise.all(
+      [...new Map(targets.map((target) => [target.host, target])).values()]
+        .slice(0, 4)
+        .map((target) => this.flushDebts(target)),
+    );
 
     const pending = [...this.debts.values()].filter((debt) => debt.pending).length;
 

@@ -16,7 +16,7 @@ is a library, not an extension; its contracts/infrastructure never import featur
 | [Code quality](code-quality/README.md)             | Standing multilingual readability instruction                          |
 | [Public writing](public-writing/README.md)         | Frozen editorial rules and explicit draft checks                       |
 | [Web research](web-research/README.md)             | DDGS and public-page text extraction                                   |
-| [Remote](remote/README.md)                         | Operator-selected SSH workspace and bounded forwarding                 |
+| [Remote](remote/README.md)                         | SSH/CIP workspaces, capability pools and bounded forwarding            |
 | [Jobs](jobs/README.md)                             | Supervised background commands, completion delivery and blocking waits |
 | [Container tools](container-tools/README.md)       | Reviewed Docker/Podman workloads through a private bridge              |
 | `shared/`                                          | Settings, contracts, provider/review transport and session services    |

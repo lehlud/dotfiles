@@ -6,7 +6,7 @@ set -eu
 umask 077
 
 PROGRAM=${0##*/}
-VERSION=1.3.0
+VERSION=1.3.1
 INDEX_URL=${FAUCIP_INDEX_URL:-'https://wwwcip.informatik.uni-erlangen.de/cipPools/roomIndex.de.html'}
 CACHE_DIR=${XDG_CACHE_HOME:-"$HOME/.cache"}
 CACHE_FILE=$CACHE_DIR/faucipindex.tsv
@@ -26,6 +26,7 @@ host_filter=
 remote_user=
 solo=0
 list_only=0
+list_tsv=0
 latest=0
 connect_timeout=6
 
@@ -60,6 +61,7 @@ Selection and SSH:
   --user USER            Use USER for this run; do not change the cached user
   --connect-timeout N    Timeout for each --solo probe in seconds (default: 6)
   --list                 List matching hosts instead of connecting
+  --list-tsv             List matching hosts as machine-readable TSV (with header)
   --version              Show the script version
   -h, --help             Show this help
 
@@ -222,6 +224,11 @@ while [ "$#" -gt 0 ]; do
             ;;
         --latest)
             latest=1
+            shift
+            ;;
+        --list-tsv)
+            list_only=1
+            list_tsv=1
             shift
             ;;
         --list)
@@ -477,6 +484,12 @@ if [ "$list_only" -eq 0 ] && ! command -v "$SSH_BIN" >/dev/null 2>&1; then
 fi
 
 if [ "$list_only" -eq 1 ]; then
+    if [ "$list_tsv" -eq 1 ]; then
+        sed -n '1p' "$CACHE_FILE"
+        cat "$matches_tmp"
+        exit 0
+    fi
+
     awk -F '\t' '
         BEGIN {
             printf "%-10s %-5s %5s %7s  %-24s %s\n", "HOST", "ROOM", "CORES", "RAM", "CPU", "GPU"

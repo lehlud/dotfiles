@@ -28,18 +28,22 @@ export default function remoteWorkspace(pi: ExtensionAPI) {
     )
       return controller.stop();
   });
-  pi.registerCommand("remote", {
-    description:
-      "Select an SSH workspace: /remote [user@host:folder | status | off | tunnels | close <id>]",
-    async handler(args, ctx) {
-      try {
-        await controller.command(args, ctx);
-      } catch (error) {
-        ctx.ui.notify(
-          `Remote: ${error instanceof Error ? error.message : "Operation failed"}`,
-          "error",
-        );
-      }
-    },
-  });
+
+  for (const name of ["remote", "cip"])
+    pi.registerCommand(name, {
+      description:
+        name === "cip"
+          ? "FAU CIP workstation pool: /cip <workspace-path>"
+          : "Select an SSH workspace: /remote [user@host:folder | status | off | tunnels | close <id>]",
+      async handler(args, ctx) {
+        try {
+          await controller.command(args, ctx, name === "cip");
+        } catch (error) {
+          ctx.ui.notify(
+            `Remote: ${error instanceof Error ? error.message : "Operation failed"}`,
+            "error",
+          );
+        }
+      },
+    });
 }

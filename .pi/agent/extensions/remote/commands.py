@@ -121,6 +121,10 @@ def tool(payload):
         if payload.get("readOnly"):
             raise ValueError("Read-only remote delegation")
 
+        writable = [payload["root"], payload["temporary"]] + [grant["path"] for grant in payload.get("cipGrants", []) if grant["access"] == "write"]
+        if not any(path == root or path.startswith(root + "/") for root in writable):
+            raise ValueError("This CIP path was granted read-only")
+
         answer = write_tool(path, args, name == "edit")
     elif name == "ls":
         names = sorted(os.scandir(path), key=lambda item: item.name)

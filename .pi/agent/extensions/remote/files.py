@@ -12,12 +12,13 @@ def scoped_path(payload, value):
     if value == "/tmp" or value.startswith("/tmp/"):
         value = temporary + value[4:]
     elif value.startswith("~/"):
-        value = os.path.expanduser(value)
+        value = os.path.join(payload["cip"]["home"], value[2:]) if payload.get("cip") else os.path.expanduser(value)
     elif not os.path.isabs(value):
         value = os.path.join(root, value)
 
     path = os.path.realpath(value)
-    if not any(path == allowed or path.startswith(allowed + "/") for allowed in [root, temporary]):
+    allowed_paths = [root, temporary] + [grant["path"] for grant in payload.get("cipGrants", [])]
+    if not any(path == allowed or path.startswith(allowed + "/") for allowed in allowed_paths):
         raise ValueError("File tools are scoped to the selected workspace and private /tmp")
 
     return path

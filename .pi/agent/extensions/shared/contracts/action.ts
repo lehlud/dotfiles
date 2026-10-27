@@ -3,6 +3,19 @@ import { backgroundSchema } from "./jobs.ts";
 
 export const sandboxRequestSchema = Type.Object(
   {
+    cip: Type.Optional(
+      Type.Object(
+        {
+          node: Type.String({
+            minLength: 1,
+            maxLength: 253,
+            description:
+              "In /cip mode, the allocated slot ID or host for this command; acquire slots with cip_nodes. File tools choose a random node on the shared filesystem.",
+          }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     maintenance: Type.Optional(
       Type.Boolean({
         description:

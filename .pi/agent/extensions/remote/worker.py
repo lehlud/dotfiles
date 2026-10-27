@@ -1,5 +1,6 @@
 """Fixed remote entrypoint; assembled with the adjacent credential-free helpers."""
 import json
+import glob
 import os
 import shutil
 import signal
@@ -10,6 +11,7 @@ import sys
 from .protocol import PROTOCOL, UUID
 from .processes import launch, collect, cancel, kill_group
 from .commands import tool
+from . import cip, cip_paths
 
 
 def probe(folder):
@@ -56,7 +58,7 @@ def private_session(identifier):
     return base
 
 
-def sandbox_argv(root, temporary, read_only, network, env, code):
+def sandbox_argv(root, temporary, read_only, network, env, code, gpu=False, grants=()):
     args = ["bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL"]
     for path in ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"]:
         if os.path.exists(path):
@@ -67,6 +69,13 @@ def sandbox_argv(root, temporary, read_only, network, env, code):
         "--proc", "/proc", "--dev", "/dev", "--bind", temporary, "/tmp",
         binding, root, root, "--chdir", root, "--clearenv",
     ]
+    for grant in grants:
+        args += ["--ro-bind" if read_only or grant["access"] == "read" else "--bind", grant["path"], grant["path"]]
+
+    if gpu:
+        for device in sorted(glob.glob("/dev/nvidia*")):
+            args += ["--dev-bind", device, device]
+
     if network == "host":
         args += ["--share-net"]
 
@@ -116,16 +125,24 @@ def execute(payload, code):
         raise ValueError("Invalid action identity")
 
     settings, timeout, budget, temporary, isolated, env = execution_settings(payload)
+    grants = cip_paths.grants(payload)
     internal = {
         **payload, "operation": "tool", "budget": budget, "timeout": timeout,
         "temporary": "/tmp" if isolated else temporary,
+        "cipGrants": grants,
     }
     argv = [sys.executable, "-I", "-B", "-c", code, "inside"]
     if isolated:
         argv = sandbox_argv(
             root, temporary, payload.get("readOnly", False),
-            settings.get("network", "none"), env, code,
+            settings.get("network", "none"), env, code, payload.get("cip", {}).get("gpu", False), grants,
         )
+
+    if payload.get("cip"):
+        try:
+            cip.guard()
+        except cip.CipOccupied as error:
+            return cip.interrupted(error)
 
     receipt = private_session(payload["session"]) + "/jobs/" + action
     child = launch(argv, env=env, cwd=root, receipt=receipt)
@@ -139,7 +156,11 @@ def execute(payload, code):
     try:
         status, output = collect(
             child, json.dumps(internal).encode(), timeout, budget * 6 + 65536, True,
+            cip.guard if payload.get("cip") else None,
         )
+        if payload.get("cip"):
+            cip.guard()
+
         if status:
             detail = output.decode("utf-8", "replace")[:500]
             raise ValueError("Remote action failed (%s); inspect state: %s" % (status, detail))
@@ -150,6 +171,8 @@ def execute(payload, code):
 
         os.unlink(receipt)
         return answer["value"]
+    except cip.CipOccupied as error:
+        return cip.interrupted(error)
     finally:
         # Also stop background children that outlived the reviewed foreground command.
         kill_group(child.pid)
@@ -159,6 +182,12 @@ def main(payload):
     operation = payload.get("operation")
     if operation == "probe":
         return probe(payload["folder"])
+
+    if operation == "cip_probe":
+        return {**probe(payload["folder"]), **cip.status()}
+
+    if operation == "cip_status":
+        return cip.status()
 
     if operation == "execute":
         return execute(payload, sys.argv[1])

@@ -26,7 +26,8 @@ export function remoteSession(ctx: ExtensionContext): RemoteSession | undefined 
 /** Carry a trusted execution route, never remote instructions or command authority. */
 export function registerRemoteContext(pi: ExtensionAPI) {
   pi.on("context", (event, ctx) => {
-    const target = remoteSession(ctx)?.target();
+    const route = remoteSession(ctx);
+    const target = route?.target();
     const messages = event.messages.filter(
       (message) => message.role !== "custom" || message.customType !== "remote-workspace-context",
     );
@@ -56,6 +57,7 @@ export function registerRemoteContext(pi: ExtensionAPI) {
             "Use remote-installed tools; local bundles/extra mounts are unavailable. find/grep include hidden files and ignore .gitignore.",
             "remote_tunnel provides separately reviewed loopback TCP forwarding with explicit direction, destination and lifetime.",
             "Remote process expiry does not end local Pi. Temporary cleanup is best effort while the host is reachable.",
+            ...(route?.context?.() ? [route.context()] : []),
           ].join("\n"),
         },
       ],

@@ -109,6 +109,7 @@ export function createApprovalRenderers(
         };
         const labels = [
           ...(args?.background ? [`background: ${args.background.title}`] : []),
+          ...(changes.cip?.node ? [`CIP node: ${changes.cip.node}`] : []),
           ...(changes.maintenance ? ["Pi maintenance · one action"] : []),
           ...(changes.projectFiles ? [`project files: ${changes.projectFiles} · one command`] : []),
           ...(changes.gitConfig === true ? ["git config: read-only · one command"] : []),

@@ -2230,3 +2230,51 @@ test("shutdown aborts background work and waits for cleanup before removing priv
   expect((await manager.wait(admitted.details.backgroundJob.id))[0].job.state).toBe("cancelled");
   expect(notifications).toHaveLength(0);
 });
+
+test("CIP allocation stays behind exact-action approval and a denial starts no scheduler work", async () => {
+  let allocations = 0;
+  const target: any = {
+    user: "synthetic",
+    host: "cip7b0.cip.cs.fau.de",
+    root: "/home/cip/test/project",
+    folder: "project",
+    isolation: "bwrap",
+    knownHosts: "public key",
+    cip: { node: "cip-1", gpu: true, home: "/home/cip/test", tmp: "/proj/ciptmp" },
+  };
+
+  sessionServices(ctx).remote = {
+    target: () => target,
+    prepare: async (request) => ({
+      target,
+      plan: {
+        source: "executor-preflight",
+        backend: "cip-scheduler",
+        maxNodes: 4,
+        request: request.arguments,
+      },
+      assertCurrent() {},
+      execute: async () => {
+        allocations++;
+
+        return { content: [{ type: "text", text: "cip-2 allocated" }], details: {} };
+      },
+    }),
+    cleanup: async () => {},
+  };
+
+  const action = {
+    tool: "cip_nodes",
+    arguments: { operation: "acquire", gpuModel: "3070" },
+    goal: "Train the model",
+    justification: "Use an unoccupied workstation with the required GPU",
+  };
+
+  mode = "deny";
+  expect((await call(action)).isError).toBe(true);
+  expect(allocations).toBe(0);
+  expect(requested[0].data.action.arguments).toEqual(action.arguments);
+  mode = "approve";
+  expect((await call(action)).isError).not.toBe(true);
+  expect(allocations).toBe(1);
+});

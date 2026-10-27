@@ -16,7 +16,7 @@ import { webTools } from "../web-research/index.ts";
 import { writingCheckTool } from "../public-writing/index.ts";
 import { credentialCommandTool } from "./credential-command.ts";
 import { containerTool } from "../shared/contracts/containers.ts";
-import { tunnelTool } from "../shared/contracts/remote.ts";
+import { tunnelTool, cipNodesTool } from "../shared/contracts/remote.ts";
 import { gitTool } from "./git-command.ts";
 
 export const TOOL_NAME = "approved_action";
@@ -35,6 +35,7 @@ export const factories = {
   credential_exec: (_cwd: string) => credentialCommandTool,
   git: (_cwd: string) => gitTool,
   remote_tunnel: (_cwd: string) => tunnelTool,
+  cip_nodes: (_cwd: string) => cipNodesTool,
   container_exec: (_cwd: string) => containerTool,
 };
 

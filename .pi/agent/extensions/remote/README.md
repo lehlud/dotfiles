@@ -120,10 +120,99 @@ retains a cleanup receipt; later approved connections retry only that cleanup. `
 reports pending receipts. An unreachable host cannot be guaranteed clean immediately. Local SSH
 scratch files and tunnels are cleaned independently of remote availability.
 
+## FAU CIP workstation pools
+
+```text
+/cip flatscan-1shot
+/cip /proj/ciptmp/at69yvos/oneshotscan-training
+/remote status
+/remote off
+```
+
+`/cip` takes one workspace path, with the same home-relative/absolute semantics as `/remote`.
+It uses the username cached by the actual `~/.local/bin/faucip`, asking if absent.
+The same launcher supplies host capabilities through its `--list-tsv` interface; Pi keeps no
+second host catalog. The [official room index](https://wwwcip.informatik.uni-erlangen.de/cipPools/roomIndex.de.html)
+is the catalog's source. The initial random workstation counts toward the four-node limit.
+
+CIP connections use **public-key authentication through the local SSH agent only**.
+First-seen CIP keys are accepted automatically into the local, device-owned
+`~/.pi/agent/cip-known-hosts`; existing pins are never replaced. Other domains keep `/remote`'s
+explicit trust requirement. Operator `~/.ssh/known_hosts` entries take precedence. Both modes
+re-read public trust for each preparation, so adding a key no longer requires restarting Pi.
+Agent forwarding, passwords and GSSAPI remain disabled.
+
+The model requests capabilities through independently reviewed `approved_action` calls:
+
+```json
+{
+  "tool": "cip_nodes",
+  "arguments": { "operation": "acquire", "gpuModel": "3070", "minRamGiB": 32 },
+  "goal": "Train the requested model",
+  "justification": "Use a free workstation with the required GPU"
+}
+```
+
+Other operations are `list` and `release` (with `node`, e.g. `cip-2`). Acquisition accepts
+`gpu`, `gpuModel` (case-insensitive substring), `minRamGiB`, `minCores`, and an optional exact
+`host`. Prefer capability requests so replacements can retain the requirement. An allocation
+returns a stable slot ID and current physical host. Concurrent requests cannot exceed four
+allocated workstations. Release an unused initial slot if all four slots need specific GPUs.
+These allocations are scheduler state, not exclusive reservations against other CIP users.
+
+Commands choose a slot using `sandbox.cip.node`:
+
+```json
+{
+  "tool": "bash",
+  "arguments": { "command": "python -m training --resume", "timeout": 3600 },
+  "sandbox": { "cip": { "node": "cip-2" } },
+  "goal": "Continue training",
+  "justification": "Resume from the last verified shared checkpoint"
+}
+```
+
+Use supervised background jobs for independent parallel runs, with distinct shared output
+directories. Join the jobs when no independent work remains; never detach shell/SSH processes.
+
+File tools select a random allocated workstation and use the same workspace path. Home and
+`/proj/ciptmp` are shared across nodes, including disk and file-count quotas. Pi runs `cip-quota`
+during discovery and action preparation and supplies the output to the model/reviewer. Check
+again before large downloads/builds/checkpoints; keep only necessary artifacts. For an existing
+canonical dataset/venv/cache directory outside the workspace, request `sandbox.paths` with
+`read` or `write`. With bwrap, mounts stay limited to the workspace and these reviewed paths;
+GPU nodes additionally receive their NVIDIA devices. `/tmp` remains private and node-local.
+
+The worker checks local logins before execution and approximately every two seconds while a
+command runs. It uses logind seat/type information to distinguish local users from SSH sessions,
+then local utmp terminals, falling back conservatively if those observations fail. A local login
+terminates only the owned process group: TERM first allows a short checkpoint flush, followed
+by forced cleanup. It does not interfere with the logged-in user or another user's processes.
+Idle nodes are checked before their next operation rather than polled by the model.
+
+After a confirmed login interruption, Pi finds a free replacement matching the saved capability
+request and keeps the slot ID. If none is found within the bounded search, the slot is dropped.
+The model receives a steering-style **data** notice for either outcome, with unmet capabilities
+retained for a later acquisition attempt. Use a blocking job sleep if waiting is useful; avoid
+repeated model/status polling. An empty pool remains a remote workspace and never falls back to
+local execution. Old tunnel connections close when a slot is replaced or released.
+
+Only the workstation mapping migrates. **A process does not survive migration or the CIP
+24-hour lifetime limit.** Commands are bounded to 23 hours. Store periodic checkpoints and logs
+on shared storage; inspect them and obtain fresh command approval to resume. Arbitrary failures
+and uncertain SSH outcomes are never automatically replayed or treated as proof that work stopped.
+
+If a CIP host cannot run bwrap, the existing UI asks for account-mode consent for the selected
+account's bounded CIP pool. There is no silent fallback. Required offline or aggregate resource
+guarantees still block when the remote backend cannot enforce them. Pool metadata persists with
+the session; cleanup receipts retain each actor's actual host, including after migration.
+
 ## Implementation and validation
 
 `controller.ts` owns session selection and lifecycle; `selection.ts` owns operator consent.
 `operations.ts` prepares the reviewed execution plan. `ssh.ts` owns the fixed, sandboxed SSH client;
+`host-keys.ts` refreshes public trust and implements CIP first-use trust.
+`cip-pool.ts`, `cip-inventory.ts` and `cip-state.ts` own scheduling, capabilities and persistence.
 `client.ts` carries request JSON on stdin without shell interpolation or replay. The static worker
 bundle crosses the login shell as Base64, preserving quotes/backslashes under shells such as Fish. `tunnels.ts` supervises
 bounded forwarding. The adjacent Python files separate process IO, scoped file operations, search,

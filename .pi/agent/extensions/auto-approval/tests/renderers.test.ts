@@ -410,6 +410,7 @@ test("sandbox requests are visible alongside the native tool without disclosing 
       sandbox: {
         paths: [{ path: "/shared", access: "read" }],
         network: "host",
+        cip: { node: "cip-2" },
         environment: { MODE: "private-test-value" },
         limits: { executionTimeoutMs: 900000 },
       },
@@ -426,6 +427,7 @@ test("sandbox requests are visible alongside the native tool without disclosing 
   expect(display(component)).toContain("environment: MODE");
   expect(display(component)).not.toContain("private-test-value");
   expect(display(component)).toContain("read /shared/example.ts");
+  expect(display(component)).toContain("CIP node: cip-2");
 });
 
 test("encoded arguments retain the normal command preview", () => {

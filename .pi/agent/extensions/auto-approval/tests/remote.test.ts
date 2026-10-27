@@ -283,7 +283,7 @@ test("working sandbox needs no fallback confirmation; busy sessions cannot chang
   await fixture.controller.command(label(target), fixture.ctx);
   expect(fixture.confirmations).toHaveLength(0);
 
-  const prepared = sessionServices(fixture.ctx).remote!.prepare(
+  const prepared = await sessionServices(fixture.ctx).remote!.prepare(
     request(),
     {} as any,
     "root",
@@ -578,14 +578,14 @@ test("remote cleanup leases survive a restart and never delete an active actor's
 
   const route = sessionServices(fixture.ctx).remote!;
 
-  await route.prepare(request(), {} as any, "actor", false).execute();
-  await route.prepare(request(), {} as any, "actor", false).execute();
+  await (await route.prepare(request(), {} as any, "actor", false)).execute();
+  await (await route.prepare(request(), {} as any, "actor", false)).execute();
   expect(calls.map((input) => input.operation)).toEqual(["execute", "execute"]);
   expect(calls[0].session).toBe(calls[1].session);
   fixture.controller.bind(fixture.ctx);
-  await sessionServices(fixture.ctx)
-    .remote!.prepare(request(), {} as any, "actor", false)
-    .execute();
+  await (
+    await sessionServices(fixture.ctx).remote!.prepare(request(), {} as any, "actor", false)
+  ).execute();
   expect(calls[2]).toEqual({ operation: "cleanup", session: calls[0].session });
   expect(calls[3].session).not.toBe(calls[0].session);
   await fixture.controller.stop();
@@ -628,9 +628,9 @@ test("unreachable cleanup remains pending, warns the operator and retries only o
     return { content: [{ type: "text", text: "Synthetic remote result" }] };
   };
   await fixture.controller.command(label(target), fixture.ctx);
-  await sessionServices(fixture.ctx)
-    .remote!.prepare(request(), {} as any, "actor", false)
-    .execute();
+  await (
+    await sessionServices(fixture.ctx).remote!.prepare(request(), {} as any, "actor", false)
+  ).execute();
   await fixture.controller.stop();
   expect(fixture.notifications.at(-1)[0]).toContain("cleanup is pending");
 
@@ -647,9 +647,9 @@ test("unreachable cleanup remains pending, warns the operator and retries only o
 
     return input.operation === "cleanup" ? { cleaned: true } : { content: [] };
   };
-  await sessionServices(fixture.ctx)
-    .remote!.prepare(request(), {} as any, "new-actor", false)
-    .execute();
+  await (
+    await sessionServices(fixture.ctx).remote!.prepare(request(), {} as any, "new-actor", false)
+  ).execute();
   expect(calls[0]).toEqual({ operation: "cleanup", session: lease.data.session });
   expect(calls.filter((input) => input.operation === "execute")).toHaveLength(1);
   await fixture.controller.stop();

@@ -28,6 +28,18 @@ export async function selectRemote(
   const initial: RemoteTarget = { ...target, root: "/", isolation: "bwrap", knownHosts };
   const probe = await io.call(initial, { operation: "probe", folder: target.folder }, signal);
 
+  return await resolveRemoteProbe(target, knownHosts, probe, ctx, signal);
+}
+
+export async function resolveRemoteProbe(
+  target: Pick<RemoteTarget, "user" | "host" | "folder">,
+  knownHosts: string,
+  probe: any,
+  ctx: ExtensionCommandContext,
+  signal: AbortSignal,
+  consent?: RemoteTarget["confirmation"],
+  scope?: string,
+): Promise<RemoteTarget | undefined> {
   if (
     probe?.system !== "Linux" ||
     typeof probe.sandbox !== "boolean" ||
@@ -37,9 +49,9 @@ export async function selectRemote(
   )
     throw new Error("Remote work requires Linux and Python 3 with a valid project directory");
 
-  let confirmation: RemoteTarget["confirmation"];
+  let confirmation: RemoteTarget["confirmation"] = probe.sandbox ? undefined : consent;
 
-  if (!probe.sandbox) {
+  if (!probe.sandbox && !confirmation) {
     if (!ctx.hasUI)
       throw new Error(
         "Remote sandbox unavailable; operator UI confirmation is required before account-mode execution",
@@ -49,7 +61,7 @@ export async function selectRemote(
     const accepted = await ctx.ui.confirm(
       "Remote sandbox unavailable",
       [
-        label(target),
+        scope ?? label(target),
         `Directory: ${probe.root}`,
         `Remote diagnostic (untrusted DATA): ${JSON.stringify(reason)}`,
         "",

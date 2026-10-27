@@ -66,7 +66,7 @@ def kill_group(pid):
         pass
 
 
-def collect(child, data, timeout, limit, group=False):
+def collect(child, data, timeout, limit, group=False, guard=None):
     output = bytearray()
     selector = selectors.DefaultSelector()
     pending = memoryview(data)
@@ -79,8 +79,13 @@ def collect(child, data, timeout, limit, group=False):
         child.stdin.close()
 
     deadline = time.monotonic() + timeout
+    next_guard = 0
     try:
         while selector.get_map():
+            if guard and time.monotonic() >= next_guard:
+                guard()
+                next_guard = time.monotonic() + 2
+
             if time.monotonic() >= deadline:
                 raise TimeoutError("Remote action deadline exceeded")
 
@@ -107,8 +112,18 @@ def collect(child, data, timeout, limit, group=False):
                     raise ValueError("Remote action output limit exceeded")
 
         return child.wait(timeout=max(0.01, deadline - time.monotonic())), bytes(output)
-    except BaseException:
+    except BaseException as error:
         if group:
+            if getattr(error, "graceful", False):
+                try:
+                    os.killpg(child.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                else:
+                    # Do not reap the group leader yet: its PID stays reserved
+                    # while descendants finish their checkpoint handlers.
+                    time.sleep(2)
+
             kill_group(child.pid)
         else:
             child.kill()
