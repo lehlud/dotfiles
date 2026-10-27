@@ -15,7 +15,7 @@ import {
   theme,
 } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
-import { registerSide } from "../../conversations/side.ts";
+import { registerDialogues } from "../../conversations/side.ts";
 import { watchInterrupt } from "../../shared/session/interrupt.ts";
 
 const tick = () => new Promise<void>((done) => setTimeout(done, 1));
@@ -57,9 +57,9 @@ async function fixture(directory: string) {
       const stream = createAssistantMessageEventStream();
 
       queueMicrotask(async () => {
-        const side = getCurrentSystemPrompt(context.messages).includes(
-          "temporary side conversation",
-        );
+        const system = getCurrentSystemPrompt(context.messages);
+        const nietzsche = system.includes("You are the Nietzschian Debugger");
+        const side = nietzsche || system.includes("temporary side conversation");
         const message: any = {
           role: "assistant",
           api: model.api,
@@ -88,9 +88,11 @@ async function fixture(directory: string) {
           });
         }
 
-        message.content[0].text = side
-          ? "Side answer based on the parent context."
-          : "MAIN-FINISHED parser checks passed.";
+        message.content[0].text = nietzsche
+          ? "What evidence separates failing users from successful ones?"
+          : side
+            ? "Side answer based on the parent context."
+            : "MAIN-FINISHED parser checks passed.";
         stream.push({
           type: "text_delta",
           contentIndex: 0,
@@ -121,7 +123,7 @@ async function fixture(directory: string) {
     noPromptTemplates: true,
     extensionFactories: [
       (pi) => {
-        registerSide(pi);
+        registerDialogues(pi);
 
         let detach: (() => void) | undefined;
 
@@ -164,73 +166,89 @@ async function fixture(directory: string) {
   };
 }
 
-test("real Pi SDK runs /side immediately during a parent turn without changing its transcript", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-side-sdk-"));
-  const state = await fixture(directory);
-  let view: any, main: Promise<void> | undefined, side: Promise<void> | undefined;
-  const statuses = new Map<string, string>([["00-goal", "goal: parser"]]);
+for (const command of ["side", "nietzsche"]) {
+  test(`real Pi SDK runs /${command} during parent work without changing its transcript`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-side-sdk-"));
+    const state = await fixture(directory);
+    let view: any, main: Promise<void> | undefined, side: Promise<void> | undefined;
+    const statuses = new Map<string, string>([["00-goal", "goal: parser"]]);
 
-  try {
-    initTheme("dark", false);
-    await state.session.bindExtensions({
-      mode: "tui",
-      uiContext: {
-        setStatus: (key: string, value?: string) => {
-          if (value === undefined) statuses.delete(key);
-          else statuses.set(key, value);
-        },
+    try {
+      initTheme("dark", false);
+      await state.session.bindExtensions({
+        mode: "tui",
+        uiContext: {
+          setStatus: (key: string, value?: string) => {
+            if (value === undefined) statuses.delete(key);
+            else statuses.set(key, value);
+          },
 
-        notify: (text: string) => {
-          throw new Error(text);
-        },
+          notify: (text: string) => {
+            throw new Error(text);
+          },
 
-        custom: (factory: Function) =>
-          new Promise<void>((done) => {
-            view = factory(
-              { terminal: { rows: 24, columns: 80 }, requestRender() {} },
-              theme,
-              {},
-              done,
-            );
-          }),
-      } as any,
-    });
-    main = state.session.prompt("MAIN-INTENT repair the parser and verify it.");
-    await until(state.mainStarted);
-    expect(state.session.isStreaming).toBe(true);
-    side = state.session.prompt("/side SIDE-QUESTION what is the main task?");
-    await until(() => view?.conversation.history.length === 2);
-    expect(state.session.isStreaming).toBe(true);
-    expect(JSON.stringify(state.sideContexts[0])).toContain("MAIN-INTENT");
-    expect(JSON.stringify(state.session.sessionManager.getBranch())).not.toContain("SIDE-QUESTION");
-    state.releaseMain();
-    await main;
-    expect(state.session.isStreaming).toBe(false);
-    view.editor.onSubmit("SIDE-FOLLOWUP what finished since I opened this chat?");
-    await until(() => view.conversation.history.length === 4);
-    expect(JSON.stringify(state.sideContexts[1])).toContain("MAIN-FINISHED");
-    expect(JSON.stringify(state.session.sessionManager.getBranch())).not.toContain("SIDE-FOLLOWUP");
-    view.handleInput("\x1b");
-    await side;
-    expect(statuses.get("00-goal")).toBe("goal: parser");
-    expect(statuses.has("01-side")).toBe(false);
-    expect(
-      state.session.sessionManager
-        .getBranch()
-        .some((entry) => entry.type === "message" && entry.message.role === "assistant"),
-    ).toBe(true);
-  } finally {
-    state.releaseMain();
-    view?.dispose();
-    view?.handleInput("\x03");
-    await main?.catch(() => {});
+          custom: (factory: Function) =>
+            new Promise<void>((done) => {
+              view = factory(
+                { terminal: { rows: 24, columns: 80 }, requestRender() {} },
+                theme,
+                {},
+                done,
+              );
+            }),
+        } as any,
+      });
+      main = state.session.prompt("MAIN-INTENT repair the parser and verify it.");
+      await until(state.mainStarted);
+      expect(state.session.isStreaming).toBe(true);
+      side = state.session.prompt(`/${command} SIDE-QUESTION some users receive 403`);
+      await until(() => view?.conversation.history.length === 2);
+      expect(state.session.isStreaming).toBe(true);
+      expect(JSON.stringify(state.sideContexts[0])).toContain("MAIN-INTENT");
+      expect(view.conversation.profile.id).toBe(command);
+      expect(state.sideContexts[0].tools).toBeUndefined();
 
-    await side?.catch(() => {});
+      if (command === "nietzsche") {
+        expect(getCurrentSystemPrompt(state.sideContexts[0].messages)).toContain(
+          "ONE focused question",
+        );
+        expect(view.conversation.turns[0].answer).toEndWith("?");
+      }
 
-    state.session.dispose();
-    await rm(directory, { recursive: true, force: true });
-  }
-}, 15000);
+      expect(JSON.stringify(state.session.sessionManager.getBranch())).not.toContain(
+        "SIDE-QUESTION",
+      );
+      state.releaseMain();
+      await main;
+      expect(state.session.isStreaming).toBe(false);
+      view.editor.onSubmit("SIDE-FOLLOWUP what finished since I opened this chat?");
+      await until(() => view.conversation.history.length === 4);
+      expect(JSON.stringify(state.sideContexts[1])).toContain("MAIN-FINISHED");
+      expect(JSON.stringify(state.session.sessionManager.getBranch())).not.toContain(
+        "SIDE-FOLLOWUP",
+      );
+      view.handleInput("\x1b");
+      await side;
+      expect(statuses.get("00-goal")).toBe("goal: parser");
+      expect(statuses.has("01-side")).toBe(false);
+      expect(
+        state.session.sessionManager
+          .getBranch()
+          .some((entry) => entry.type === "message" && entry.message.role === "assistant"),
+      ).toBe(true);
+    } finally {
+      state.releaseMain();
+      view?.dispose();
+      view?.handleInput("\x03");
+      await main?.catch(() => {});
+
+      await side?.catch(() => {});
+
+      state.session.dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15000);
+}
 
 test("real Pi SDK leaves parent work running when global listeners receive side return keys", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pi-side-interrupt-sdk-"));

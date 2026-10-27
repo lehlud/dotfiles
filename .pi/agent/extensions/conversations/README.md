@@ -158,9 +158,32 @@ nested `/side` is rejected. Failed/cancelled responses are excluded from side hi
 
 Limits: 40 complete text items/24,000 UTF-8 snapshot bytes (less for small windows), preferring
 original task/recent text and counting omissions; no images or hidden reasoning. Questions:
-8,000 characters. Responses: 4,096 tokens/three minutes. Exhaustion requests fresh side
+8,000 characters. Responses: 4,096 tokens/three minutes of active request time. Exhaustion requests fresh side
 history without altering main history; provider-reported side usage is counted separately.
 See the [Codex interface reference](https://learn.chatgpt.com/docs/developer-commands#start-a-side-chat-with-side).
+
+## Question-driven debugging with `/nietzsche`
+
+`/nietzsche [problem]` opens a separate dialogue inspired by the
+[Nietzschian Debugger](https://github.com/DilawarShafiq/nietzschian-debugger).
+Describe the bug, then answer each question. The model challenges vague claims,
+asks for evidence and follows your answers toward a root cause. It is instructed
+not to supply fixes or code. Tone is direct; replies follow your language.
+
+The dialogue uses Pi's selected model/thinking level and existing authentication,
+with no extra package or API key. It shares `/side`'s terminal, cancellation,
+context limits and temporary history. Main work can continue; dialogue replies
+never enter the main transcript. Neither mode has tools or execution authority.
+Only one dialogue can be open at a time.
+
+- `/solved` (also `solved` or `found it`): request a short evidence recap and finish.
+- `/give-up` (also `I give up`): request one final lifeline question and finish.
+- `/new`: clear the dialogue and investigate another bug.
+- `/back` or Escape while idle: return to the main conversation.
+
+A failed/cancelled closing reply leaves the dialogue open. Reported root causes
+remain the user's claims; the model does not verify fixes or assign measured
+skill scores. Closing or changing sessions discards this temporary dialogue.
 
 ## Repeated inspections without new evidence
 

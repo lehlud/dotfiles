@@ -7,7 +7,8 @@ import { CURSOR_MARKER, stripTerminalSequences, visibleWidth } from "@earendil-w
 import { sideSnapshot } from "../../conversations/side-context.ts";
 import { SideConversation, SIDE_SYSTEM } from "../../conversations/side-conversation.ts";
 import { SideView } from "../../conversations/side-view.ts";
-import { registerSide } from "../../conversations/side.ts";
+import { registerDialogues } from "../../conversations/side.ts";
+import { NIETZSCHE_PROFILE } from "../../conversations/nietzsche.ts";
 import { watchInterrupt } from "../../shared/session/interrupt.ts";
 import { sessionServices } from "../../shared/session/services.ts";
 
@@ -30,6 +31,7 @@ let ctx: any,
   statuses: Map<string, string>,
   notices: string[],
   changes: number;
+let replyText: string;
 let mode: "ok" | "pending" | "tool" | "error" | "throw";
 let release: (() => void) | undefined;
 const tick = () => new Promise<void>((done) => setTimeout(done, 0));
@@ -47,6 +49,7 @@ beforeEach(() => {
   notices = [];
   changes = 0;
   mode = "ok";
+  replyText = "La tarea principal es reparar el compilador.";
   release = undefined;
   ctx = {
     mode: "tui",
@@ -72,7 +75,7 @@ beforeEach(() => {
         const activeMode = mode;
         const response: any = {
           role: "assistant",
-          content: [{ type: "text", text: "La tarea principal es reparar el compilador." }],
+          content: [{ type: "text", text: replyText }],
           api: "fixture",
           provider: "fixture",
           model: model.id,
@@ -305,13 +308,13 @@ test("/side is UI-only, cannot nest, and is closed on parent session navigation"
   const hooks: Record<string, Function> = {};
   let command: any, view: any, finish: (() => void) | undefined;
 
-  registerSide({
+  registerDialogues({
     on: (name: string, handler: Function) => {
       hooks[name] = handler;
     },
 
-    registerCommand: (_name: string, definition: any) => {
-      command = definition.handler;
+    registerCommand: (name: string, definition: any) => {
+      if (name === "side") command = definition.handler;
     },
   } as any);
   ctx.mode = "json";
@@ -460,12 +463,12 @@ test("session navigation before the UI factory runs cannot open a stale side cha
   const hooks: Record<string, Function> = {};
   let command: any, factory: Function | undefined, finish: (() => void) | undefined;
 
-  registerSide({
+  registerDialogues({
     on: (name: string, handler: Function) => {
       hooks[name] = handler;
     },
-    registerCommand: (_name: string, definition: any) => {
-      command = definition.handler;
+    registerCommand: (name: string, definition: any) => {
+      if (name === "side") command = definition.handler;
     },
   } as any);
   ctx.ui.custom = (create: Function) =>
@@ -484,4 +487,98 @@ test("session navigation before the UI factory runs cannot open a stale side cha
   expect(component.render(80)).toEqual([]);
   expect(calls).toHaveLength(0);
   expect(statuses.has("01-side")).toBe(false);
+});
+
+test("Nietzsche asks successive evidence questions with its own history and no main-task effects", async () => {
+  const original = structuredClone(branch);
+  const dialogue = new SideConversation(ctx, () => changes++, NIETZSCHE_PROFILE);
+  const answers = [
+    "My login returns 403 for some users",
+    "It seems random",
+    "All failing tokens are expired",
+  ];
+  const questions = [
+    "What separates failing users from successful ones?",
+    "What do the logs show for one failed response?",
+    "What changed recently in token expiry?",
+  ];
+
+  for (let i = 0; i < answers.length; i++) {
+    replyText = questions[i];
+    await dialogue.ask(answers[i]);
+    expect(dialogue.turns[i].answer).toBe(questions[i]);
+    expect(calls[i].context.systemPrompt).toBe(NIETZSCHE_PROFILE.system);
+    expect(calls[i].context.tools).toBeUndefined();
+    expect(calls[i].context.messages.at(-1).content).toBe(answers[i]);
+    expect(calls[i].context.messages).toHaveLength(2 + 2 * i);
+  }
+
+  expect(dialogue.completed).toBe(false);
+  expect(dialogue.history).toHaveLength(6);
+  expect(branch).toEqual(original);
+  expect(NIETZSCHE_PROFILE.system).toContain("ONE focused question");
+  expect(NIETZSCHE_PROFILE.system).toContain("Never supply the fix");
+  dialogue.close();
+});
+
+test("Nietzsche completion is explicit, failed closing replies can retry, and /new starts fresh", async () => {
+  for (const ending of ["solved", "/solved", "found it", "I give up", "/give-up"]) {
+    const dialogue = new SideConversation(ctx, () => {}, NIETZSCHE_PROFILE);
+
+    mode = "error";
+    await dialogue.ask(ending);
+    expect(dialogue.completed).toBe(false);
+    expect(dialogue.history).toHaveLength(0);
+    mode = "ok";
+    await dialogue.ask(ending);
+    expect(dialogue.completed).toBe(true);
+
+    const before = calls.length;
+
+    await expect(dialogue.ask("Do more")).rejects.toThrow("Dialogue complete");
+    expect(calls).toHaveLength(before);
+    dialogue.reset();
+    expect(dialogue.completed).toBe(false);
+    expect(dialogue.history).toHaveLength(0);
+    await dialogue.ask("A different bug");
+    expect(dialogue.turns).toHaveLength(1);
+    dialogue.close();
+  }
+});
+
+test("/nietzsche opens a labelled dialogue, shares the overlay lock, and closes on navigation", async () => {
+  const commands = new Map<string, Function>();
+  const hooks: Record<string, Function> = {};
+  let view: any;
+
+  registerDialogues({
+    on: (name: string, handler: Function) => {
+      hooks[name] = handler;
+    },
+    registerCommand: (name: string, definition: any) => {
+      commands.set(name, definition.handler);
+    },
+  } as any);
+  initTheme("dark", false);
+  ctx.ui.custom = (factory: Function) =>
+    new Promise<void>((done) => {
+      view = factory({ terminal: { rows: 30, columns: 120 }, requestRender() {} }, theme, {}, done);
+    });
+  replyText = "What do the failing users have in common?";
+
+  const open = commands.get("nietzsche")!("Some users receive 403", ctx);
+
+  await tick();
+  expect(view.conversation.profile).toBe(NIETZSCHE_PROFILE);
+  expect(view.render(120).map(stripTerminalSequences).join("\n")).toContain("intensity: nietzsche");
+  expect(view.render(120).map(stripTerminalSequences).join("\n")).toContain("Nietzschian:");
+  expect(statuses.get("01-side")).toBe("nietzsche: open");
+  await commands.get("side")!("nested", ctx);
+  expect(notices.at(-1)).toContain("already open");
+  expect(calls).toHaveLength(1);
+  hooks.session_tree({}, ctx);
+  await open;
+  expect(view.conversation.closed).toBe(true);
+  expect(statuses.has("01-side")).toBe(false);
+  expect(branch).toHaveLength(2);
 });

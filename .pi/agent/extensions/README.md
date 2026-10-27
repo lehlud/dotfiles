@@ -6,7 +6,7 @@ is a library, not an extension; its contracts/infrastructure never import featur
 | Module                                             | Responsibility                                                         |
 | -------------------------------------------------- | ---------------------------------------------------------------------- |
 | [Auto-Approval](auto-approval/README.md)           | Exact-action review, audit and isolated execution                      |
-| [Conversations](conversations/README.md)           | Goals, continuation, steering, questions, side chats, progress guard   |
+| [Conversations](conversations/README.md)           | Goals, steering, questions, side/debugging chats and continuation      |
 | [Multiplex](multiplex/README.md)                   | Equal peers, coordination, authenticated mailboxes, shared feed        |
 | [Subagents](subagents/README.md)                   | Bounded delegates, parent mailbox, review mode, kill/resurrection      |
 | [Context management](context-management/README.md) | Budgets, history, notes, eviction and rotation                         |

@@ -12,7 +12,7 @@ import {
   type ExtensionCommandContext,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { SideConversation } from "./side-conversation.ts";
+import { SideConversation, SIDE_PROFILE, type DialogueProfile } from "./side-conversation.ts";
 import { sessionServices } from "../shared/session/services.ts";
 
 const clean = (text: string) =>
@@ -32,8 +32,9 @@ export class SideView {
     private ctx: ExtensionCommandContext,
     private done: () => void,
     initial: string,
+    readonly profile: DialogueProfile = SIDE_PROFILE,
   ) {
-    this.conversation = new SideConversation(ctx, () => this.update());
+    this.conversation = new SideConversation(ctx, () => this.update(), profile);
     this.editor = new Editor(tui, {
       borderColor: (value) => theme.fg("accent", value),
       selectList: {
@@ -70,7 +71,13 @@ export class SideView {
   private update() {
     if (this.disposed) return;
 
-    this.ctx.ui.setStatus("01-side", `side: ${this.conversation.busy ? "responding" : "open"}`);
+    const state = this.conversation.busy
+      ? "responding"
+      : this.conversation.completed
+        ? "complete"
+        : "open";
+
+    this.ctx.ui.setStatus("01-side", `${this.profile.id}: ${state}`);
     this.tui.requestRender();
   }
 
@@ -83,9 +90,9 @@ export class SideView {
       return;
     }
 
-    if (/^\/side(?:\s|$)/.test(text.trim())) {
+    if (/^\/(?:side|nietzsche)(?:\s|$)/.test(text.trim())) {
       this.editor.setText(text);
-      this.notice = "A side chat cannot open another side chat.";
+      this.notice = "Close this dialogue before opening another.";
       this.update();
 
       return;
@@ -93,7 +100,7 @@ export class SideView {
 
     if (this.conversation.busy) {
       this.editor.setText(text);
-      this.notice = "The side request is still running. Escape cancels only this request.";
+      this.notice = "The dialogue request is still running. Escape cancels only this request.";
       this.update();
 
       return;
@@ -117,7 +124,7 @@ export class SideView {
       // Editor clears on submit. Restore rejected input, preserving any newer draft.
       if (!this.disposed && !this.editor.getText()) this.editor.setText(text);
 
-      this.notice = error instanceof Error ? error.message : "Could not start the side question.";
+      this.notice = error instanceof Error ? error.message : "Could not send the message.";
     }
 
     this.update();
@@ -164,7 +171,7 @@ export class SideView {
     const height = Math.max(1, Math.floor(this.tui.terminal.rows * 0.8));
     const parent = this.ctx.isIdle() ? "ready" : "still working";
     const snapshot = this.conversation.snapshot;
-    const title = `Side chat · Main conversation ${parent} · ${this.conversation.model.id}`;
+    const title = `${this.profile.title} · Main conversation ${parent} · ${this.conversation.model.id}`;
     const info = `${snapshot.included} context items, ${snapshot.omitted} omitted · ${this.conversation.tokens} tokens · $${this.conversation.cost.toFixed(4)}`;
     const header = [this.theme.fg("accent", title), this.theme.fg("dim", info)];
     const body: string[] = [];
@@ -178,7 +185,12 @@ export class SideView {
 
       if (turn.answer || !turn.error)
         body.push(
-          ...new Markdown(clean(turn.answer || "…"), 0, 0, getMarkdownTheme()).render(width),
+          ...new Markdown(
+            `${this.profile.replyLabel ? `**${this.profile.replyLabel}:**\n` : ""}${clean(turn.answer || "…")}`,
+            0,
+            0,
+            getMarkdownTheme(),
+          ).render(width),
         );
 
       if (turn.error) body.push(this.theme.fg("warning", turn.error));
@@ -194,7 +206,7 @@ export class SideView {
       body.push("");
     }
 
-    if (!body.length) body.push("Ask a question about the main conversation context.");
+    if (!body.length) body.push(this.profile.empty);
 
     // Reserve the composer before optional headers/history. Keep the focused row
     // when Pi's editor is taller than this overlay, including after a resize.
@@ -203,8 +215,10 @@ export class SideView {
     const hint =
       this.notice ||
       (this.conversation.busy
-        ? "Escape: cancel side request · Ctrl+C: return"
-        : "Enter: ask · Escape: return · PgUp/PgDn: history");
+        ? "Escape: cancel dialogue request · Ctrl+C: return"
+        : this.conversation.completed
+          ? "/new: start again · Escape: return · PgUp/PgDn: history"
+          : (this.profile.hint ?? "Enter: send · Escape: return · PgUp/PgDn: history"));
     const room = Math.max(0, height - headerRows.length - editor.length - 1);
 
     this.scroll = Math.min(this.scroll, Math.max(0, body.length - room));

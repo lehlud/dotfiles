@@ -3,7 +3,7 @@ import { installQueueEditor } from "./queue-input.ts";
 import { registerQuestions } from "./questions/index.ts";
 import { registerProgress } from "./progress.ts";
 import { registerGoals } from "./goals.ts";
-import { registerSide } from "./side.ts";
+import { registerDialogues } from "./side.ts";
 import { registerSteering } from "./steering.ts";
 import { registerContinue } from "./continue.ts";
 import { registerOperatorInputs } from "./operator-input.ts";
@@ -15,7 +15,7 @@ export default function conversations(pi: ExtensionAPI) {
   registerOperatorInputs(pi);
   registerGoals(pi);
   registerProgress(pi);
-  registerSide(pi);
+  registerDialogues(pi);
   registerContinue(pi);
   registerSteering(pi, (ctx) => sessionServices(ctx).operatorGoal?.());
 }
