@@ -64,6 +64,49 @@ within each search root; explicit path arguments keep their command-line order.
 The script uses Bash 3.2-era features. Validation currently runs on Linux with Bash 5.3;
 macOS's bundled Bash has not been tested here.
 
+## Performance
+
+Plain literal searches use Bash string matching. The simple output scanner avoids per-line
+regex setup and general context formatting. Literal match positions are found directly;
+word/column output rejects lines without the literal before calculating positions.
+
+A whole-file check skips inputs with no possible match. Anchored and escaped regexes retain
+line-based evaluation. Binary detection happens before this check, and stdin stays streamed.
+
+Compare two versions with the Python 3.9+ standard-library harness:
+
+```bash
+python3 ~/.local/config/rg/benchmark_rg.py \
+  --baseline /path/to/previous-rg \
+  --candidate ~/.local/bin/rg \
+  --output /tmp/rg-bash-benchmark.json --rss
+```
+
+The harness freezes both scripts at equal-length paths. Every execution checks stdout,
+stderr and exit status. It runs each workload sequentially, includes startup costs, shuffles
+the version order and reports medians after one warmup and five timing samples. Optional
+Linux process-memory checks run separately after all timings. They sample `/proc`'s
+high-water counter every 5 ms and may miss a peak immediately before exit. Omit `--rss`
+on other platforms.
+
+Measured on Linux/Bash 5.3 against `45cdbd9`, using generated text files and a 400-file tree:
+
+| Workload | Before (ms) | After (ms) | Speedup |
+|---|---:|---:|---:|
+| absent literal | 2148.8 | 243.8 | 8.82× |
+| sparse literal | 2146.3 | 1064.6 | 2.02× |
+| dense literal | 1846.2 | 447.1 | 4.13× |
+| sparse regex | 2261.7 | 1385.9 | 1.63× |
+| word search | 3855.0 | 2275.2 | 1.69× |
+| long-line columns | 867.5 | 222.2 | 3.90× |
+| only matching | 5906.4 | 715.3 | 8.26× |
+| file discovery | 155.8 | 106.0 | 1.47× |
+
+These are local synthetic workloads. In three large matching-file cases, sampled process
+high-water memory increased from about 35.7 MiB to 38.5 MiB. The absent-pattern and long-line
+column cases used less memory; other observations were close. Memory measurements are
+approximate and cover the search process, not an aggregate process-tree quota.
+
 ## Validation
 
 ```bash

@@ -17,6 +17,9 @@ ignore_bases=()
 ancestors=()
 
 fixed=0
+all_literal=1
+prefilter_safe=1
+find_next=find_regex
 ignore_case=0
 smart_case=0
 invert=0
@@ -243,10 +246,12 @@ compile_patterns() {
         [[ $pattern != *$'\n'* ]] || fail 'multiline patterns are not implemented'
         [[ $pattern != *[[:upper:]]* ]] || uppercase=1
 
+        escape_literal "$pattern"
+
         if ((fixed)); then
-            escape_literal "$pattern"
             converted=$escaped
         else
+            [[ $escaped == "$pattern" ]] || all_literal=0
             converted=
             in_class=0
 
@@ -293,10 +298,19 @@ compile_patterns() {
         status=$?
         ((status != 2)) || fail "invalid POSIX extended regular expression: $pattern"
         expressions+=("$converted")
+
+        # Escapes can include platform-specific anchors; keep them line-scoped too.
+        if [[ $converted == *'^'* || $converted == *'$'* || $converted == *'\'* ]]; then
+            prefilter_safe=0
+        fi
     done
 
     if ((smart_case && !uppercase)); then
         ignore_case=1
+    fi
+
+    if ((all_literal && !ignore_case)); then
+        find_next=find_literal
     fi
 }
 
@@ -393,7 +407,9 @@ is_ignored() {
             pattern=${pattern%/}
         fi
 
-        if path_matches "$relative" "$pattern"; then
+        if [[ $pattern != */* && $pattern != *'{'* ]]; then
+            [[ ${relative##*/} != $pattern ]] || excluded=$((1-negate))
+        elif path_matches "$relative" "$pattern"; then
             excluded=$((1-negate))
         fi
     done
@@ -450,17 +466,26 @@ walk() {
         directory=0
         [[ ! -d $path ]] || directory=1
 
-        allowed_globs "${path#./}" "$directory" || continue
+        glob_include=0
+
+        if ((${#globs[@]})); then
+            allowed_globs "${path#./}" "$directory" || continue
+        fi
         ((hidden || glob_include == 1)) || [[ $name != .* ]] || continue
         ((no_ignore || glob_include == 1)) || [[ $name != .git ]] || continue
 
-        if ((glob_include != 1)) && is_ignored "$canonical/$name" "$directory"; then
+        if ((glob_include != 1 && ${#ignore_patterns[@]})) &&
+            is_ignored "$canonical/$name" "$directory"; then
             continue
         fi
 
         if ((directory)); then
             ((depth < max_depth)) && walk "$path" "$child" "$((depth+1))"
-        elif [[ -f $path ]] && ((depth < max_depth)) && allowed_types "$child"; then
+        elif [[ -f $path ]] && ((depth < max_depth)); then
+            if ((${#include_types[@]} + ${#exclude_types[@]})); then
+                allowed_types "$child" || continue
+            fi
+
             if ((strip_dot)); then
                 files+=("${path#./}")
             else
@@ -601,6 +626,47 @@ collect_files() {
     done
 }
 
+# Literal positions need no regex compilation or repeated anchored-prefix probes.
+find_literal() {
+    local line=$1 start=$2 pattern remaining prefix position prev next
+    local best=-1 best_text=
+
+    for pattern in "${patterns[@]}"; do
+        position=$start
+
+        while ((position <= ${#line})); do
+            remaining=${line:position}
+            [[ $remaining == *"$pattern"* ]] || break
+            prefix=${remaining%%"$pattern"*}
+            ((position += ${#prefix}))
+            ((best < 0 || position < best)) || break
+
+            if ((whole_line)) && ((position != 0 || ${#pattern} != ${#line})); then
+                break
+            fi
+
+            if ((word)); then
+                prev=
+                next=${line:position+${#pattern}:1}
+                ((position == 0)) || prev=${line:position-1:1}
+
+                if [[ $prev == [[:alnum:]_] || $next == [[:alnum:]_] ]]; then
+                    ((position += 1))
+                    continue
+                fi
+            fi
+
+            best=$position
+            best_text=$pattern
+            break
+        done
+    done
+
+    ((best >= 0)) || return 1
+    match_start=$best
+    match_text=$best_text
+}
+
 # Find a match at an absolute character position, preserving ^ and $ on repeated searches.
 match_at() {
     local line=$1 position=$3 expression_at="^.{${3}}($2)" text prev next
@@ -619,7 +685,7 @@ match_at() {
     match_start=$position
 }
 
-find_match() {
+find_regex() {
     local line=$1 start=$2 expression text prefix position remaining
     local best=-1 best_text=
 
@@ -661,17 +727,30 @@ find_match() {
 line_matches() {
     local line=$1 expression
 
+    ((file_unmatched == 0)) || return 1
+
     if ((word || column || only_matching)); then
-        find_match "$line" 0
+        if ((all_literal && ${#patterns[@]} == 1)) && [[ $line != *"${patterns[0]}"* ]]; then
+            return 1
+        fi
+
+        "$find_next" "$line" 0
         return
     fi
 
-    for expression in "${expressions[@]}"; do
-        if [[ $line =~ $expression ]]; then
-            match_start=0
-            return 0
-        fi
-    done
+    if ((all_literal)); then
+        for expression in "${patterns[@]}"; do
+            if ((whole_line)); then
+                [[ $line == "$expression" ]] && return 0
+            elif [[ $line == *"$expression"* ]]; then
+                return 0
+            fi
+        done
+    else
+        for expression in "${expressions[@]}"; do
+            [[ $line =~ $expression ]] && return 0
+        done
+    fi
 
     return 1
 }
@@ -720,10 +799,12 @@ print_line() {
 print_matches() {
     local line=$1 number=$2 start=0 previous_end=-1
 
-    while find_match "$line" "$start"; do
+    # line_matches already supplied the first match.
+    while :; do
         # Skip an empty match immediately following the previous nonempty match.
         if [[ -n $match_text ]] || ((match_start != previous_end)); then
-            byte_position "$line" "$match_start"
+            byte_start=0
+            ((column == 0)) || byte_position "$line" "$match_start"
             print_line "$number" "$match_text" : "$byte_start"
         fi
 
@@ -731,6 +812,7 @@ print_matches() {
         previous_end=$start
         [[ -n $match_text ]] || ((start += 1))
         ((start <= ${#line})) || break
+        "$find_next" "$line" "$start" || break
     done
 }
 
@@ -768,7 +850,8 @@ scan_lines() {
                 if ((only_matching && !invert)); then
                     print_matches "$line" "$number"
                 else
-                    byte_position "$line" "$match_start"
+                    byte_start=0
+                    ((column == 0 || invert)) || byte_position "$line" "$match_start"
                     print_line "$number" "$line" : "$byte_start"
                 fi
             fi
@@ -787,6 +870,12 @@ scan_lines() {
             break
         fi
     done
+
+    file_summary "$count"
+}
+
+file_summary() {
+    local count=$1
 
     case $mode in
         count)
@@ -810,15 +899,131 @@ scan_lines() {
     esac
 }
 
+# The basic scanner supplies its literal needle, constant format and filename prefix.
+print_literal_matches() {
+    local remaining=$1 number=$2
+
+    while [[ $remaining == *"$literal"* ]]; do
+        if ((line_numbers)); then
+            printf "$format" "${prefix_args[@]}" "$number" "$literal"
+        else
+            printf "$format" "${prefix_args[@]}" "$literal"
+        fi
+
+        remaining=${remaining#*"$literal"}
+    done
+}
+
+# Common searches avoid a function call and general output handling on every line.
+scan_basic() {
+    local line number=0 count=0 selected expression=${expressions[0]-}
+    local literal=${patterns[0]-} matcher=multi format='%s\n'
+    local prefix_args=()
+
+    if ((file_unmatched || ${#patterns[@]} == 0)); then
+        matcher=none
+    elif ((${#patterns[@]} == 1)); then
+        matcher=regex
+
+        if ((all_literal)); then
+            matcher=literal
+            ((whole_line == 0)) || matcher=exact
+        fi
+    fi
+
+    ((line_numbers == 0)) || format='%s:'$format
+
+    if [[ $filenames == yes ]]; then
+        prefix_args=("$display_path")
+
+        if ((null_paths)); then
+            format='%s\0'$format
+        else
+            format='%s:'$format
+        fi
+    fi
+
+    while IFS= read -r line || [[ -n $line ]]; do
+        ((number += 1))
+        selected=0
+
+        case $matcher in
+            literal) [[ $line != *"$literal"* ]] || selected=1 ;;
+            exact) [[ $line != "$literal" ]] || selected=1 ;;
+            regex) [[ ! $line =~ $expression ]] || selected=1 ;;
+            multi) line_matches "$line" && selected=1 ;;
+        esac
+
+        ((invert == 0)) || selected=$((1-selected))
+        ((selected)) || continue
+        ((count += 1))
+        [[ $mode != without ]] || return 0
+        found=1
+        ((quiet == 0)) || return 0
+        [[ $mode != with ]] || { print_path "$display_path"; return; }
+
+        if [[ $mode == lines ]]; then
+            # Only constant conversions enter format; paths/text remain printf arguments.
+            if ((only_matching && !invert)); then
+                print_literal_matches "$line" "$number"
+            elif ((line_numbers)); then
+                printf "$format" "${prefix_args[@]}" "$number" "$line"
+            else
+                printf "$format" "${prefix_args[@]}" "$line"
+            fi
+        fi
+
+        ((count < max_count)) || break
+    done
+
+    file_summary "$count"
+}
+
+scan_input() {
+    if ((before || after || word || column)); then
+        scan_lines
+        return
+    fi
+
+    if ((only_matching && !invert)); then
+        if ((!all_literal || ignore_case || ${#patterns[@]} != 1)) ||
+            [[ -z ${patterns[0]-} ]]; then
+            scan_lines
+            return
+        fi
+    fi
+
+    scan_basic
+}
+
+# False positives are harmless. Anchors stay in the line-based scanner.
+file_may_match() {
+    local content=$1 expression
+
+    if ((all_literal)); then
+        for expression in "${patterns[@]}"; do
+            [[ $content != *"$expression"* ]] || return 0
+        done
+    elif ((prefilter_safe)); then
+        for expression in "${expressions[@]}"; do
+            [[ ! $content =~ $expression ]] || return 0
+        done
+    else
+        return 0
+    fi
+
+    return 1
+}
+
 search_file() {
-    local path=$1 content display_path status
+    local path=$1 content display_path status file_unmatched=0
 
     ((max_count > 0)) || return 0
 
     if [[ $path == - ]]; then
         display_path='<stdin>'
         ((ignore_case == 0)) || shopt -s nocasematch
-        scan_lines
+        scan_input
         shopt -u nocasematch
         return
     else
@@ -851,9 +1056,20 @@ search_file() {
         return
     fi
 
-    content=${content%$'\n'}
     ((ignore_case == 0)) || shopt -s nocasematch
-    scan_lines <<< "$content"
+
+    if ! file_may_match "$content"; then
+        file_unmatched=1
+
+        if ((invert == 0)); then
+            file_summary 0
+            shopt -u nocasematch
+            return
+        fi
+    fi
+
+    content=${content%$'\n'}
+    scan_input <<< "$content"
     shopt -u nocasematch
 }
 

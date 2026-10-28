@@ -185,6 +185,42 @@ class RipgrepTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2, result)
                 self.assertIn(b'rg:', result.stderr)
 
+    def test_literal_positions_and_word_boundaries(self):
+        self.check(['-wo', 'cat', '-'], b'cat\ncat\n', data=b'cats cat _cat cat!\n')
+        self.check(['--column', '-w', 'cat', '-'], b'1:6:cats cat _cat cat!\n',
+                   data=b'cats cat _cat cat!\n')
+        self.check(['-o', '-e', 'later', '-e', 'early', '-'], b'early\nlater\n',
+                   data=b'early later\n')
+        self.check(['-x', '-o', 'cat', '-'], b'cat\n', data=b'cats\ncat\ncat cat\n')
+        self.check(['-io', 'cAt', '-'], b'CAT\ncat\n', data=b'CAT cat\n')
+        self.check(['-Fo', '*?', '-'], b'*?\n*?\n', data=b'x*?y*?\n')
+        self.check(['-Fox', '*?', '-'], b'*?\n', data=b'xxx\n*?\n*?*?\n')
+        self.check(['--column', '-F', 'cat', '-'], '1:4:ä cat\n'.encode(), data='ä cat\n'.encode())
+
+    def test_file_rejection_preserves_anchors_and_output_modes(self):
+        self.put('anchored.txt', 'prefix\nneedle\nsuffix\n')
+        for pattern in ['^needle', 'needle$', '^needle$', '^needle|missing$']:
+            self.check(['-n', pattern, 'anchored.txt'], b'2:needle\n')
+
+        self.check(['--files-without-match', 'missing', 'anchored.txt'], b'anchored.txt\n')
+        self.check(['-vc', 'missing', 'anchored.txt'], b'3\n')
+        self.check(['-vnC1', 'missing', 'anchored.txt'], b'1:prefix\n2:needle\n3:suffix\n')
+        self.check(['[[:space:]]', 'anchored.txt'], b'', 1)
+        self.check(['-F', '^needle$', 'anchored.txt'], b'', 1)
+        self.check(['-Fi', 'NEEDLE', 'anchored.txt'], b'needle\n')
+        self.check(['-F', '-e', 'missing', '-e', 'needle', 'anchored.txt'], b'needle\n')
+
+        # Some Bash regex engines expose GNU buffer anchors through escaped punctuation.
+        for pattern in [r"needle\'", r'\`needle']:
+            probe = subprocess.run([BASH, '-c', '[[ needle =~ $1 ]]', 'bash', pattern])
+            if probe.returncode == 0:
+                self.check(['-n', pattern, 'anchored.txt'], b'2:needle\n')
+
+    def test_binary_skip_still_applies_after_an_early_match(self):
+        (self.root / 'late-binary').write_bytes(b'needle\n' + b'text\n' * 5000 + b'\0tail')
+        self.check(['-q', 'needle', 'late-binary'], b'', 1)
+        self.check(['-l', 'needle', 'late-binary'], b'', 1)
+
     def test_no_external_runtime_dependencies(self):
         environment = dict(os.environ, PATH='/nonexistent')
         environment.pop('BASH_ENV', None)
