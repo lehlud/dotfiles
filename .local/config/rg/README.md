@@ -61,17 +61,25 @@ Regular files are read one at a time into memory. Large files, large trees and m
 output can be considerably slower than native ripgrep. `--sort path` uses Bash string ordering
 within each search root; explicit path arguments keep their command-line order.
 
-The script uses Bash 3.2-era features. Validation currently runs on Linux with Bash 5.3;
-macOS's bundled Bash has not been tested here.
+Bash 4+ can use its `mapfile` builtin for block scanning. Bash 3.2 and shells with that
+builtin disabled retain the line reader. Validation runs on Linux with Bash 5.3, including
+the disabled-builtin fallback; macOS's bundled Bash has not been tested here.
 
 ## Performance
 
-Plain literal searches use Bash string matching. The simple output scanner avoids per-line
-regex setup and general context formatting. Literal match positions are found directly;
-word/column output rejects lines without the literal before calculating positions.
+Plain literal searches use Bash string matching. Case-sensitive literal scans switch to
+byte processing only after both patterns and the complete input are checked for ASCII.
+Other matching retains the original locale. Raw reads and final-newline removal operate on
+bytes, and filters access buffers by variable name to avoid full-file argument copies.
 
-A whole-file check skips inputs with no possible match. Anchored and escaped regexes retain
-line-based evaluation. Binary detection happens before this check, and stdin stays streamed.
+For large, sparse regular files, a bounded `mapfile` reader skips 64-line blocks that cannot
+contain a match. A small density sample selects this path; consecutive useful blocks switch
+back to streaming when the file becomes dense. Skipped empty lines still count toward line
+numbers. Context, inverted output and stdin keep their line readers.
+
+Whole-file rejection and block rejection use necessary-match checks. Binary detection
+happens first. Original stdin is restored after regular-file searches, including when a
+later `-` argument consumes it.
 
 Compare two versions with the Python 3.9+ standard-library harness:
 
@@ -89,23 +97,33 @@ Linux process-memory checks run separately after all timings. They sample `/proc
 high-water counter every 5 ms and may miss a peak immediately before exit. Omit `--rss`
 on other platforms.
 
-Measured on Linux/Bash 5.3 against `45cdbd9`, using generated text files and a 400-file tree:
+Measured on Linux/Bash 5.3 against `676f9e2`, using generated ASCII text and a 400-file tree:
 
 | Workload | Before (ms) | After (ms) | Speedup |
 |---|---:|---:|---:|
-| absent literal | 2148.8 | 243.8 | 8.82× |
-| sparse literal | 2146.3 | 1064.6 | 2.02× |
-| dense literal | 1846.2 | 447.1 | 4.13× |
-| sparse regex | 2261.7 | 1385.9 | 1.63× |
-| word search | 3855.0 | 2275.2 | 1.69× |
-| long-line columns | 867.5 | 222.2 | 3.90× |
-| only matching | 5906.4 | 715.3 | 8.26× |
-| file discovery | 155.8 | 106.0 | 1.47× |
+| absent literal | 241.8 | 129.2 | 1.87× |
+| sparse literal | 1072.8 | 456.5 | 2.35× |
+| dense literal | 446.1 | 393.3 | 1.13× |
+| sparse regex | 1388.8 | 655.7 | 2.12× |
+| word search | 2272.2 | 540.2 | 4.21× |
+| long-line columns | 223.7 | 114.9 | 1.95× |
+| only matching | 705.7 | 610.2 | 1.16× |
+| file discovery | 105.8 | 105.3 | 1.00× |
 
-These are local synthetic workloads. In three large matching-file cases, sampled process
-high-water memory increased from about 35.7 MiB to 38.5 MiB. The absent-pattern and long-line
-column cases used less memory; other observations were close. Memory measurements are
-approximate and cover the search process, not an aggregate process-tree quota.
+Separate controls used one warmup and three samples, with identical output checks. Add
+`--controls --samples 3` to the benchmark command and choose a separate output file:
+
+| Control | Before (ms) | After (ms) | Speedup |
+|---|---:|---:|---:|
+| Unicode word | 1128.4 | 276.8 | 4.08× |
+| mixed density | 451.2 | 388.1 | 1.16× |
+| dense stdin | 388.4 | 386.3 | 1.01× |
+| multiple literals | 1188.3 | 244.1 | 4.87× |
+
+In the large sparse-file cases, sampled process high-water memory fell from about 38.5 MiB
+to 19.9 MiB. Other search cases also used less sampled memory; file discovery was essentially
+unchanged. These are local synthetic measurements. Memory observations are approximate and
+cover the search process, not an aggregate process-tree quota.
 
 ## Validation
 
@@ -115,7 +133,8 @@ python3 ~/.local/config/rg/test_rg.py
 ```
 
 The tests cover stdin, context, matching modes, paths with spaces, literal shell syntax,
-ignore precedence, types, NUL output, binary files, symlinks and errors. A test runs Bash
+ignore precedence, types, NUL output, binary files, symlinks, block boundaries, density
+changes, locale restoration and the disabled-`mapfile` fallback. A test runs Bash
 with an empty executable search path to catch external helper dependencies. When native
 ripgrep is available, differential cases compare stdout and exit status; set `REAL_RG` to
 its absolute path if this launcher already takes precedence in `PATH`.

@@ -112,7 +112,7 @@ class RipgrepTests(unittest.TestCase):
 
     def test_context_counts_and_quiet(self):
         self.check(['-nC1', 'third', 'sample.txt'], b'2-Beta alpha\n3:third\n4-\n')
-        self.check(['-nB1', '-A1', '-m1', 'alpha', 'sample.txt'], b'1:alpha beta\n2-Beta alpha\n')
+        self.check(['-nB1', '-A1', '-m1', 'alpha', 'sample.txt'], b'1:alpha beta\n2:Beta alpha\n')
         self.check(['-nc', 'alpha', 'sample.txt'], b'3\n')
         self.check(['-Hc', 'alpha', 'sample.txt'], b'sample.txt:3\n')
         self.check(['-m0', 'alpha', 'sample.txt'], b'', 1)
@@ -220,6 +220,70 @@ class RipgrepTests(unittest.TestCase):
         (self.root / 'late-binary').write_bytes(b'needle\n' + b'text\n' * 5000 + b'\0tail')
         self.check(['-q', 'needle', 'late-binary'], b'', 1)
         self.check(['-l', 'needle', 'late-binary'], b'', 1)
+
+    def test_block_boundaries_preserve_line_numbers_and_context(self):
+        lines = ['plain value ' * 64 if index % 5 else '' for index in range(197)]
+        positions = [63, 64, 65, 127, 128, 129, 196]
+        for index in positions:
+            lines[index] = f'ä marker {index}'
+        self.put('blocks.txt', '\n'.join(lines))
+        expected = ''.join(f'{index+1}:{lines[index]}\n' for index in positions).encode()
+        self.check(['-n', 'marker', 'blocks.txt'], expected)
+        self.check(['-n', '-m2', 'marker', 'blocks.txt'],
+                   ''.join(f'{index+1}:{lines[index]}\n' for index in positions[:2]).encode())
+        self.check(['-Fino', 'marker', 'blocks.txt'],
+                   ''.join(f'{index+1}:marker\n' for index in positions).encode())
+
+        self.check(['-In', 'marker', 'blocks.txt', '-'],
+                   expected + b'1:marker from stdin\n', data=b'marker from stdin\n')
+
+        if REFERENCE:
+            for flags in [['-nC1'], ['-wn'], ['--column'], ['-vc'], ['-n', '^ä marker'],
+                          ['--files-without-match'], ['-q'], ['-n', '-m2', '-A2']]:
+                pattern = [] if '^ä marker' in flags else ['marker']
+                args = [*flags, *pattern, 'blocks.txt']
+                actual = self.run_rg(*args)
+                expected = self.run_rg(*args, executable=REFERENCE)
+                self.assertEqual((actual.returncode, actual.stdout, actual.stderr),
+                                 (expected.returncode, expected.stdout, expected.stderr), args)
+
+    def test_dense_region_fallback_keeps_records_limits_and_stdin(self):
+        self.put('mixed-blocks.txt', ('plain data ' * 32 + '\n') * 300 +
+                 'marker\n' * 500 + 'tail\n' * 100)
+        self.check(['-Ic', 'marker', 'mixed-blocks.txt', '-'], b'500\n1\n', data=b'marker\n')
+        expected = ''.join(f'{number}:marker\n' for number in range(301, 601)).encode()
+        self.check(['-n', '-m300', 'marker', 'mixed-blocks.txt'], expected)
+        if REFERENCE:
+            for flags in [['-wn'], ['--column'], ['-n', '-m300']]:
+                actual = self.run_rg(*flags, 'marker', 'mixed-blocks.txt')
+                native = self.run_rg(*flags, 'marker', 'mixed-blocks.txt', executable=REFERENCE)
+                self.assertEqual((actual.returncode, actual.stdout, actual.stderr),
+                                 (native.returncode, native.stdout, native.stderr))
+
+    def test_disabled_mapfile_keeps_the_streaming_fallback(self):
+        environment = dict(os.environ, PATH='/nonexistent')
+        environment.pop('BASH_ENV', None)
+        self.put('fallback.txt', 'plain\n' * 12500 + 'alpha\n')
+        result = subprocess.run(
+            [BASH, '-c', 'if ((BASH_VERSINFO[0] >= 4)); then enable -n mapfile; fi; source "$1" "${@:2}"',
+             'bash', str(SCRIPT), '-n', 'alpha', 'fallback.txt'],
+            cwd=self.root, env=environment, stdin=subprocess.DEVNULL,
+            capture_output=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b'12501:alpha\n')
+        self.assertEqual(result.stderr, b'')
+
+    def test_byte_reading_preserves_text_and_locale_matching(self):
+        data = 'Grüße ä München'.encode()
+        (self.root / 'bytes.txt').write_bytes(data)
+        self.check(['-n', '-F', 'ä', 'bytes.txt'], b'1:' + data + b'\n')
+        self.check(['--column', 'München', 'bytes.txt'], b'1:12:' + data + b'\n')
+        (self.root / 'raw.txt').write_bytes(b'needle \xf0\xff')
+        self.check(['-F', 'needle', 'raw.txt'], b'needle \xf0\xff\n')
+        self.put('ascii.txt', 'marker\n')
+        self.put('unicode-boundaries.txt', 'ämarker marker\n')
+        self.check(['-Iwo', 'marker', 'ascii.txt', 'unicode-boundaries.txt'], b'marker\nmarker\n')
 
     def test_no_external_runtime_dependencies(self):
         environment = dict(os.environ, PATH='/nonexistent')

@@ -18,8 +18,10 @@ ancestors=()
 
 fixed=0
 all_literal=1
+ascii_patterns=1
 prefilter_safe=1
 find_next=find_regex
+block_reader=-1
 ignore_case=0
 smart_case=0
 invert=0
@@ -245,6 +247,7 @@ compile_patterns() {
     for pattern in "${patterns[@]}"; do
         [[ $pattern != *$'\n'* ]] || fail 'multiline patterns are not implemented'
         [[ $pattern != *[[:upper:]]* ]] || uppercase=1
+        is_ascii pattern || ascii_patterns=0
 
         escape_literal "$pattern"
 
@@ -818,57 +821,72 @@ print_matches() {
 
 scan_lines() {
     local line number=0 selected count=0 remaining_after=0 i first
-    local ring=() last_printed=0 match_start=0 match_text=
+    local ring=() last_printed=0 match_start=0 match_text= input_done=0
 
-    while IFS= read -r line || [[ -n $line ]]; do
-        ((number += 1))
-        selected=0
+    while prepare_chunk; do
+        while IFS= read -r line || [[ -n $line ]]; do
+            ((number += 1))
+            selected=0
 
-        if ((count < max_count)); then
-            line_matches "$line" && selected=1
-            ((invert == 0)) || selected=$((1-selected))
-        fi
-
-        if ((selected)); then
-            ((count += 1))
-            if [[ $mode != without ]]; then
-                found=1
-                ((quiet == 0)) || return 0
+            if ((count < max_count)); then
+                line_matches "$line" && selected=1
+                ((invert == 0)) || selected=$((1-selected))
             fi
 
-            [[ $mode != with ]] || { print_path "$display_path"; return; }
+            if ((selected)); then
+                ((count += 1))
+                if [[ $mode != without ]]; then
+                    found=1
+                    ((quiet == 0)) || return 0
+                fi
 
-            if [[ $mode == lines ]]; then
-                first=$((number-before))
-                ((first > last_printed)) || first=$((last_printed+1))
-                ((first > 0)) || first=1
+                [[ $mode != with ]] || { print_path "$display_path"; return; }
 
-                for ((i=first; i<number; i++)); do
-                    print_line "$i" "${ring[i % (before+1)]}" -
-                done
+                if [[ $mode == lines ]]; then
+                    first=$((number-before))
+                    ((first > last_printed)) || first=$((last_printed+1))
+                    ((first > 0)) || first=1
 
-                if ((only_matching && !invert)); then
-                    print_matches "$line" "$number"
-                else
+                    for ((i=first; i<number; i++)); do
+                        print_line "$i" "${ring[i % (before+1)]}" -
+                    done
+
+                    if ((only_matching && !invert)); then
+                        print_matches "$line" "$number"
+                    else
+                        byte_start=0
+                        ((column == 0 || invert)) || byte_position "$line" "$match_start"
+                        print_line "$number" "$line" : "$byte_start"
+                    fi
+                fi
+
+                remaining_after=$after
+            elif ((remaining_after && count > 0)) && [[ $mode == lines ]]; then
+                # The count limit stops selection, but trailing context keeps match markers.
+                if ((count >= max_count)); then
+                    line_matches "$line" && selected=1
+                    ((invert == 0)) || selected=$((1-selected))
+                fi
+
+                if ((selected)); then
                     byte_start=0
                     ((column == 0 || invert)) || byte_position "$line" "$match_start"
                     print_line "$number" "$line" : "$byte_start"
+                else
+                    print_line "$number" "$line" -
                 fi
+
+                ((remaining_after -= 1))
             fi
 
-            remaining_after=$after
-        elif ((remaining_after && count > 0)) && [[ $mode == lines ]]; then
-            print_line "$number" "$line" -
-            ((remaining_after -= 1))
-        fi
+            if ((before)); then
+                ring[number % (before+1)]=$line
+            fi
 
-        if ((before)); then
-            ring[number % (before+1)]=$line
-        fi
-
-        if ((count >= max_count && remaining_after == 0)); then
-            break
-        fi
+            if ((count >= max_count && remaining_after == 0)); then
+                break 2
+            fi
+        done
     done
 
     file_summary "$count"
@@ -943,37 +961,41 @@ scan_basic() {
         fi
     fi
 
-    while IFS= read -r line || [[ -n $line ]]; do
-        ((number += 1))
-        selected=0
+    local input_done=0
 
-        case $matcher in
-            literal) [[ $line != *"$literal"* ]] || selected=1 ;;
-            exact) [[ $line != "$literal" ]] || selected=1 ;;
-            regex) [[ ! $line =~ $expression ]] || selected=1 ;;
-            multi) line_matches "$line" && selected=1 ;;
-        esac
+    while prepare_chunk; do
+        while IFS= read -r line || [[ -n $line ]]; do
+            ((number += 1))
+            selected=0
 
-        ((invert == 0)) || selected=$((1-selected))
-        ((selected)) || continue
-        ((count += 1))
-        [[ $mode != without ]] || return 0
-        found=1
-        ((quiet == 0)) || return 0
-        [[ $mode != with ]] || { print_path "$display_path"; return; }
+            case $matcher in
+                literal) [[ $line != *"$literal"* ]] || selected=1 ;;
+                exact) [[ $line != "$literal" ]] || selected=1 ;;
+                regex) [[ ! $line =~ $expression ]] || selected=1 ;;
+                multi) line_matches "$line" && selected=1 ;;
+            esac
 
-        if [[ $mode == lines ]]; then
-            # Only constant conversions enter format; paths/text remain printf arguments.
-            if ((only_matching && !invert)); then
-                print_literal_matches "$line" "$number"
-            elif ((line_numbers)); then
-                printf "$format" "${prefix_args[@]}" "$number" "$line"
-            else
-                printf "$format" "${prefix_args[@]}" "$line"
+            ((invert == 0)) || selected=$((1-selected))
+            ((selected)) || continue
+            ((count += 1))
+            [[ $mode != without ]] || return 0
+            found=1
+            ((quiet == 0)) || return 0
+            [[ $mode != with ]] || { print_path "$display_path"; return; }
+
+            if [[ $mode == lines ]]; then
+                # Only constant conversions enter format; paths/text remain printf arguments.
+                if ((only_matching && !invert)); then
+                    print_literal_matches "$line" "$number"
+                elif ((line_numbers)); then
+                    printf "$format" "${prefix_args[@]}" "$number" "$line"
+                else
+                    printf "$format" "${prefix_args[@]}" "$line"
+                fi
             fi
-        fi
 
-        ((count < max_count)) || break
+            ((count < max_count)) || break 2
+        done
     done
 
     file_summary "$count"
@@ -996,17 +1018,118 @@ scan_input() {
     scan_basic
 }
 
+# Restrict actual byte-mode matching to proven ASCII data and case-sensitive literals.
+is_ascii() {
+    local text_variable=$1 LC_ALL=C non_ascii=$'[\200-\377]'
+
+    [[ ! ${!text_variable} =~ $non_ascii ]]
+}
+
+# Byte I/O and removal of a final ASCII newline do not require Unicode decoding.
+read_file_bytes() {
+    local LC_ALL=C
+
+    IFS= read -r -d '' content <&3
+}
+
+trim_file_newline() {
+    local LC_ALL=C
+
+    if [[ ${content: -1} == $'\n' ]]; then
+        content=${content:0:${#content}-1}
+    fi
+}
+
+# Offsets count every record, including empty and skipped lines.
+read_block() {
+    while :; do
+        ((record_base += ${#records[@]}))
+
+        if ! builtin mapfile -t -n 64 -u 3 records; then
+            error "cannot read search input: $display_path"
+            return 1
+        fi
+
+        ((${#records[@]})) || return 1
+
+        if ((!invert && !before && !after && (all_literal || prefilter_safe))); then
+            printf -v scan_block '%s\n' "${records[@]}"
+
+            if ! buffer_may_match scan_block; then
+                block_streak=0
+                continue
+            fi
+        fi
+
+        ((block_streak += 1))
+        ((block_streak < 4)) || stream_remainder=1
+        return 0
+    done
+}
+
+# The density estimate only selects a backend; it never decides a search result.
+sample_file_bytes() {
+    local LC_ALL=C
+    local flat
+
+    sample_size=${#content}
+    sample=${content:0:8192}
+    flat=${sample//$'\n'/}
+    sample_lines=$((${#sample}-${#flat}))
+}
+
+prefer_blocks() {
+    local sample sample_size sample_lines sample_line examined=0 hits=0
+
+    ((!invert && !before && !after && (all_literal || prefilter_safe))) || return 1
+    sample_file_bytes
+    ((sample_size >= 65536 && sample_lines >= 8)) || return 1
+
+    while IFS= read -r sample_line || [[ -n $sample_line ]]; do
+        buffer_may_match sample_line && ((hits += 1))
+        ((examined += 1))
+        ((examined < 64)) || break
+    done <<< "$sample"
+
+    ((hits * 4 < examined))
+}
+
+prepare_chunk() {
+    if ((block_input == 0)); then
+        ((input_done++ == 0))
+        return
+    fi
+
+    # Dense regions gain nothing from further block rejection checks.
+    if ((stream_remainder)); then
+        block_input=0
+        input_done=1
+        exec 0<&3
+        return
+    fi
+
+    read_block || return 1
+    number=$record_base
+    exec 0<<< "${scan_block%$'\n'}"
+}
+
 # False positives are harmless. Anchors stay in the line-based scanner.
-file_may_match() {
-    local content=$1 expression
+# Names are trusted internal variables, avoiding copies of multi-megabyte arguments.
+buffer_may_match() {
+    local text_variable=$1 expression
 
     if ((all_literal)); then
+        # Byte containment is necessary for a case-sensitive Unicode literal match.
+        if ((ignore_case == 0)); then
+            local LC_ALL=C
+        fi
+
         for expression in "${patterns[@]}"; do
-            [[ $content != *"$expression"* ]] || return 0
+            [[ ${!text_variable} != *"$expression"* ]] || return 0
         done
     elif ((prefilter_safe)); then
         for expression in "${expressions[@]}"; do
-            [[ ! $content =~ $expression ]] || return 0
+            [[ ! ${!text_variable} =~ $expression ]] || return 0
         done
     else
         return 0
@@ -1017,6 +1140,8 @@ file_may_match() {
 
 search_file() {
     local path=$1 content display_path status file_unmatched=0
+    local block_input=0 record_base=0 records=() scan_block=
+    local block_streak=0 stream_remainder=0
 
     ((max_count > 0)) || return 0
 
@@ -1039,7 +1164,7 @@ search_file() {
             return
         fi
 
-        IFS= read -r -d '' content <&3
+        read_file_bytes
         status=$?
         exec 3<&-
     fi
@@ -1058,7 +1183,7 @@ search_file() {
 
     ((ignore_case == 0)) || shopt -s nocasematch
 
-    if ! file_may_match "$content"; then
+    if ! buffer_may_match content; then
         file_unmatched=1
 
         if ((invert == 0)); then
@@ -1068,8 +1193,36 @@ search_file() {
         fi
     fi
 
-    content=${content%$'\n'}
-    scan_input <<< "$content"
+    if ((all_literal && ascii_patterns && !ignore_case)) && is_ascii content; then
+        local LC_ALL=C
+    fi
+
+    trim_file_newline
+
+    if ((BASH_VERSINFO[0] >= 4)) && prefer_blocks; then
+        if ((block_reader < 0)); then
+            block_reader=0
+            [[ $(builtin type -t mapfile) != builtin ]] || block_reader=1
+        fi
+
+        block_input=$block_reader
+    fi
+
+    if ((block_input)); then
+        if ! { exec 3<<< "$content"; }; then
+            error "cannot prepare search input: $display_path"
+            shopt -u nocasematch
+            return
+        fi
+
+        content=
+        # Scope chunk stdin to this call, preserving input for a later '-' argument.
+        scan_input </dev/null
+        exec 3<&-
+    else
+        scan_input <<< "$content"
+    fi
+
     shopt -u nocasematch
 }
 
