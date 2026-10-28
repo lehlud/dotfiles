@@ -285,6 +285,131 @@ class RipgrepTests(unittest.TestCase):
         self.put('unicode-boundaries.txt', 'ämarker marker\n')
         self.check(['-Iwo', 'marker', 'ascii.txt', 'unicode-boundaries.txt'], b'marker\nmarker\n')
 
+    def listing(self, path, executable=None, env=None):
+        result = self.run_rg('--files', '-0', path, executable=executable, env=env)
+        self.assertIn(result.returncode, (0, 1), result.stderr)
+        self.assertEqual(result.stderr, b'')
+        return set(result.stdout.rstrip(b'\0').split(b'\0')) if result.stdout else set()
+
+    def test_nested_git_repositories_stop_parent_gitignore_rules(self):
+        (self.root / 'parent/.git').mkdir(parents=True)
+        (self.root / 'parent/child/.git').mkdir(parents=True)
+        self.put('parent/.gitignore', '*.txt\n')
+        self.put('parent/child/a.txt', 'needle\n')
+        expected = {b'parent/child/a.txt'}
+        self.assertEqual(self.listing('parent/child'), expected)
+        if REFERENCE:
+            self.assertEqual(self.listing('parent/child', REFERENCE), expected)
+
+    def test_ignore_file_priorities_cross_directory_boundaries(self):
+        (self.root / 'parent/.git').mkdir(parents=True)
+        (self.root / 'parent/child/.git').mkdir(parents=True)
+        self.put('parent/.ignore', '*.txt\n')
+        self.put('parent/child/.gitignore', '!a.txt\n')
+        self.put('parent/child/a.txt', 'needle\n')
+        self.assertEqual(self.listing('parent/child'), set())
+        self.put('parent/child/.ignore', '!a.txt\n')
+        self.assertEqual(self.listing('parent/child'), {b'parent/child/a.txt'})
+        self.put('parent/.rgignore', '*.txt\n')
+        self.assertEqual(self.listing('parent/child'), set())
+        if REFERENCE:
+            self.assertEqual(self.listing('parent/child', REFERENCE), set())
+
+    def test_gitignore_outside_repositories_and_local_git_excludes(self):
+        self.put('outside/.gitignore', '*.txt\n')
+        self.put('outside/a.txt', 'needle\n')
+        self.assertEqual(self.listing('outside'), {b'outside/a.txt'})
+        self.put('repo/.git/info/exclude', 'private.txt\n')
+        self.put('repo/private.txt', 'needle\n')
+        self.put('repo/public.txt', 'needle\n')
+        self.assertEqual(self.listing('repo'), {b'repo/public.txt'})
+        self.put('repo/.gitignore', '!private.txt\n')
+        self.assertEqual(self.listing('repo'), {b'repo/private.txt', b'repo/public.txt'})
+        if REFERENCE:
+            self.assertEqual(self.listing('repo'), self.listing('repo', REFERENCE))
+
+    def test_ignore_spaces_braces_and_escaped_markers(self):
+        (self.root / 'repo/.git').mkdir(parents=True)
+        self.put('repo/.gitignore', 'drop.txt  \nkeep\\ \n{a,b}.txt\n\\#note\n\\!keep\n')
+        for name in ['drop.txt', 'keep ', 'a.txt', 'b.txt', '{a,b}.txt', '#note', '!keep']:
+            self.put('repo/' + name, 'needle\n')
+        expected = {b'repo/{a,b}.txt'}
+        self.assertEqual(self.listing('repo'), expected)
+        if REFERENCE:
+            self.assertEqual(self.listing('repo', REFERENCE), expected)
+
+    def test_directory_resolution_ignores_cdpath_and_preserves_newline_names(self):
+        self.put('project/sub/file.txt', 'needle\n')
+        self.put('elsewhere/project/wrong.txt', 'wrong\n')
+        environment = dict(os.environ, CDPATH=str(self.root / 'elsewhere'))
+        self.assertEqual(self.listing('project', env=environment), {b'project/sub/file.txt'})
+        (self.root / 'newline\n/.git').mkdir(parents=True)
+        self.put('newline\n/.gitignore', 'drop.txt\n')
+        self.put('newline\n/drop.txt', 'drop\n')
+        self.put('newline\n/keep.txt', 'keep\n')
+        self.assertEqual(self.listing('newline\n'), {b'newline\n/keep.txt'})
+
+    def test_linked_worktree_excludes_and_literal_gitdir_paths(self):
+        self.put('admin/worktrees/wt/commondir', '../..\n')
+        self.put('admin/info/exclude', 'private.txt\n')
+        self.put('worktree/.git', f'gitdir: {self.root}/admin/worktrees/wt\n')
+        self.put('worktree/private.txt', 'private\n')
+        self.put('worktree/public.txt', 'public\n')
+        self.assertEqual(self.listing('worktree'), {b'worktree/public.txt'})
+        if REFERENCE:
+            self.assertEqual(self.listing('worktree'), self.listing('worktree', REFERENCE))
+        self.put('literal/.git', 'gitdir: ../$(printf injected > marker)\n')
+        self.put('$(printf injected > marker)/info/exclude', 'hidden.txt\n')
+        self.put('literal/hidden.txt', 'needle\n')
+        self.assertEqual(self.listing('literal'), set())
+        self.assertFalse((self.root / 'marker').exists())
+
+    def test_occurrence_counts_and_match_limits(self):
+        self.put('counts.txt', 'aaa\nbb\n\n')
+        self.check(['-co', 'a', 'counts.txt'], b'3\n')
+        self.check(['--count-matches', '-m1', 'a', 'counts.txt'], b'3\n')
+        self.check(['-co', 'a*', 'counts.txt'], b'5\n')
+        self.check(['--count-matches', '-v', 'a', 'counts.txt'], b'2\n')
+        if REFERENCE:
+            for flags in [['-co'], ['--count-matches'], ['--count-matches', '-m1'],
+                          ['--count-matches', '-c'], ['-c', '--count-matches'],
+                          ['-co', '-v'], ['-co', '-w'], ['-co', '-x'], ['-co', '-n', '-C1']]:
+                for pattern in ['a', 'a*', '', 'a|bb']:
+                    args = [*flags, pattern, 'counts.txt']
+                    actual = self.run_rg(*args)
+                    native = self.run_rg(*args, executable=REFERENCE)
+                    self.assertEqual((actual.returncode, actual.stdout, actual.stderr),
+                                     (native.returncode, native.stdout, native.stderr), args)
+
+    def test_directory_state_is_scoped_to_each_search_root(self):
+        (self.root / 'first/.git').mkdir(parents=True)
+        self.put('first/.gitignore', '*.log\n')
+        self.put('first/nested/keep.txt', 'needle\n')
+        self.put('first/drop.log', 'needle\n')
+        self.put('second/keep.log', 'needle\n')
+        expected = {b'first/nested/keep.txt', b'second/keep.log'}
+        result = self.run_rg('--files', '-0', 'first', 'second')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(result.stdout.rstrip(b'\0').split(b'\0')), expected)
+        self.check(['-n', 'needle', 'first', 'other.txt'], b'first/nested/keep.txt:1:needle\n')
+        if REFERENCE:
+            native = self.run_rg('--files', '-0', 'first', 'second', executable=REFERENCE)
+            self.assertEqual(set(native.stdout.rstrip(b'\0').split(b'\0')), expected)
+
+    @unittest.skipUnless(REFERENCE, 'native ripgrep not installed')
+    def test_literal_presence_and_counts_preserve_matching_modes(self):
+        self.put('presence.txt', 'Grüße *?\nALPHA alpha alpha\n\n')
+        for flags in [['-q'], ['-l'], ['--files-without-match'], ['-iq'], ['-il'],
+                      ['-vl'], ['-ql'], ['-q', '--files-without-match'], ['-co'], ['-Fco']]:
+            for pattern in ['alpha', 'ALPHA', 'missing', '', 'Grüße']:
+                args = [*flags, pattern, 'presence.txt']
+                actual = self.run_rg(*args)
+                native = self.run_rg(*args, executable=REFERENCE)
+                self.assertEqual((actual.returncode, actual.stdout, actual.stderr),
+                                 (native.returncode, native.stdout, native.stderr), args)
+        self.check(['-Fco', '*?', 'presence.txt'], b'1\n')
+        self.check(['-no', '--column', '', '-'], b'1:1:\n1:2:\n1:3:\n', data='ü\n'.encode())
+
     def test_no_external_runtime_dependencies(self):
         environment = dict(os.environ, PATH='/nonexistent')
         environment.pop('BASH_ENV', None)

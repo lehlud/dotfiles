@@ -14,6 +14,9 @@ include_types=()
 exclude_types=()
 ignore_patterns=()
 ignore_bases=()
+ignore_flags=()
+ignore_priorities=()
+ignore_repos=()
 ancestors=()
 
 fixed=0
@@ -32,6 +35,7 @@ column=0
 filenames=auto
 mode=lines
 only_matching=0
+count_occurrences=0
 quiet=0
 hidden=0
 no_ignore=0
@@ -65,6 +69,7 @@ usage() {
         'Output:   -n/--line-number, -N/--no-line-number, --column,' \
         '          -H/--with-filename, -I/--no-filename, -o/--only-matching,' \
         '          -l/--files-with-matches, --files-without-match, -c/--count,' \
+        '          --count-matches (also -co),' \
         '          -q/--quiet, -0/--null, --color never|auto, --no-heading' \
         'Context:  -A/--after-context N, -B/--before-context N, -C/--context N,' \
         '          --context-separator TEXT, -m/--max-count N' \
@@ -198,6 +203,7 @@ parse_options() {
             -l|--files-with-matches) mode=with ;;
             --files-without-match) mode=without ;;
             -c|--count) mode=count ;;
+            --count-matches) mode=matches ;;
             --files) mode=files ;;
             -q|--quiet) quiet=1 ;;
             -0|--null) null_paths=1 ;;
@@ -366,58 +372,143 @@ path_matches() {
     fi
 }
 
+# Parse ignore syntax once, keeping source priority separate from directory depth.
+load_ignore_file() {
+    local file=$1 base=$2 priority=$3 line prefix tail slashes flags
+
+    [[ -f $file && -r $file ]] || return 0
+
+    while IFS= read -r line || [[ -n $line ]]; do
+        line=${line%$'\r'}
+
+        while [[ $line == *' ' ]]; do
+            prefix=${line% }
+            tail=$prefix
+            slashes=0
+
+            while [[ $tail == *'\' ]]; do
+                ((slashes += 1))
+                tail=${tail%?}
+            done
+
+            ((slashes % 2 == 0)) || break
+            line=$prefix
+        done
+
+        [[ -n $line && $line != '#'* ]] || continue
+        # Flags: inclusion=1, directory-only=2, rooted=4, pathname=8, braces=16.
+        flags=0
+
+        if [[ $line == '!'* ]]; then
+            flags=1
+            line=${line:1}
+        fi
+
+        if [[ $line == */ ]]; then
+            ((flags |= 2))
+            line=${line%/}
+        fi
+
+        if [[ $line == /* ]]; then
+            ((flags |= 4))
+            line=${line#/}
+        fi
+
+        [[ $line != */* ]] || ((flags |= 8))
+        [[ $line != *'{'*'}'* ]] || ((flags |= 16))
+        [[ -n $line ]] || continue
+        ignore_patterns+=("$line")
+        ignore_bases+=("$base")
+        ignore_flags+=("$flags")
+        ignore_priorities+=("$priority")
+        ignore_repos+=("$git_root")
+    done < "$file"
+}
+
+# Only named Git metadata is read; paths are literal and never evaluated as shell code.
+load_git_exclude() {
+    local base=$1 directory=$1/.git line common CDPATH=
+
+    if [[ -f $directory ]]; then
+        IFS= read -r line < "$directory" || [[ -n $line ]] || return 0
+        [[ $line == 'gitdir: '* ]] || return 0
+        directory=${line#'gitdir: '}
+        [[ $directory == /* ]] || directory=$base/$directory
+    fi
+
+    if [[ -f $directory/commondir ]]; then
+        IFS= read -r common < "$directory/commondir" || [[ -n $common ]] || return 0
+        [[ $common == /* ]] || common=$directory/$common
+        directory=$common
+    fi
+
+    load_ignore_file "$directory/info/exclude" "$base" 0
+}
+
 load_ignores() {
-    local dir=$1 base=$2 name line
+    local dir=$1 base=$2
 
     ((no_ignore == 0)) || return 0
 
-    for name in .gitignore .ignore .rgignore; do
-        [[ -f $dir/$name && -r $dir/$name ]] || continue
+    if [[ -n $git_root && ( $base == "$git_root" || $base == "$git_root/"* ) ]]; then
+        [[ $base != "$git_root" ]] || load_git_exclude "$base"
+        load_ignore_file "$dir/.gitignore" "$base" 0
+    fi
 
-        while IFS= read -r line || [[ -n $line ]]; do
-            line=${line%$'\r'}
-            [[ -n $line && $line != '#'* ]] || continue
-            ignore_patterns+=("$line")
-            ignore_bases+=("$base")
-        done < "$dir/$name"
+    load_ignore_file "$dir/.ignore" "$base" 1
+    load_ignore_file "$dir/.rgignore" "$base" 2
+}
+
+# Resolve rule scope once per directory. Files do not need directory-only rules.
+select_ignore_rules() {
+    local canonical=$1 priority i base flags
+
+    for priority in 0 1 2; do
+        for ((i=0; i<${#ignore_patterns[@]}; i++)); do
+            ((ignore_priorities[i] == priority)) || continue
+            [[ $priority != 0 || ${ignore_repos[i]} == "$git_root" ]] || continue
+            base=${ignore_bases[i]%/}
+            [[ $canonical/ == "$base/"* ]] || continue
+            flags=${ignore_flags[i]}
+            directory_rules+=("$i")
+            ((flags & 2)) || file_rules+=("$i")
+        done
     done
 }
 
 is_ignored() {
-    local path=$1 directory=$2 i pattern base relative excluded=0 negate
+    local path=$1 directory=$2 name=${1##*/} i index pattern relative flags count
 
-    for ((i=0; i<${#ignore_patterns[@]}; i++)); do
-        pattern=${ignore_patterns[i]}
-        base=${ignore_bases[i]}
-        relative=$path
+    if ((directory)); then
+        count=${#directory_rules[@]}
+    else
+        count=${#file_rules[@]}
+    fi
 
-        if [[ -n $base ]]; then
-            [[ $path == "$base/"* ]] || continue
-            relative=${path#"$base/"}
+    # Higher-priority files and later rules win, including explicit reinclusions.
+    for ((i=count-1; i>=0; i--)); do
+        if ((directory)); then
+            index=${directory_rules[i]}
+        else
+            index=${file_rules[i]}
         fi
 
-        negate=0
+        flags=${ignore_flags[index]}
+        pattern=${ignore_patterns[index]}
 
-        if [[ $pattern == '!'* ]]; then
-            negate=1
-            pattern=${pattern:1}
-        elif [[ $pattern == '\!'* || $pattern == '\#'* ]]; then
-            pattern=${pattern:1}
+        if ((flags & (4 | 8 | 16))); then
+            relative=$name
+            ((flags & (4 | 8))) && relative=${path#"${ignore_bases[index]%/}/"}
+            glob_match "$relative" "$pattern" || continue
+        else
+            [[ $name == $pattern ]] || continue
         fi
 
-        if [[ $pattern == */ ]]; then
-            ((directory)) || continue
-            pattern=${pattern%/}
-        fi
-
-        if [[ $pattern != */* && $pattern != *'{'* ]]; then
-            [[ ${relative##*/} != $pattern ]] || excluded=$((1-negate))
-        elif path_matches "$relative" "$pattern"; then
-            excluded=$((1-negate))
-        fi
+        ((!(flags & 1)))
+        return
     done
 
-    ((excluded))
+    return 1
 }
 
 allowed_globs() {
@@ -444,41 +535,73 @@ allowed_globs() {
 }
 
 walk() {
-    local dir=$1 relative=$2 depth=$3 path name child directory canonical ancestor
-    local saved_rules=${#ignore_patterns[@]} saved_ancestors=${#ancestors[@]}
+    local dir=$1 display=$2 depth=$3 path name child directory canonical ancestor rules
+    local previous=$PWD CDPATH= git_root=$git_root previous_git=$git_root
+    local rule_count=${#ignore_patterns[@]}
+    local ignore_patterns=("${ignore_patterns[@]}")
+    local ignore_bases=("${ignore_bases[@]}")
+    local ignore_flags=("${ignore_flags[@]}")
+    local ignore_priorities=("${ignore_priorities[@]}")
+    local ignore_repos=("${ignore_repos[@]}")
+    local ancestors=("${ancestors[@]}")
+    local directory_rules=("${directory_rules[@]}") file_rules=("${file_rules[@]}")
 
-    canonical=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || { error "cannot traverse: $dir"; return; }
+    if ! builtin cd -P -- "$dir" 2>/dev/null; then
+        error "cannot traverse: $dir"
+        return
+    fi
+
+    canonical=$PWD
 
     for ancestor in "${ancestors[@]}"; do
         if [[ $canonical == "$ancestor" ]]; then
             error "filesystem loop: $dir"
+            builtin cd -P -- "$previous" || fail 'cannot restore working directory'
             return
         fi
     done
 
     ancestors+=("$canonical")
-    load_ignores "$dir" "$canonical"
+    if ((no_ignore == 0)); then
+        [[ ! -d .git && ! -f .git ]] || git_root=$canonical
+        load_ignores "$canonical" "$canonical"
 
-    for path in "${dir%/}"/*; do
+        if ((depth == 0 || ${#ignore_patterns[@]} != rule_count)) ||
+            [[ $git_root != "$previous_git" || $canonical != "${previous%/}/"* ]]; then
+            directory_rules=()
+            file_rules=()
+            select_ignore_rules "$canonical"
+        fi
+    fi
+
+    for path in "${canonical%/}"/*; do
         name=${path##*/}
         [[ $name != . && $name != .. ]] || continue
-        ((follow)) || [[ ! -L $path ]] || continue
+        child=${display%/}/$name
+        glob_include=0
 
-        child=$name
-        [[ -z $relative ]] || child=$relative/$name
+        # Avoid filesystem probes for ordinary hidden entries.
+        if ((${#globs[@]} == 0 && !hidden)) && [[ $name == .* ]]; then
+            continue
+        fi
+
+        ((follow)) || [[ ! -L $path ]] || continue
         directory=0
         [[ ! -d $path ]] || directory=1
 
-        glob_include=0
-
         if ((${#globs[@]})); then
-            allowed_globs "${path#./}" "$directory" || continue
+            allowed_globs "${child#./}" "$directory" || continue
         fi
         ((hidden || glob_include == 1)) || [[ $name != .* ]] || continue
         ((no_ignore || glob_include == 1)) || [[ $name != .git ]] || continue
 
-        if ((glob_include != 1 && ${#ignore_patterns[@]})) &&
-            is_ignored "$canonical/$name" "$directory"; then
+        if ((directory)); then
+            rules=${#directory_rules[@]}
+        else
+            rules=${#file_rules[@]}
+        fi
+
+        if ((glob_include != 1 && rules)) && is_ignored "$path" "$directory"; then
             continue
         fi
 
@@ -490,16 +613,15 @@ walk() {
             fi
 
             if ((strip_dot)); then
-                files+=("${path#./}")
+                files+=("${child#./}")
             else
-                files+=("$path")
+                files+=("$child")
             fi
         fi
     done
 
-    ignore_patterns=("${ignore_patterns[@]:0:saved_rules}")
-    ignore_bases=("${ignore_bases[@]:0:saved_rules}")
-    ancestors=("${ancestors[@]:0:saved_ancestors}")
+    # A failed restore must not make later relative searches run in another directory.
+    builtin cd -P -- "$previous" || fail 'cannot restore working directory'
 }
 
 type_patterns() {
@@ -557,10 +679,27 @@ allowed_types() {
 }
 
 load_parent_ignores() {
-    local dir=$1 parent path
+    local dir=$1 parent cursor previous=$PWD CDPATH=
     local parents=()
 
-    dir=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || return
+    git_root=
+    ((no_ignore == 0)) || return 0
+    builtin cd -P -- "$dir" 2>/dev/null || return
+    dir=$PWD
+    builtin cd -P -- "$previous" || fail 'cannot restore working directory'
+    cursor=$dir
+
+    while :; do
+        if [[ -d $cursor/.git || -f $cursor/.git ]]; then
+            git_root=$cursor
+            break
+        fi
+
+        [[ $cursor != / ]] || break
+        cursor=${cursor%/*}
+        [[ -n $cursor ]] || cursor=/
+    done
+
     parent=${dir%/*}
 
     while [[ $dir != / ]]; do
@@ -570,8 +709,8 @@ load_parent_ignores() {
         parent=${dir%/*}
     done
 
-    for path in "${parents[@]}"; do
-        load_ignores "$path" "${path%/}"
+    for parent in "${parents[@]}"; do
+        load_ignores "$parent" "$parent"
     done
 }
 
@@ -592,7 +731,7 @@ sort_collected() {
 }
 
 collect_files() {
-    local path collected
+    local path collected git_root=
 
     if ((${#paths[@]} == 0)); then
         if [[ $mode != files && ( -p /dev/stdin || -f /dev/stdin ) ]]; then
@@ -617,10 +756,13 @@ collect_files() {
         elif [[ -d $path ]]; then
             collected=${#files[@]}
             load_parent_ignores "$path"
-            walk "${path%/}/" '' 0
+            walk "$path" "${path%/}" 0
             ((sort_paths == 0)) || sort_collected "$collected"
             ignore_patterns=()
             ignore_bases=()
+            ignore_flags=()
+            ignore_priorities=()
+            ignore_repos=()
         elif [[ -f $path ]]; then
             files+=("$path")
         else
@@ -802,6 +944,17 @@ print_line() {
 print_matches() {
     local line=$1 number=$2 start=0 previous_end=-1
 
+    # Ripgrep reports an empty literal at every byte position, including inside UTF-8.
+    if ((all_literal && !word && !whole_line && ${#patterns[@]} == 1)) && [[ -z ${patterns[0]} ]]; then
+        local LC_ALL=C
+
+        for ((start=0; start<=${#line}; start++)); do
+            print_line "$number" '' : "$start"
+        done
+
+        return
+    fi
+
     # line_matches already supplied the first match.
     while :; do
         # Skip an empty match immediately following the previous nonempty match.
@@ -819,9 +972,44 @@ print_matches() {
     done
 }
 
+count_line_matches() {
+    local line=$1 start=0 previous_end=-1 needle reduced
+
+    match_delta=0
+
+    if ((all_literal && !word && !whole_line && ${#patterns[@]} == 1)) && [[ -z ${patterns[0]} ]]; then
+        local LC_ALL=C
+
+        match_delta=$((${#line}+1))
+        return
+    fi
+
+    if ((all_literal && !ignore_case && !word && !whole_line && ${#patterns[@]} == 1)) &&
+        [[ -n ${patterns[0]} ]]; then
+        local LC_ALL=C
+
+        needle=${patterns[0]}
+        reduced=${line//"$needle"/}
+        match_delta=$(((${#line}-${#reduced})/${#needle}))
+        return
+    fi
+
+    while "$find_next" "$line" "$start"; do
+        if [[ -n $match_text ]] || ((match_start != previous_end)); then
+            ((match_delta += 1))
+        fi
+
+        start=$((match_start+${#match_text}))
+        previous_end=$start
+        [[ -n $match_text ]] || ((start += 1))
+        ((start <= ${#line})) || break
+    done
+}
+
 scan_lines() {
     local line number=0 selected count=0 remaining_after=0 i first
     local ring=() last_printed=0 match_start=0 match_text= input_done=0
+    local match_total=0 match_delta=0
 
     while prepare_chunk; do
         while IFS= read -r line || [[ -n $line ]]; do
@@ -858,9 +1046,13 @@ scan_lines() {
                         ((column == 0 || invert)) || byte_position "$line" "$match_start"
                         print_line "$number" "$line" : "$byte_start"
                     fi
+                elif ((count_occurrences)); then
+                    count_line_matches "$line"
+                    ((match_total += match_delta))
                 fi
 
-                remaining_after=$after
+                remaining_after=0
+                [[ $mode != lines ]] || remaining_after=$after
             elif ((remaining_after && count > 0)) && [[ $mode == lines ]]; then
                 # The count limit stops selection, but trailing context keeps match markers.
                 if ((count >= max_count)); then
@@ -894,6 +1086,8 @@ scan_lines() {
 
 file_summary() {
     local count=$1
+
+    ((count_occurrences == 0)) || count=$match_total
 
     case $mode in
         count)
@@ -936,7 +1130,7 @@ print_literal_matches() {
 scan_basic() {
     local line number=0 count=0 selected expression=${expressions[0]-}
     local literal=${patterns[0]-} matcher=multi format='%s\n'
-    local prefix_args=()
+    local prefix_args=() match_total=0 match_delta=0
 
     if ((file_unmatched || ${#patterns[@]} == 0)); then
         matcher=none
@@ -992,6 +1186,9 @@ scan_basic() {
                 else
                     printf "$format" "${prefix_args[@]}" "$line"
                 fi
+            elif ((count_occurrences)); then
+                count_line_matches "$line"
+                ((match_total += match_delta))
             fi
 
             ((count < max_count)) || break 2
@@ -1139,7 +1336,7 @@ buffer_may_match() {
 }
 
 search_file() {
-    local path=$1 content display_path status file_unmatched=0
+    local path=$1 content display_path status file_unmatched=0 match_total=0
     local block_input=0 record_base=0 records=() scan_block=
     local block_streak=0 stream_remainder=0
 
@@ -1193,6 +1390,19 @@ search_file() {
         fi
     fi
 
+    # A newline-free literal found in validated text belongs to some existing line.
+    if ((all_literal && !invert && !word && !whole_line)); then
+        if [[ $mode == without ]]; then
+            shopt -u nocasematch
+            return
+        elif ((quiet)) || [[ $mode == with ]]; then
+            found=1
+            ((quiet)) || print_path "$display_path"
+            shopt -u nocasematch
+            return
+        fi
+    fi
+
     if ((all_literal && ascii_patterns && !ignore_case)) && is_ascii content; then
         local LC_ALL=C
     fi
@@ -1231,6 +1441,13 @@ main() {
 
     parse_options "$@"
 
+    if [[ $mode == matches ]]; then
+        mode=count
+        ((invert)) || count_occurrences=1
+    elif [[ $mode == count ]] && ((only_matching && !invert)); then
+        count_occurrences=1
+    fi
+
     if [[ $mode != files ]]; then
         if ((patterns_given == 0)); then
             ((${#paths[@]})) || fail 'a pattern is required (see --help)'
@@ -1241,7 +1458,10 @@ main() {
         compile_patterns
     fi
 
-    ((only_matching == 0 || (before == 0 && after == 0))) || fail '-o with context is not implemented'
+    if [[ $mode == lines ]] && ((only_matching && !invert && (before || after))); then
+        fail '-o with context is not implemented'
+    fi
+
     collect_files
 
     for file in "${files[@]}"; do

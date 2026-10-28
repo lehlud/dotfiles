@@ -20,16 +20,23 @@ positional pattern starting with `-`, or supply that pattern with `-e`.
 
 - Directories are searched recursively. Hidden paths and symlinks are skipped by default.
   `--hidden` includes hidden paths; `-L` follows symlinks and reports directory loops.
-- `.gitignore`, `.ignore` and `.rgignore` are read from ancestor directories and the search
-  tree, in that order at each directory. Rules support comments, `!` negation, leading `/`,
-  directory suffixes, component globs and `**`. An excluded directory is pruned; reinclude
-  its parent before attempting to reinclude a descendant. Explicit file arguments bypass
-  filters. Matching positive `-g` rules override ignore rules for files.
+- Ignore files are read from ancestors and the search tree. `.rgignore` overrides `.ignore`,
+  which overrides Git rules, regardless of directory depth. Within each source type, deeper
+  files and later rules win. Git rules stop at the nearest worktree boundary and apply only
+  inside repositories; `.git/info/exclude` has lower priority than `.gitignore`. Linked
+  worktrees support literal `gitdir` and `commondir` paths without executing Git or shell code.
+- Ignore rules support comments, escaped leading `#`/`!`, `!` negation, leading `/`, directory
+  suffixes, escaped trailing spaces, component globs and `**`. Excluded directories are
+  pruned; reinclude the parent before a descendant. Explicit file arguments bypass filters.
+  Matching positive `-g` rules override ignore rules for files.
 - Globs support `*`, `?`, bracket classes, `**` path components and flat `{a,b}` alternatives.
   Slash-containing command-line globs are relative to the current directory.
   File types: `c`, `cpp`, `css`, `dart`, `go`, `html`, `java`, `js`, `json`, `md`, `py`, `rust`,
   `sh`, `sql`, `toml`, `ts`, `txt`, `xml`, `yaml`, `zig`.
 - `-u` disables ignore rules. `-uu` also includes hidden paths and `.git` directories.
+- `-c` counts matching lines; `-co` and `--count-matches` count nonoverlapping occurrences.
+  `-m` limits selected lines, including when counting occurrences. With `-v`, counts refer
+  to selected nonmatching lines.
 - Stdin is streamed as text. With no paths, piped or redirected text is searched; otherwise
   the current directory is searched. `--files` always lists filesystem paths.
 - Output is plain text, without headings or color. `--column` reports byte columns.
@@ -46,12 +53,14 @@ classes. Use POSIX classes inside brackets, and `-w` for word boundaries.
 
 PCRE2, lookaround, noncapturing groups, lazy quantifiers, Unicode property escapes, multiline
 search, replacement, JSON output, encodings, compressed files and custom type definitions
-are outside this implementation's scope. `-o` cannot be combined with context flags.
+are outside this implementation's scope. Line output with `-o` cannot use context flags.
+Zero-width regex matches around multibyte text can differ from native ripgrep; a single
+empty literal reports every byte position, including positions within UTF-8 characters.
 
-Ignore processing applies `.gitignore` even outside Git repositories. Global Git excludes,
-`.git/info/exclude`, ignore-file whitespace escaping and every Git wildmatch detail are not
-implemented. Positive globs can select hidden paths directly; unmatched hidden parent
-folders still require `--hidden` for traversal.
+Global Git excludes and user Git configuration are not loaded. Glob matching covers a
+subset of Git wildmatch/ripgrep glob syntax; nested or escaped brace alternatives and other
+complex escaping can differ. Positive globs can select hidden paths directly; unmatched
+hidden parent folders still require `--hidden` for traversal.
 
 `RIPGREP_CONFIG_PATH` is not loaded. Numeric option values are limited to nine decimal digits.
 
@@ -77,9 +86,15 @@ contain a match. A small density sample selects this path; consecutive useful bl
 back to streaming when the file becomes dense. Skipped empty lines still count toward line
 numbers. Context, inverted output and stdin keep their line readers.
 
-Whole-file rejection and block rejection use necessary-match checks. Binary detection
-happens first. Original stdin is restored after regular-file searches, including when a
-later `-` argument consumes it.
+Whole-file rejection and block rejection use necessary-match checks. Literal `-q`, `-l`
+and filename-exclusion searches can use a proven buffer match without scanning its lines.
+Binary detection happens first. Original stdin is restored after regular-file searches,
+including when a later `-` argument consumes it.
+
+Directory traversal resolves physical paths with builtin `cd`, avoiding a subprocess per
+directory and preserving names ending in newlines. Ignore syntax is parsed once; scoped
+rule lists are reused until a directory changes them. Matching checks higher-priority rules
+first and skips filesystem probes for hidden entries that cannot be selected.
 
 Compare two versions with the Python 3.9+ standard-library harness:
 
@@ -97,33 +112,25 @@ Linux process-memory checks run separately after all timings. They sample `/proc
 high-water counter every 5 ms and may miss a peak immediately before exit. Omit `--rss`
 on other platforms.
 
-Measured on Linux/Bash 5.3 against `676f9e2`, using generated ASCII text and a 400-file tree:
+Measurements from 2026-10-28 use Linux/Bash 5.3 and baseline `1e25e30`. All executions
+include startup, check output/status/stderr, and run sequentially with one warmup and five
+samples. The real workspace's complete NUL-delimited filename set also agrees with native
+ripgrep, with a fresh native check between rounds to detect concurrent file changes.
 
 | Workload | Before (ms) | After (ms) | Speedup |
 |---|---:|---:|---:|
-| absent literal | 241.8 | 129.2 | 1.87× |
-| sparse literal | 1072.8 | 456.5 | 2.35× |
-| dense literal | 446.1 | 393.3 | 1.13× |
-| sparse regex | 1388.8 | 655.7 | 2.12× |
-| word search | 2272.2 | 540.2 | 4.21× |
-| long-line columns | 223.7 | 114.9 | 1.95× |
-| only matching | 705.7 | 610.2 | 1.16× |
-| file discovery | 105.8 | 105.3 | 1.00× |
+| `~/gitsetze`: `--files` (66 files) | 1265.7 | 63.6 | 19.91× |
+| Generated tree: `--files` (400 files) | 107.4 | 44.5 | 2.41× |
+| Literal `-l`, 40,000 lines | 126.1 | 27.9 | 4.53× |
+| Literal `-q`, 40,000 lines | 139.2 | 28.3 | 4.92× |
+| Literal filename exclusion, 40,000 lines | 129.8 | 28.2 | 4.61× |
 
-Separate controls used one warmup and three samples, with identical output checks. Add
-`--controls --samples 3` to the benchmark command and choose a separate output file:
+The seven existing content-search guard medians changed by less than 2.2%. Separate sampled memory
+checks showed no material change. These measurements describe this machine and these inputs;
+native ripgrep took 7.4 ms for the real listing. The runtime still uses Bash builtins only.
 
-| Control | Before (ms) | After (ms) | Speedup |
-|---|---:|---:|---:|
-| Unicode word | 1128.4 | 276.8 | 4.08× |
-| mixed density | 451.2 | 388.1 | 1.16× |
-| dense stdin | 388.4 | 386.3 | 1.01× |
-| multiple literals | 1188.3 | 244.1 | 4.87× |
-
-In the large sparse-file cases, sampled process high-water memory fell from about 38.5 MiB
-to 19.9 MiB. Other search cases also used less sampled memory; file discovery was essentially
-unchanged. These are local synthetic measurements. Memory observations are approximate and
-cover the search process, not an aggregate process-tree quota.
+Local raw samples, executable hashes and validation logs are in `/tmp/rg-bash-discovery/`;
+`final.json` covers the real workspace/presence modes and `general.json` the generated guards.
 
 ## Validation
 
@@ -133,8 +140,9 @@ python3 ~/.local/config/rg/test_rg.py
 ```
 
 The tests cover stdin, context, matching modes, paths with spaces, literal shell syntax,
-ignore precedence, types, NUL output, binary files, symlinks, block boundaries, density
-changes, locale restoration and the disabled-`mapfile` fallback. A test runs Bash
+ignore priority and repository boundaries, linked worktrees, literal Git metadata paths,
+occurrence counts, types, NUL output, binary files, symlinks, block boundaries, density changes,
+locale restoration, working-directory restoration and the disabled-`mapfile` fallback. A test runs Bash
 with an empty executable search path to catch external helper dependencies. When native
 ripgrep is available, differential cases compare stdout and exit status; set `REAL_RG` to
 its absolute path if this launcher already takes precedence in `PATH`.
