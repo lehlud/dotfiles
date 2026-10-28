@@ -1,0 +1,898 @@
+#!/usr/bin/env bash
+# Text search using Bash builtins only. See ~/.local/config/rg/README.md.
+
+unset GLOBIGNORE
+shopt -s nullglob dotglob
+shopt -u nocasematch
+
+patterns=()
+expressions=()
+paths=()
+files=()
+globs=()
+include_types=()
+exclude_types=()
+ignore_patterns=()
+ignore_bases=()
+ancestors=()
+
+fixed=0
+ignore_case=0
+smart_case=0
+invert=0
+word=0
+whole_line=0
+line_numbers=0
+column=0
+filenames=auto
+mode=lines
+only_matching=0
+quiet=0
+hidden=0
+no_ignore=0
+follow=0
+before=0
+after=0
+max_count=2147483647
+max_depth=2147483647
+sort_paths=0
+null_paths=0
+messages=1
+patterns_given=0
+found=0
+errors=0
+last_output_file=
+strip_dot=0
+context_separator=--
+
+usage() {
+    printf '%s\n' \
+        'rg-bash — recursive text search using Bash builtins' \
+        '' \
+        'Usage: rg [OPTIONS] PATTERN [PATH ...]' \
+        '       rg [OPTIONS] -e PATTERN ... [PATH ...]' \
+        '       rg [OPTIONS] -f PATTERNFILE [PATH ...]' \
+        '       rg --files [PATH ...]' \
+        '' \
+        'Matching: -e/--regexp, -f/--file, -F/--fixed-strings, -i/--ignore-case,' \
+        '          -s/--case-sensitive, -S/--smart-case, -v/--invert-match,' \
+        '          -w/--word-regexp, -x/--line-regexp' \
+        'Output:   -n/--line-number, -N/--no-line-number, --column,' \
+        '          -H/--with-filename, -I/--no-filename, -o/--only-matching,' \
+        '          -l/--files-with-matches, --files-without-match, -c/--count,' \
+        '          -q/--quiet, -0/--null, --color never|auto, --no-heading' \
+        'Context:  -A/--after-context N, -B/--before-context N, -C/--context N,' \
+        '          --context-separator TEXT, -m/--max-count N' \
+        'Paths:    --files, -g/--glob GLOB, -t/--type TYPE, -T/--type-not TYPE,' \
+        '          --hidden, --no-hidden,' \
+        '          --no-ignore, -u (twice also includes hidden paths),' \
+        '          -L/--follow, --max-depth N, --sort path, --no-messages' \
+        '' \
+        'Regexes use POSIX ERE, with \d, \w and \s shorthands.' \
+        'PCRE, multiline search, JSON and compressed files are not implemented.' \
+        'NUL-containing files are skipped; stdin must be text. Slower than native rg.' \
+        'Exit status: 0 = selected output/match, 1 = none, 2 = error.'
+}
+
+error() {
+    ((errors += 1))
+
+    if ((messages)); then
+        printf 'rg: %s\n' "$*" >&2
+    fi
+}
+
+fail() {
+    printf 'rg: %s\n' "$*" >&2
+    exit 2
+}
+
+number() {
+    [[ $2 =~ ^[0-9]+$ && ${#2} -le 9 ]] || fail "$1 requires an integer from 0 to 999999999"
+    numeric=$((10#$2))
+}
+
+read_patterns() {
+    local path=$1 line
+
+    if [[ $path == - ]]; then
+        exec 4<&0
+    elif ! { exec 4< "$path"; } 2>/dev/null; then
+        fail "cannot read pattern file: $path"
+    fi
+
+    while IFS= read -r line <&4 || [[ -n $line ]]; do
+        patterns+=("$line")
+    done
+
+    exec 4<&-
+}
+
+parse_options() {
+    local arg tail value numeric unrestricted=0
+
+    while (($#)); do
+        arg=$1
+        shift
+
+        case $arg in
+            --) paths+=("$@"); break ;;
+            --*=*)
+                case ${arg%%=*} in
+                    --regexp|--file|--glob|--type|--type-not|--after-context|--before-context|\
+                    --context|--max-count|--max-depth|--sort|--color|--context-separator)
+                        set -- "${arg#*=}" "$@"
+                        arg=${arg%%=*}
+                        ;;
+                    *) fail "option does not accept a value: $arg" ;;
+                esac
+                ;;
+            -0) : ;;
+            -0?*) set -- -0 "-${arg:2}" "$@"; continue ;;
+            -[0-9]*) number "$arg" "${arg#-}"; before=$numeric; after=$numeric; continue ;;
+            -?*)
+                if [[ $arg != --* && ${#arg} -gt 2 ]]; then
+                    tail=${arg:2}
+                    arg=${arg:0:2}
+
+                    case $arg in
+                        -e|-f|-g|-t|-T|-A|-B|-C|-m) set -- "$tail" "$@" ;;
+                        *) set -- "-$tail" "$@" ;;
+                    esac
+                fi
+                ;;
+        esac
+
+        case $arg in
+            -h|--help) usage; exit 0 ;;
+            -V|--version) printf '%s\n' 'rg-bash 1.0.0 (Bash implementation; POSIX ERE)'; exit 0 ;;
+            -e|--regexp|-f|--file|-g|--glob|-t|--type|-T|--type-not|-A|--after-context|\
+            -B|--before-context|-C|--context|-m|--max-count|--max-depth|--sort|--color|--context-separator)
+                (($#)) || fail "option $arg requires a value"
+                value=$1
+                shift
+
+                case $arg in
+                    -e|--regexp) patterns+=("$value"); patterns_given=1 ;;
+                    -f|--file) read_patterns "$value"; patterns_given=1 ;;
+                    -g|--glob) globs+=("$value") ;;
+                    -t|--type) type_patterns "$value"; include_types+=("$value") ;;
+                    -T|--type-not) type_patterns "$value"; exclude_types+=("$value") ;;
+                    --sort) [[ $value == path ]] || fail 'only --sort path is supported'; sort_paths=1 ;;
+                    --color)
+                        [[ $value == never || $value == auto ]] ||
+                            fail 'color output is not implemented; use --color never'
+                        ;;
+                    --context-separator) context_separator=$value ;;
+                    *)
+                        number "$arg" "$value"
+
+                        case $arg in
+                            -A|--after-context) after=$numeric ;;
+                            -B|--before-context) before=$numeric ;;
+                            -C|--context) before=$numeric; after=$numeric ;;
+                            -m|--max-count) max_count=$numeric ;;
+                            --max-depth) max_depth=$numeric ;;
+                        esac
+                        ;;
+                esac
+                ;;
+            -F|--fixed-strings) fixed=1 ;;
+            -i|--ignore-case) ignore_case=1; smart_case=0 ;;
+            -s|--case-sensitive) ignore_case=0; smart_case=0 ;;
+            -S|--smart-case) smart_case=1; ignore_case=0 ;;
+            -v|--invert-match) invert=1 ;;
+            -w|--word-regexp) word=1 ;;
+            -x|--line-regexp) whole_line=1 ;;
+            -n|--line-number) line_numbers=1 ;;
+            -N|--no-line-number) line_numbers=0 ;;
+            --column) column=1; line_numbers=1 ;;
+            -H|--with-filename) filenames=yes ;;
+            -I|--no-filename) filenames=no ;;
+            -o|--only-matching) only_matching=1 ;;
+            -l|--files-with-matches) mode=with ;;
+            --files-without-match) mode=without ;;
+            -c|--count) mode=count ;;
+            --files) mode=files ;;
+            -q|--quiet) quiet=1 ;;
+            -0|--null) null_paths=1 ;;
+            --hidden) hidden=1 ;;
+            --no-hidden) hidden=0 ;;
+            --no-ignore) no_ignore=1 ;;
+            -u|--unrestricted)
+                ((unrestricted += 1))
+                no_ignore=1
+
+                if ((unrestricted >= 2)); then
+                    hidden=1
+                fi
+
+                ((unrestricted <= 2)) || fail 'binary text mode (-uuu) is not implemented'
+                ;;
+            -L|--follow) follow=1 ;;
+            --no-follow) follow=0 ;;
+            --no-messages) messages=0 ;;
+            --messages) messages=1 ;;
+            --no-heading|--no-config) : ;;
+            -) paths+=("-") ;;
+            -*) fail "unsupported option: $arg (see --help)" ;;
+            *) paths+=("$arg") ;;
+        esac
+    done
+}
+
+escape_literal() {
+    local input=$1 char i
+    escaped=
+
+    for ((i=0; i<${#input}; i++)); do
+        char=${input:i:1}
+
+        case $char in
+            '.'|'['|']'|'('|')'|'{'|'}'|'*'|'+'|'?'|'^'|'$'|'|'|'\') escaped+='\' ;;
+        esac
+
+        escaped+=$char
+    done
+}
+
+compile_patterns() {
+    local pattern converted char next i in_class status uppercase=0
+
+    for pattern in "${patterns[@]}"; do
+        [[ $pattern != *$'\n'* ]] || fail 'multiline patterns are not implemented'
+        [[ $pattern != *[[:upper:]]* ]] || uppercase=1
+
+        if ((fixed)); then
+            escape_literal "$pattern"
+            converted=$escaped
+        else
+            converted=
+            in_class=0
+
+            for ((i=0; i<${#pattern}; i++)); do
+                char=${pattern:i:1}
+
+                if [[ $char == '\' && $i -lt $((${#pattern}-1)) ]]; then
+                    ((i += 1))
+                    next=${pattern:i:1}
+
+                    case $next in
+                        d|D|w|W|s|S)
+                            ((in_class == 0)) ||
+                                fail 'regex shorthands inside brackets are unsupported; use POSIX character classes'
+
+                            case $next in
+                                d) converted+='[0-9]' ;;
+                                D) converted+='[^0-9]' ;;
+                                w) converted+='[[:alnum:]_]' ;;
+                                W) converted+='[^[:alnum:]_]' ;;
+                                s) converted+='[[:space:]]' ;;
+                                S) converted+='[^[:space:]]' ;;
+                            esac
+                            ;;
+                        t) converted+=$'\t' ;;
+                        r) converted+=$'\r' ;;
+                        n) fail 'multiline patterns are not implemented' ;;
+                        b|B) fail 'regex word-boundary escapes are unsupported; use -w' ;;
+                        *) converted+="\\$next" ;;
+                    esac
+                else
+                    [[ $char != '[' ]] || in_class=1
+                    [[ $char != ']' ]] || in_class=0
+                    converted+=$char
+                fi
+            done
+        fi
+
+        if ((whole_line)); then
+            converted="^($converted)$"
+        fi
+
+        [[ '' =~ $converted ]]
+        status=$?
+        ((status != 2)) || fail "invalid POSIX extended regular expression: $pattern"
+        expressions+=("$converted")
+    done
+
+    if ((smart_case && !uppercase)); then
+        ignore_case=1
+    fi
+}
+
+# Match path components separately: ordinary '*' must not cross a slash.
+glob_match() {
+    local path=$1 pattern=$2 part rest choice prefix suffix choices
+
+    if [[ $pattern == *'{'*'}'* ]]; then
+        prefix=${pattern%%\{*}
+        rest=${pattern#*\{}
+        choices=${rest%%\}*}
+        suffix=${rest#*\}}
+
+        while :; do
+            choice=${choices%%,*}
+            glob_match "$path" "$prefix$choice$suffix" && return 0
+            [[ $choices == *,* ]] || return 1
+            choices=${choices#*,}
+        done
+    fi
+
+    [[ $pattern != '**' ]] || return 0
+
+    if [[ $pattern != */* ]]; then
+        [[ $path != */* && $path == $pattern ]]
+        return
+    fi
+
+    part=${pattern%%/*}
+    rest=${pattern#*/}
+
+    if [[ $part == '**' ]]; then
+        glob_match "$path" "$rest" && return 0
+        [[ $path == */* ]] && glob_match "${path#*/}" "$pattern"
+        return
+    fi
+
+    [[ $path == */* && ${path%%/*} == $part ]] && glob_match "${path#*/}" "$rest"
+}
+
+path_matches() {
+    local path=$1 pattern=$2
+
+    if [[ $pattern == /* ]]; then
+        glob_match "$path" "${pattern#/}"
+    elif [[ $pattern == */* ]]; then
+        glob_match "$path" "$pattern"
+    else
+        glob_match "${path##*/}" "$pattern"
+    fi
+}
+
+load_ignores() {
+    local dir=$1 base=$2 name line
+
+    ((no_ignore == 0)) || return 0
+
+    for name in .gitignore .ignore .rgignore; do
+        [[ -f $dir/$name && -r $dir/$name ]] || continue
+
+        while IFS= read -r line || [[ -n $line ]]; do
+            line=${line%$'\r'}
+            [[ -n $line && $line != '#'* ]] || continue
+            ignore_patterns+=("$line")
+            ignore_bases+=("$base")
+        done < "$dir/$name"
+    done
+}
+
+is_ignored() {
+    local path=$1 directory=$2 i pattern base relative excluded=0 negate
+
+    for ((i=0; i<${#ignore_patterns[@]}; i++)); do
+        pattern=${ignore_patterns[i]}
+        base=${ignore_bases[i]}
+        relative=$path
+
+        if [[ -n $base ]]; then
+            [[ $path == "$base/"* ]] || continue
+            relative=${path#"$base/"}
+        fi
+
+        negate=0
+
+        if [[ $pattern == '!'* ]]; then
+            negate=1
+            pattern=${pattern:1}
+        elif [[ $pattern == '\!'* || $pattern == '\#'* ]]; then
+            pattern=${pattern:1}
+        fi
+
+        if [[ $pattern == */ ]]; then
+            ((directory)) || continue
+            pattern=${pattern%/}
+        fi
+
+        if path_matches "$relative" "$pattern"; then
+            excluded=$((1-negate))
+        fi
+    done
+
+    ((excluded))
+}
+
+allowed_globs() {
+    local path=$1 directory=$2 pattern included=0 positive=0
+
+    glob_include=0
+
+    for pattern in "${globs[@]}"; do
+        if [[ $pattern == '!'* ]]; then
+            path_matches "$path" "${pattern:1}" && included=-1
+        else
+            ((directory)) || positive=1
+            path_matches "$path" "$pattern" && included=1
+        fi
+    done
+
+    glob_include=$included
+
+    if ((directory)); then
+        ((included != -1))
+    else
+        ((included == 1 || (!positive && included == 0)))
+    fi
+}
+
+walk() {
+    local dir=$1 relative=$2 depth=$3 path name child directory canonical ancestor
+    local saved_rules=${#ignore_patterns[@]} saved_ancestors=${#ancestors[@]}
+
+    canonical=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || { error "cannot traverse: $dir"; return; }
+
+    for ancestor in "${ancestors[@]}"; do
+        if [[ $canonical == "$ancestor" ]]; then
+            error "filesystem loop: $dir"
+            return
+        fi
+    done
+
+    ancestors+=("$canonical")
+    load_ignores "$dir" "$canonical"
+
+    for path in "${dir%/}"/*; do
+        name=${path##*/}
+        [[ $name != . && $name != .. ]] || continue
+        ((follow)) || [[ ! -L $path ]] || continue
+
+        child=$name
+        [[ -z $relative ]] || child=$relative/$name
+        directory=0
+        [[ ! -d $path ]] || directory=1
+
+        allowed_globs "${path#./}" "$directory" || continue
+        ((hidden || glob_include == 1)) || [[ $name != .* ]] || continue
+        ((no_ignore || glob_include == 1)) || [[ $name != .git ]] || continue
+
+        if ((glob_include != 1)) && is_ignored "$canonical/$name" "$directory"; then
+            continue
+        fi
+
+        if ((directory)); then
+            ((depth < max_depth)) && walk "$path" "$child" "$((depth+1))"
+        elif [[ -f $path ]] && ((depth < max_depth)) && allowed_types "$child"; then
+            if ((strip_dot)); then
+                files+=("${path#./}")
+            else
+                files+=("$path")
+            fi
+        fi
+    done
+
+    ignore_patterns=("${ignore_patterns[@]:0:saved_rules}")
+    ignore_bases=("${ignore_bases[@]:0:saved_rules}")
+    ancestors=("${ancestors[@]:0:saved_ancestors}")
+}
+
+type_patterns() {
+    case $1 in
+        c) type_globs=('*.c' '*.h') ;;
+        cpp) type_globs=('*.cpp' '*.cc' '*.cxx' '*.hpp' '*.hh' '*.hxx') ;;
+        css) type_globs=('*.css' '*.scss' '*.sass') ;;
+        dart) type_globs=('*.dart') ;;
+        go) type_globs=('*.go') ;;
+        html) type_globs=('*.html' '*.htm') ;;
+        java) type_globs=('*.java') ;;
+        js) type_globs=('*.js' '*.jsx' '*.mjs' '*.cjs') ;;
+        json) type_globs=('*.json' '*.jsonl') ;;
+        md) type_globs=('*.md' '*.markdown') ;;
+        py) type_globs=('*.py' '*.pyi') ;;
+        rust) type_globs=('*.rs') ;;
+        sh) type_globs=('*.sh' '*.bash' '*.zsh' '*.ksh' '.bashrc' '.bash_profile') ;;
+        sql) type_globs=('*.sql') ;;
+        toml) type_globs=('*.toml') ;;
+        ts) type_globs=('*.ts' '*.tsx' '*.mts' '*.cts') ;;
+        txt) type_globs=('*.txt') ;;
+        xml) type_globs=('*.xml') ;;
+        yaml) type_globs=('*.yaml' '*.yml') ;;
+        zig) type_globs=('*.zig') ;;
+        *) fail "unknown file type: $1" ;;
+    esac
+}
+
+type_matches() {
+    local path=$1 type=$2 pattern
+
+    type_patterns "$type"
+
+    for pattern in "${type_globs[@]}"; do
+        [[ ${path##*/} != $pattern ]] || return 0
+    done
+
+    return 1
+}
+
+allowed_types() {
+    local path=$1 type
+
+    for type in "${exclude_types[@]}"; do
+        type_matches "$path" "$type" && return 1
+    done
+
+    ((${#include_types[@]})) || return 0
+
+    for type in "${include_types[@]}"; do
+        type_matches "$path" "$type" && return 0
+    done
+
+    return 1
+}
+
+load_parent_ignores() {
+    local dir=$1 parent path
+    local parents=()
+
+    dir=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || return
+    parent=${dir%/*}
+
+    while [[ $dir != / ]]; do
+        [[ -n $parent ]] || parent=/
+        parents=("$parent" "${parents[@]}")
+        dir=$parent
+        parent=${dir%/*}
+    done
+
+    for path in "${parents[@]}"; do
+        load_ignores "$path" "${path%/}"
+    done
+}
+
+sort_collected() {
+    local start=$1 i j current
+
+    for ((i=start+1; i<${#files[@]}; i++)); do
+        current=${files[i]}
+        j=$i
+
+        while ((j > start)) && [[ ${files[j-1]} > $current ]]; do
+            files[j]=${files[j-1]}
+            ((j -= 1))
+        done
+
+        files[j]=$current
+    done
+}
+
+collect_files() {
+    local path collected
+
+    if ((${#paths[@]} == 0)); then
+        if [[ $mode != files && ( -p /dev/stdin || -f /dev/stdin ) ]]; then
+            paths=("-")
+        else
+            paths=(".")
+            strip_dot=1
+        fi
+    fi
+
+    if [[ $filenames == auto ]]; then
+        filenames=no
+
+        if ((${#paths[@]} > 1)) || [[ -d ${paths[0]} ]]; then
+            filenames=yes
+        fi
+    fi
+
+    for path in "${paths[@]}"; do
+        if [[ $path == - && $mode != files ]]; then
+            files+=("-")
+        elif [[ -d $path ]]; then
+            collected=${#files[@]}
+            load_parent_ignores "$path"
+            walk "${path%/}/" '' 0
+            ((sort_paths == 0)) || sort_collected "$collected"
+            ignore_patterns=()
+            ignore_bases=()
+        elif [[ -f $path ]]; then
+            files+=("$path")
+        else
+            error "no readable file or directory: $path"
+        fi
+    done
+}
+
+# Find a match at an absolute character position, preserving ^ and $ on repeated searches.
+match_at() {
+    local line=$1 position=$3 expression_at="^.{${3}}($2)" text prev next
+
+    [[ $line =~ $expression_at ]] || return 1
+    text=${BASH_REMATCH[1]}
+
+    if ((word)); then
+        prev=
+        next=${line:position+${#text}:1}
+        ((position == 0)) || prev=${line:position-1:1}
+        [[ $prev != [[:alnum:]_] && $next != [[:alnum:]_] ]] || return 1
+    fi
+
+    match_text=$text
+    match_start=$position
+}
+
+find_match() {
+    local line=$1 start=$2 expression text prefix position remaining
+    local best=-1 best_text=
+
+    for expression in "${expressions[@]}"; do
+        remaining=${line:start}
+
+        if [[ $remaining =~ $expression ]]; then
+            text=${BASH_REMATCH[0]}
+        else
+            continue
+        fi
+
+        if [[ -n $text ]]; then
+            prefix=${remaining%%"$text"*}
+            position=$((start+${#prefix}))
+        else
+            position=$start
+        fi
+
+        for ((; position<=${#line}; position++)); do
+            ((best < 0 || position <= best)) || break
+
+            if match_at "$line" "$expression" "$position"; then
+                if ((best < 0 || position < best)); then
+                    best=$match_start
+                    best_text=$match_text
+                fi
+
+                break
+            fi
+        done
+    done
+
+    ((best >= 0)) || return 1
+    match_start=$best
+    match_text=$best_text
+}
+
+line_matches() {
+    local line=$1 expression
+
+    if ((word || column || only_matching)); then
+        find_match "$line" 0
+        return
+    fi
+
+    for expression in "${expressions[@]}"; do
+        if [[ $line =~ $expression ]]; then
+            match_start=0
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+print_path() {
+    if ((null_paths)); then
+        printf '%s\0' "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+byte_position() {
+    local prefix=${1:0:$2}
+    local LC_ALL=C
+
+    byte_start=${#prefix}
+}
+
+print_line() {
+    local number=$1 text=$2 separator=$3 position=${4:-0}
+
+    if ((before || after)) && [[ $last_output_file != "$display_path" || $number -gt $((last_printed+1)) ]]; then
+        if [[ -n $last_output_file ]]; then
+            printf '%s\n' "$context_separator"
+        fi
+    fi
+
+    if [[ $filenames == yes ]]; then
+        if ((null_paths)); then
+            printf '%s\0' "$display_path"
+        else
+            printf '%s%s' "$display_path" "$separator"
+        fi
+    fi
+
+    ((line_numbers == 0)) || printf '%s%s' "$number" "$separator"
+    if ((column && !invert)) && [[ $separator == : ]]; then
+        printf '%s%s' "$((position+1))" "$separator"
+    fi
+    printf '%s\n' "$text"
+    last_printed=$number
+    last_output_file=$display_path
+}
+
+print_matches() {
+    local line=$1 number=$2 start=0 previous_end=-1
+
+    while find_match "$line" "$start"; do
+        # Skip an empty match immediately following the previous nonempty match.
+        if [[ -n $match_text ]] || ((match_start != previous_end)); then
+            byte_position "$line" "$match_start"
+            print_line "$number" "$match_text" : "$byte_start"
+        fi
+
+        start=$((match_start+${#match_text}))
+        previous_end=$start
+        [[ -n $match_text ]] || ((start += 1))
+        ((start <= ${#line})) || break
+    done
+}
+
+scan_lines() {
+    local line number=0 selected count=0 remaining_after=0 i first
+    local ring=() last_printed=0 match_start=0 match_text=
+
+    while IFS= read -r line || [[ -n $line ]]; do
+        ((number += 1))
+        selected=0
+
+        if ((count < max_count)); then
+            line_matches "$line" && selected=1
+            ((invert == 0)) || selected=$((1-selected))
+        fi
+
+        if ((selected)); then
+            ((count += 1))
+            if [[ $mode != without ]]; then
+                found=1
+                ((quiet == 0)) || return 0
+            fi
+
+            [[ $mode != with ]] || { print_path "$display_path"; return; }
+
+            if [[ $mode == lines ]]; then
+                first=$((number-before))
+                ((first > last_printed)) || first=$((last_printed+1))
+                ((first > 0)) || first=1
+
+                for ((i=first; i<number; i++)); do
+                    print_line "$i" "${ring[i % (before+1)]}" -
+                done
+
+                if ((only_matching && !invert)); then
+                    print_matches "$line" "$number"
+                else
+                    byte_position "$line" "$match_start"
+                    print_line "$number" "$line" : "$byte_start"
+                fi
+            fi
+
+            remaining_after=$after
+        elif ((remaining_after && count > 0)) && [[ $mode == lines ]]; then
+            print_line "$number" "$line" -
+            ((remaining_after -= 1))
+        fi
+
+        if ((before)); then
+            ring[number % (before+1)]=$line
+        fi
+
+        if ((count >= max_count && remaining_after == 0)); then
+            break
+        fi
+    done
+
+    case $mode in
+        count)
+            if ((count)); then
+                if [[ $filenames == yes ]]; then
+                    if ((null_paths)); then
+                        printf '%s\0' "$display_path"
+                    else
+                        printf '%s:' "$display_path"
+                    fi
+                fi
+                printf '%s\n' "$count"
+            fi
+            ;;
+        without)
+            if ((count == 0)); then
+                ((quiet)) || print_path "$display_path"
+                found=1
+            fi
+            ;;
+    esac
+}
+
+search_file() {
+    local path=$1 content display_path status
+
+    ((max_count > 0)) || return 0
+
+    if [[ $path == - ]]; then
+        display_path='<stdin>'
+        ((ignore_case == 0)) || shopt -s nocasematch
+        scan_lines
+        shopt -u nocasematch
+        return
+    else
+        display_path=$path
+
+        if [[ ! -r $path ]]; then
+            error "cannot read: $path"
+            return
+        fi
+
+        if ! { exec 3< "$path"; } 2>/dev/null; then
+            error "cannot open: $path"
+            return
+        fi
+
+        IFS= read -r -d '' content <&3
+        status=$?
+        exec 3<&-
+    fi
+
+    # Bash strings cannot hold NUL. A successful delimiter read identifies binary input.
+    ((status != 0)) || return 0
+
+    if [[ -z $content ]]; then
+        if [[ $mode == without ]]; then
+            ((quiet)) || print_path "$display_path"
+            found=1
+        fi
+
+        return
+    fi
+
+    content=${content%$'\n'}
+    ((ignore_case == 0)) || shopt -s nocasematch
+    scan_lines <<< "$content"
+    shopt -u nocasematch
+}
+
+main() {
+    local file
+
+    parse_options "$@"
+
+    if [[ $mode != files ]]; then
+        if ((patterns_given == 0)); then
+            ((${#paths[@]})) || fail 'a pattern is required (see --help)'
+            patterns=("${paths[0]}")
+            paths=("${paths[@]:1}")
+        fi
+
+        compile_patterns
+    fi
+
+    ((only_matching == 0 || (before == 0 && after == 0))) || fail '-o with context is not implemented'
+    collect_files
+
+    for file in "${files[@]}"; do
+        if [[ $mode == files ]]; then
+            found=1
+            ((quiet)) || print_path "$file"
+        else
+            search_file "$file"
+        fi
+
+        ((quiet && found)) && break
+    done
+
+    if ((quiet && found)); then
+        return 0
+    elif ((errors)); then
+        return 2
+    fi
+
+    ((found))
+}
+
+main "$@"

@@ -64,6 +64,7 @@
 !/.local/bin/gdu
 !/.local/bin/add-private-ssh-key
 !/.local/bin/faucip
+!/.local/bin/rg
 
 !/.local/share/
 /.local/share/*
