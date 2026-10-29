@@ -51,7 +51,10 @@ const call = (name: string, args: unknown) => [
   { type: "toolCall", id: crypto.randomUUID(), name, arguments: args },
 ];
 
-async function fixture(script: (turn: number) => any[]) {
+async function fixture(
+  script: (turn: number) => any[],
+  options: { foregroundMs?: number; holdForeground?: boolean } = {},
+) {
   const directory = await mkdtemp(join(tmpdir(), "pi-jobs-sdk-"));
   const previous = process.env.PI_CODING_AGENT_DIR;
 
@@ -88,6 +91,7 @@ async function fixture(script: (turn: number) => any[]) {
     ended = deferred();
   let independent = false,
     cancelled = false;
+  let dispatches = 0;
 
   runtime.registerProvider("jobs-fixture", {
     api: "jobs-fixture",
@@ -161,7 +165,7 @@ async function fixture(script: (turn: number) => any[]) {
     noPromptTemplates: true,
     extensionFactories: [
       autoApproval,
-      jobs,
+      (pi) => jobs(pi, options.foregroundMs),
       contextManagement,
       (pi) => {
         pi.on("session_start", (_event, ctx) => {
@@ -171,7 +175,13 @@ async function fixture(script: (turn: number) => any[]) {
                 plan: { backend: "synthetic-container", requestedCommands: request.arguments },
                 async assertCurrent() {},
                 async execute(signal) {
-                  if (request.background) {
+                  const held = Boolean(
+                    request.background || (options.holdForeground && dispatches === 0),
+                  );
+
+                  dispatches++;
+
+                  if (held) {
                     await Promise.race([
                       release.promise,
                       new Promise<void>((resolve) =>
@@ -192,7 +202,7 @@ async function fixture(script: (turn: number) => any[]) {
                     content: [
                       {
                         type: "text",
-                        text: request.background ? "VALIDATION-PASSED" : "INDEPENDENT-WORK-DONE",
+                        text: held ? "VALIDATION-PASSED" : "INDEPENDENT-WORK-DONE",
                       },
                     ],
                     details: { exitCode: 0 },
@@ -438,6 +448,92 @@ test("context rotation retains supervision and exposes running job IDs to the fr
         JSON.stringify(receipt.content).includes("VALIDATION-PASSED"),
       ),
     ).toBe(true);
+  } finally {
+    await state.close();
+  }
+});
+
+test("real SDK hands off a long command once and steering wakes its idle join without cancelling execution", async () => {
+  const joined = deferred();
+  const state = await fixture(
+    (turn) => {
+      if (turn === 1) return call("approved_action", command());
+
+      if (turn === 2) {
+        joined.resolve();
+
+        return call("job", { operation: "wait" });
+      }
+
+      return [{ type: "text", text: "Handled steering and the supervised command result." }];
+    },
+    { foregroundMs: 20, holdForeground: true },
+  );
+
+  try {
+    const running = state.session.prompt(
+      "Run the long validation; I may send corrections while you wait.",
+    );
+
+    await joined.promise;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(state.contexts).toHaveLength(2);
+    expect(state.reviews).toHaveLength(1);
+    expect(state.reviews[0].sandboxPlan.managedBackground.foregroundHandoffMs).toBe(120_000);
+    expect(sessionServices({ sessionManager: state.manager }).jobs?.busy).toBe(true);
+    expect(reviewedReceipts(state.manager.getBranch())).toHaveLength(0);
+    await state.session.prompt("Keep validation running; apply this correction first.", {
+      streamingBehavior: "steer",
+    });
+    await running;
+    expect(state.contexts).toHaveLength(3);
+    expect(JSON.stringify(state.contexts[2])).toContain("apply this correction first");
+    expect(state.cancelled()).toBe(false);
+    expect(sessionServices({ sessionManager: state.manager }).jobs?.busy).toBe(true);
+    state.release.resolve();
+    await state.fourth.promise;
+    expect(state.contexts).toHaveLength(4);
+    expect(state.reviews).toHaveLength(1);
+    expect(state.errors).toEqual([]);
+    expect(JSON.stringify(state.contexts[3])).toContain("VALIDATION-PASSED");
+    expect(
+      reviewedReceipts(state.manager.getBranch()).some((receipt) =>
+        JSON.stringify(receipt.content).includes("VALIDATION-PASSED"),
+      ),
+    ).toBe(true);
+  } finally {
+    await state.close();
+  }
+});
+
+test("real SDK can start a long background command without inventing independent work", async () => {
+  const joined = deferred();
+  const state = await fixture((turn) => {
+    if (turn === 1)
+      return call("approved_action", { ...command(), background: { title: "Long validation" } });
+
+    if (turn === 2) {
+      joined.resolve();
+
+      return call("job", { operation: "wait" });
+    }
+
+    return [{ type: "text", text: "Validation complete." }];
+  });
+
+  try {
+    const running = state.session.prompt(
+      "Run validation and wait for its result; no other work is needed.",
+    );
+
+    await joined.promise;
+    expect(state.contexts).toHaveLength(2);
+    expect(state.reviews).toHaveLength(1);
+    expect(state.reviews[0].action.background).toEqual({ title: "Long validation" });
+    state.release.resolve();
+    await running;
+    expect(state.contexts).toHaveLength(3);
+    expect(state.errors).toEqual([]);
   } finally {
     await state.close();
   }

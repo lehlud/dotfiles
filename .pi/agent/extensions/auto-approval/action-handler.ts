@@ -17,6 +17,7 @@ import { executeWithCredentials } from "./credential-access.ts";
 import { executeWithGitConfig } from "./git-config.ts";
 import { executeIsolated } from "./isolation.ts";
 import { isWebTool } from "../web-research/index.ts";
+import { BACKGROUND_TOOLS, FOREGROUND_JOB_MS, type JobInfo } from "../shared/contracts/jobs.ts";
 import type { ActionSession } from "./action-session.ts";
 
 type Execution = Parameters<ToolDefinition<any, any>["execute"]>;
@@ -93,7 +94,8 @@ class ActionRun {
 
       this.signal?.throwIfAborted();
 
-      if (prepared.request.background) return this.background(prepared);
+      if (sessionServices(this.ctx).jobs && BACKGROUND_TOOLS.has(prepared.request.tool))
+        return await this.supervised(prepared);
 
       this.executionStarted = true;
 
@@ -144,11 +146,12 @@ class ActionRun {
       : this.ctx.cwd;
     const reviewPlan = {
       ...sandboxPlan,
-      ...(request.background
+      ...(BACKGROUND_TOOLS.has(request.tool) && sessionServices(this.ctx).jobs
         ? {
             managedBackground: {
               owner: "this actor/session only",
               maximumActiveJobs: 4,
+              foregroundHandoffMs: request.background ? 0 : FOREGROUND_JOB_MS,
               execution:
                 "same attached executor, reviewed timeout and per-command grants; no shell detachment",
               completion: "one automatic result or blocking join; no status polling",
@@ -224,40 +227,59 @@ class ActionRun {
     return checked.verdict;
   }
 
-  private background(prepared: PreparedAction) {
+  private async supervised(prepared: PreparedAction) {
     const jobs = sessionServices(this.ctx).jobs!;
     const lease = this.assignment;
-    const job = jobs.start(
-      { ...prepared.request.background!, toolCallId: this.id },
-      async (signal) => {
-        try {
-          signal.throwIfAborted();
-          lease?.assertCurrent();
-          prepared.remote?.assertCurrent();
-          await prepared.container?.assertCurrent();
-          signal.throwIfAborted();
-          this.executionStarted = true;
+    const run = async (signal: AbortSignal) => {
+      // The supervisor owns cleanup from the moment execution starts.
+      this.assignment = undefined;
 
-          const result = await this.execute(prepared, signal);
+      try {
+        signal.throwIfAborted();
+        lease?.assertCurrent();
+        prepared.remote?.assertCurrent();
+        await prepared.container?.assertCurrent();
+        signal.throwIfAborted();
+        this.executionStarted = true;
 
-          // Review usage belongs to admission, not the later completion notification.
-          return { ...result, usage: undefined };
-        } catch (error) {
-          return { ...this.failed(error), usage: undefined };
-        } finally {
-          lease?.release();
-        }
-      },
-    );
+        const result = await this.execute(prepared, signal);
 
-    // Admission succeeded. The supervisor now owns execution and its assignment lease.
+        // Review usage belongs to admission, not the later completion notification.
+        return { ...result, usage: undefined };
+      } catch (error) {
+        return { ...this.failed(error), usage: undefined };
+      } finally {
+        lease?.release();
+      }
+    };
+    const spec = {
+      title: `${prepared.request.tool} command`,
+      ...prepared.request.background,
+      toolCallId: this.id,
+    };
+
+    if (!prepared.request.background) {
+      const outcome = await jobs.runForeground(spec, run, this.signal);
+
+      if ("result" in outcome) return { ...outcome.result, usage: this.usage };
+
+      return this.admitted(outcome.job);
+    }
+
+    const job = jobs.start(spec, run);
+
+    // Admission succeeded; execution may begin after this action returns.
     this.assignment = undefined;
 
+    return this.admitted(job);
+  }
+
+  private admitted(job: JobInfo) {
     return {
       content: [
         {
           type: "text" as const,
-          text: `${this.summary}\nBackground job ${job.id} started: ${job.title}. Do the independent work now. Completion arrives automatically; use job wait only when ready to join.`,
+          text: `${this.summary}\nBackground job ${job.id} running: ${job.title}. Completion arrives automatically. Do independent work or use job wait; user steering wakes the wait.`,
         },
       ],
       details: { approval: this.audit, backgroundJob: job },

@@ -62,6 +62,8 @@ selected-tool validator. `ActionSession` serializes foreground actions and job a
 6. Recheck lease/cancellation; execute within the reviewed local/remote boundary.
 7. Release the lease after execution and cleanup. A background admission transfers it
    to the session-owned job supervisor; the gate queue can then admit other actions.
+   Command executions also hand off after 120 seconds if they have not finished;
+   short commands return normally. Handoff preserves the exact approval and executor.
 
 `prepare-action.ts` handles preflight; `sandbox-plan.ts` describes scope without resolving
 credentials; `review-display.ts` handles callbacks. `sandbox/` separates discovery,

@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { JobAccess, JobInfo, JobResult, JobSpec } from "../shared/contracts/jobs.ts";
+import {
+  FOREGROUND_JOB_MS,
+  type ForegroundResult,
+  type JobAccess,
+  type JobInfo,
+  type JobResult,
+  type JobSpec,
+} from "../shared/contracts/jobs.ts";
 
 type Job = {
   info: JobInfo;
@@ -9,6 +16,7 @@ type Job = {
   consumed: boolean;
   waiting: boolean;
   silent?: boolean;
+  foreground: boolean;
 };
 
 type Effects = {
@@ -26,28 +34,42 @@ export class JobManager implements JobAccess {
   private stopping?: Promise<void>;
   private listeners = new Set<() => void>();
   revision = 0;
-  constructor(private effects: Effects) {}
+  constructor(
+    private effects: Effects,
+    private foregroundMs = FOREGROUND_JOB_MS,
+  ) {}
 
   get busy() {
-    return [...this.jobs.values()].some((job) => job.info.state === "running");
+    return this.list().some((job) => job.state === "running");
   }
   list() {
-    return [...this.jobs.values()].map((job) => ({ ...job.info }));
+    return [...this.jobs.values()].filter((job) => !job.foreground).map((job) => ({ ...job.info }));
   }
 
   start(spec: JobSpec, run: (signal: AbortSignal) => Promise<JobResult>) {
+    return { ...this.create(spec, run, false).info };
+  }
+
+  private create(
+    spec: JobSpec,
+    run: (signal: AbortSignal) => Promise<JobResult>,
+    foreground: boolean,
+  ) {
     if (this.closing || this.suspended)
       throw new Error(
         "Job supervisor is interrupted or closing; resume the run before starting another job",
       );
 
-    if (this.list().filter((job) => job.state === "running").length >= 4)
-      throw new Error("Four background jobs are already running; join one before starting another");
+    if ([...this.jobs.values()].filter((job) => job.info.state === "running").length >= 4)
+      throw new Error(
+        "Four supervised commands are already running; join one before starting another",
+      );
 
     const info: JobInfo = { ...spec, id: randomUUID(), state: "running", started: Date.now() };
 
-    // Admission must be durable before the command can start.
-    this.effects.started({ ...info });
+    // Foreground execution already has its durable action approval. Background
+    // admission is journaled before launch or promotion becomes visible.
+    if (!foreground) this.effects.started({ ...info });
 
     const job: Job = {
       info,
@@ -55,13 +77,61 @@ export class JobManager implements JobAccess {
       done: undefined!,
       consumed: false,
       waiting: false,
+      foreground,
     };
 
     this.jobs.set(info.id, job);
-    this.changed();
+
+    if (!foreground) this.changed();
+
     job.done = Promise.resolve().then(() => this.execute(job, run));
 
-    return { ...info };
+    return job;
+  }
+
+  /** Yield the existing executor after two minutes; never restart or detach it. */
+  async runForeground(
+    spec: JobSpec,
+    run: (signal: AbortSignal) => Promise<JobResult>,
+    signal?: AbortSignal,
+  ): Promise<ForegroundResult> {
+    signal?.throwIfAborted();
+
+    const job = this.create(spec, run, true);
+    const abort = () => job.controller.abort(signal?.reason);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    signal?.addEventListener("abort", abort, { once: true });
+
+    try {
+      const promoted = new Promise<ForegroundResult>((resolve, reject) => {
+        timer = setTimeout(() => {
+          if (job.result) return resolve({ result: job.result });
+
+          try {
+            this.effects.started({ ...job.info });
+            job.foreground = false;
+            signal?.removeEventListener("abort", abort);
+            this.changed();
+            resolve({ job: { ...job.info } });
+          } catch (error) {
+            reject(error);
+          }
+        }, this.foregroundMs);
+      });
+
+      return await Promise.race([job.done.then((result) => ({ result })), promoted]);
+    } catch (error) {
+      job.controller.abort(error);
+      await job.done;
+
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+
+      if (job.foreground) this.jobs.delete(job.info.id);
+    }
   }
 
   private async execute(job: Job, run: (signal: AbortSignal) => Promise<JobResult>) {
@@ -87,6 +157,8 @@ export class JobManager implements JobAccess {
     if (job.controller.signal.aborted) result = { ...result, isError: true };
 
     job.result = result;
+
+    if (job.foreground) return result;
 
     try {
       this.effects.completed({ ...job.info }, result);
@@ -157,7 +229,9 @@ export class JobManager implements JobAccess {
 
     const jobs = id
       ? [this.get(id)]
-      : [...this.jobs.values()].filter((job) => job.info.state === "running" || !job.consumed);
+      : [...this.jobs.values()].filter(
+          (job) => !job.foreground && (job.info.state === "running" || !job.consumed),
+        );
 
     if (!jobs.length)
       throw new Error(

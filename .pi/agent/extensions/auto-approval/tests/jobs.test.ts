@@ -24,15 +24,18 @@ function deferred<T = void>() {
   return { promise, resolve };
 }
 
-function fixture() {
+function fixture(foregroundMs = 120_000) {
   const events: any[] = [];
-  const manager = new JobManager({
-    started: (job) => events.push(["start", job]),
-    completed: (job, output) => events.push(["complete", job, output]),
-    notify: (job, output) => events.push(["notify", job, output]),
-    changed() {},
-    error: (error) => events.push(["error", error]),
-  });
+  const manager = new JobManager(
+    {
+      started: (job) => events.push(["start", job]),
+      completed: (job, output) => events.push(["complete", job, output]),
+      notify: (job, output) => events.push(["notify", job, output]),
+      changed() {},
+      error: (error) => events.push(["error", error]),
+    },
+    foregroundMs,
+  );
 
   return { manager, events };
 }
@@ -225,7 +228,7 @@ test("job capacity and identity are session-local; settled result storage stays 
     }),
   );
 
-  expect(() => manager.start(spec, async () => result)).toThrow("Four background jobs");
+  expect(() => manager.start(spec, async () => result)).toThrow("Four supervised commands");
   await expect(other.cancel(active[0].id)).rejects.toThrow("Unknown job");
   release.resolve();
   await manager.wait(undefined);
@@ -330,4 +333,130 @@ test("only completed background command output becomes trusted action evidence",
       },
     ]),
   ).toHaveLength(0);
+});
+
+test("short foreground commands return their result without job notices or retained entries", async () => {
+  const { manager, events } = fixture(50);
+
+  expect(await manager.runForeground(spec, async () => result)).toEqual({ result });
+  expect(events).toEqual([]);
+  expect(manager.list()).toEqual([]);
+  expect(manager.busy).toBe(false);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  expect(events).toEqual([]);
+});
+
+test("a long foreground command hands off the same executor and detaches only its caller signal", async () => {
+  const { manager, events } = fixture(10);
+  const release = deferred();
+  const caller = new AbortController();
+  let launches = 0;
+  let executionSignal: AbortSignal | undefined;
+  const outcome = await manager.runForeground(
+    spec,
+    async (signal) => {
+      launches++;
+      executionSignal = signal;
+      await release.promise;
+
+      return result;
+    },
+    caller.signal,
+  );
+
+  expect("job" in outcome).toBe(true);
+
+  if (!("job" in outcome)) throw new Error("Expected a handoff");
+
+  expect(manager.busy).toBe(true);
+  expect(manager.list()).toHaveLength(1);
+  expect(events.map(([kind]) => kind)).toEqual(["start"]);
+  caller.abort();
+  expect(executionSignal?.aborted).toBe(false);
+  release.resolve();
+  expect((await manager.wait(outcome.job.id))[0].result).toEqual(result);
+  expect(launches).toBe(1);
+  expect(events.map(([kind]) => kind)).toEqual(["start", "complete"]);
+});
+
+test("foreground cancellation and failed promotion both await executor cleanup", async () => {
+  const { manager } = fixture(1000);
+  const started = deferred();
+  const cleanup = deferred();
+  const caller = new AbortController();
+  let stopped = false;
+  const running = manager.runForeground(
+    spec,
+    async (signal) => {
+      started.resolve();
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      await cleanup.promise;
+      stopped = true;
+
+      return result;
+    },
+    caller.signal,
+  );
+
+  await started.promise;
+  caller.abort();
+  await Promise.resolve();
+  expect(stopped).toBe(false);
+  cleanup.resolve();
+
+  const outcome = await running;
+
+  expect("result" in outcome && outcome.result.isError).toBe(true);
+  expect(stopped).toBe(true);
+  expect(manager.list()).toEqual([]);
+
+  let aborted = false;
+  const failed = new JobManager(
+    {
+      started() {
+        throw new Error("audit unavailable");
+      },
+      completed() {},
+      notify() {},
+      changed() {},
+      error() {},
+    },
+    10,
+  );
+
+  await expect(
+    failed.runForeground(spec, async (signal) => {
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+      aborted = true;
+
+      return result;
+    }),
+  ).rejects.toThrow("audit unavailable");
+  expect(aborted).toBe(true);
+  expect(failed.list()).toEqual([]);
+});
+
+test("foreground admission reserves capacity before execution, and rejects already aborted callers", async () => {
+  const { manager } = fixture(1000);
+  const release = deferred();
+  let launches = 0;
+  const run = async () => {
+    launches++;
+    await release.promise;
+
+    return result;
+  };
+  const running = Array.from({ length: 4 }, () => manager.runForeground(spec, run));
+
+  await Promise.resolve();
+  await expect(manager.runForeground(spec, run)).rejects.toThrow("Four supervised commands");
+  expect(launches).toBe(4);
+  release.resolve();
+  await Promise.all(running);
+
+  const caller = new AbortController();
+
+  caller.abort(new Error("cancelled before launch"));
+  await expect(manager.runForeground(spec, run, caller.signal)).rejects.toThrow("before launch");
+  expect(launches).toBe(4);
 });

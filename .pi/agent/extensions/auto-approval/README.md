@@ -456,9 +456,11 @@ Offline tests verify transport and boundaries, not a live model's semantic decis
 
 ## Managed background execution
 
-Foreground remains the default. `approved_action.background: {title, work}` starts
+Commands expected to exceed two minutes use `approved_action.background: {title, work?}` to start
 one reviewed command under the session's [job supervisor](../jobs/README.md), naming
-the independent work to do meanwhile. The same exact-action approval, sandbox,
+optional independent work to do meanwhile. Waiting alone is valid; `job wait` uses no
+model calls and user steering wakes it without cancelling the command. Unexpectedly long
+foreground commands hand off automatically after 120 seconds without restarting. The same exact-action approval, sandbox,
 limits and per-command grants apply. Admission releases the action queue; the job
 keeps its assignment lease until executor cleanup. A start receipt is not success
 evidence. Completion is journaled against the original approval, then delivered

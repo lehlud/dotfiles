@@ -2051,33 +2051,36 @@ test("approved Pi extension maintenance executes after persisted review and keep
   expect(executedRequests).toHaveLength(count);
 });
 
-function supervised() {
+function supervised(foregroundMs = 120_000) {
   const notifications: any[] = [];
-  const manager = new JobManager({
-    started: (job) =>
-      entries.push({ type: "custom", customType: "auto-approval-job-start", data: job }),
-    completed: (job, result) =>
-      entries.push({
-        type: "custom",
-        customType: "auto-approval-job-result",
-        data: {
-          job,
-          message: {
-            role: "toolResult",
-            toolName: "approved_action",
-            toolCallId: job.toolCallId,
-            ...result,
+  const manager = new JobManager(
+    {
+      started: (job) =>
+        entries.push({ type: "custom", customType: "auto-approval-job-start", data: job }),
+      completed: (job, result) =>
+        entries.push({
+          type: "custom",
+          customType: "auto-approval-job-result",
+          data: {
+            job,
+            message: {
+              role: "toolResult",
+              toolName: "approved_action",
+              toolCallId: job.toolCallId,
+              ...result,
+            },
           },
-        },
-      }),
-    notify: (job, result) => {
-      notifications.push({ job, result });
+        }),
+      notify: (job, result) => {
+        notifications.push({ job, result });
+      },
+      changed() {},
+      error(error) {
+        throw error;
+      },
     },
-    changed() {},
-    error(error) {
-      throw error;
-    },
-  });
+    foregroundMs,
+  );
 
   sessionServices(ctx).jobs = manager;
 
@@ -2303,4 +2306,69 @@ test("operator-enabled CIP controls skip review while project commands still req
     actions.cip_nodes.execute("direct", { operation: "acquire" }, undefined, undefined, ctx),
   ).rejects.toThrow("Enable /cip");
   expect(operations).toHaveLength(3);
+});
+
+test("automatic handoff frees the gate queue without reapproval, restart, or early lease release", async () => {
+  const { manager } = supervised(10);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const released: boolean[] = [];
+
+  sessionServices(ctx).acquireActionLease = () => {
+    const index = released.push(false) - 1;
+
+    return {
+      assertCurrent() {},
+      release() {
+        expect(released[index]).toBe(false);
+        released[index] = true;
+      },
+    };
+  };
+
+  let executionSignal: AbortSignal | undefined;
+
+  executionGate = async (request, signal) => {
+    if (request.arguments.command === "printf slow-auto") {
+      executionSignal = signal;
+      await held;
+    }
+  };
+
+  const caller = new AbortController();
+  const request = bash("printf slow-auto");
+  const admitted: any = await actions.approved_action.execute(
+    "automatic",
+    request,
+    caller.signal,
+    undefined,
+    ctx,
+  );
+
+  expect(admitted.details.backgroundJob.state).toBe("running");
+  expect(requested).toHaveLength(1);
+  expect(requested[0].data.action.background).toBeUndefined();
+  expect(requested[0].data.sandboxPlan.managedBackground.foregroundHandoffMs).toBe(120_000);
+  expect(released).toEqual([false]);
+  expect(reviewedReceipts(entries)).toHaveLength(0);
+  caller.abort();
+  expect(executionSignal?.aborted).toBe(false);
+
+  const other: any = await call(bash("printf independent-work"));
+
+  expect(other.isError).not.toBe(true);
+  expect(released).toEqual([false, true]);
+  release();
+  expect((await manager.wait(admitted.details.backgroundJob.id))[0].job.state).toBe("succeeded");
+  expect(released).toEqual([true, true]);
+  expect(
+    executedRequests.filter((item) => item.arguments.command === "printf slow-auto"),
+  ).toHaveLength(1);
+  expect(
+    reviewedReceipts(entries).some((receipt) =>
+      JSON.stringify(receipt.content).includes("slow-auto"),
+    ),
+  ).toBe(true);
 });

@@ -43,8 +43,11 @@ export async function prepareAction(
   assertDelegatedAction(sessionServices(ctx).delegationMode, request);
 
   if (request.background) {
-    if (!request.background.title.trim() || !request.background.work.trim())
-      throw new Error("Background jobs need a title and independent work description");
+    if (
+      !request.background.title.trim() ||
+      (request.background.work !== undefined && !request.background.work.trim())
+    )
+      throw new Error("Background jobs need a title and a nonempty work description when supplied");
 
     if (!sessionServices(ctx).jobs)
       throw new Error("Background supervisor unavailable; restart Pi through ~/.local/bin/pi");

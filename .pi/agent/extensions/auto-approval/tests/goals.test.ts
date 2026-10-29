@@ -1222,6 +1222,9 @@ test("owned background work prevents premature goal review and invalidates a sta
     start() {
       throw new Error("not used");
     },
+    async runForeground() {
+      throw new Error("not used");
+    },
     async cancelAll() {
       busy = false;
     },
@@ -1257,6 +1260,9 @@ test("goal stop cancels owned jobs even when the terminal actor is already idle"
     busy: true,
     revision: 1,
     start() {
+      throw new Error("not used");
+    },
+    async runForeground() {
       throw new Error("not used");
     },
     async cancelAll() {
