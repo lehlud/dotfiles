@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+_helper="${AUTO_UPDATE_APP_HELPER:-$HOME/.local/bin/auto-update-app.bash}"
+if [ ! -r "$_helper" ]; then
+    printf 'nvim install failed: missing helper: %s\n' "$_helper" >&2
+    exit 1
+fi
+
+. "$_helper"
+
+_nvim_resolve() {
+    local os
+    local arch
+    local release
+    local archive_dir
+
+    case "$(auto_update_platform_os)" in
+        linux) os=linux ;;
+        darwin) os=macos ;;
+        *)
+            printf 'nvim install failed: unsupported OS: %s\n' "$(uname -s)" >&2
+            return 1
+            ;;
+    esac
+
+    case "$(auto_update_platform_arch)" in
+        x86_64) arch=x86_64 ;;
+        aarch64) arch=arm64 ;;
+        *)
+            printf 'nvim install failed: unsupported architecture: %s\n' "$(uname -m)" >&2
+            return 1
+            ;;
+    esac
+
+    release="$(auto_update_latest_release_tag neovim/neovim)" || return 1
+    archive_dir="nvim-$os-$arch"
+
+    AUTO_UPDATE_URL="https://github.com/neovim/neovim/releases/download/$release/$archive_dir.tar.gz"
+    AUTO_UPDATE_SOURCE_REL="$archive_dir"
+    AUTO_UPDATE_SOURCE_BIN_REL="$archive_dir/bin/nvim"
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/nvim")"
+auto_update_ensure_tar_app nvim "$_cache_dir" nvim nvim/bin/nvim 3 _nvim_resolve https://github.com/neovim/neovim
+exec "$_cache_dir/nvim/bin/nvim" "$@"
