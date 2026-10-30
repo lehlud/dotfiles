@@ -333,7 +333,14 @@ Verdicts require exactly requestId/decision/reason, a current ID and nonempty re
 uses JSON schema, others strict JSON text. Every action is serialized and independently reviewed,
 never decision-cached. Failures block; post-start failures may leave effects. Audit records exact
 request/fingerprint, deciding model/attempts, reason, duration, backend/workspace and usage.
-Timeout applies per reviewer. Operators can change config; agents cannot disable review. Isolation
+Timeout applies to the complete review exchange. A wrong request ID triggers at most three
+additional checks with the same selected reviewer (four verdict attempts total), retaining
+the exact envelope, original lookups and one shared deadline. Each stale verdict is discarded
+and audited; it is never relabeled or used to execute. A short protocol correction supplies
+the current ID. A matching denial remains final; malformed, refused and cancelled responses
+do not get this retry. Usage includes all responses. Stable schemas/cache prefixes remain
+unchanged between attempts. Exhaustion blocks execution without asking the working model to
+resubmit the action. Operators can change config; agents cannot disable review. Isolation
 cannot prevent a user from deliberately running changed code later on the host.
 
 ## Provider prompt caching

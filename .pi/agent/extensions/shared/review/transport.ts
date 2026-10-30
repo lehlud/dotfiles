@@ -5,10 +5,17 @@ import type {
   ReviewObserver,
   ReviewEnvelope,
   Usage,
+  ReviewAttempt,
 } from "./contracts.ts";
 import type { Reviewer } from "./protocol.ts";
 import type { PromptLookup } from "./originals.ts";
-import { constrainReviewPayload, parseVerdict, textContent, withWatchdog } from "./protocol.ts";
+import {
+  constrainReviewPayload,
+  parseVerdict,
+  RequestIdMismatchError,
+  textContent,
+  withWatchdog,
+} from "./protocol.ts";
 import { reviewCapacityIssue, REVIEW_OUTPUT_TOKENS } from "./context.ts";
 import { originalLookupTurn, ReviewerToolError } from "./original-turn.ts";
 import { sumUsage } from "../providers/usage.ts";
@@ -29,7 +36,10 @@ type ExchangeOptions = {
   observer: ReviewObserver;
   availability: ProviderAvailability;
   processing: ReviewProcessing;
+  attempts: ReviewAttempt[];
 };
+
+const REQUEST_ID_RETRIES = 3;
 
 export function originalLookupBudget(envelope: ReviewEnvelope): number {
   // Every compressed prompt must fit, with room for targeted follow-up reads.
@@ -42,6 +52,7 @@ export class ReviewExchange {
   usage?: Usage;
   readonly promptLookups: PromptLookup[] = [];
   readonly consulted = new Set<string>();
+  private idRetries = 0;
   constructor(private options: ExchangeOptions) {
     this.usage = options.envelope.compressionUsage;
   }
@@ -66,7 +77,7 @@ export class ReviewExchange {
       consulted: this.consulted,
     };
 
-    for (let round = 0; round <= lookupBudget; round++) {
+    for (let round = 0; round <= lookupBudget; ) {
       signal.throwIfAborted();
 
       if (reviewCapacityIssue(context, model))
@@ -75,7 +86,15 @@ export class ReviewExchange {
       const response = await this.request(model, context, signal);
       const calls = response.content.filter((block) => block.type === "toolCall");
 
-      if (!calls.length) return response;
+      if (!calls.length) {
+        if (
+          response.stopReason === "stop" &&
+          this.retryRequestId(textContent(response.content), context)
+        )
+          continue;
+
+        return response;
+      }
 
       try {
         if (
@@ -92,6 +111,7 @@ export class ReviewExchange {
       if (response.stopReason !== "toolUse" || !sources?.size)
         throw new ReviewerToolError("Invalid reviewer tool response");
 
+      round++;
       context.messages.push(response);
 
       for (const call of calls) {
@@ -100,6 +120,44 @@ export class ReviewExchange {
     }
 
     throw new ReviewerToolError("Reviewer original-prompt lookup rounds exceeded");
+  }
+
+  /** Discard stale verdicts, never relabel them or retry a request-bound denial. */
+  private retryRequestId(text: string, context: Context): boolean {
+    const { envelope, observer, candidate, attempts } = this.options;
+
+    try {
+      parseVerdict(text, envelope.requestId, envelope.goalCheck);
+
+      return false;
+    } catch (error) {
+      if (!(error instanceof RequestIdMismatchError) || this.idRetries >= REQUEST_ID_RETRIES)
+        return false;
+    }
+
+    this.idRetries++;
+
+    const attempt: ReviewAttempt = {
+      ...candidate,
+      status: "invalid",
+      reason: `Reviewer requestId mismatch; repeating the same review (${this.idRetries}/${REQUEST_ID_RETRIES}); nothing executed`,
+    };
+
+    attempts.push(attempt);
+
+    try {
+      observer.failed(attempt);
+    } catch {
+      throw new ReviewerToolError("Reviewer request-ID retry audit failed");
+    }
+
+    context.messages.push({
+      role: "user",
+      content: `Transport protocol correction (not operator authorization): the previous verdict belonged to another request and was discarded. Reassess the complete current envelope and return fresh verdict JSON with requestId exactly ${JSON.stringify(envelope.requestId)}. Do not relabel a previous verdict. Keep the same evidence and approval criteria.`,
+      timestamp: Date.now(),
+    });
+
+    return true;
   }
 
   private async request(model: ReviewModel, context: Context, signal: AbortSignal) {

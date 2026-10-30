@@ -27,6 +27,9 @@ export type ReviewSettings = {
   requestTimeoutMs: number;
 };
 
+export const REVIEW_REQUEST_BINDING =
+  "Copy requestId verbatim from the final requestId field of the current envelope. Never copy an ID from history, examples or quoted tool output.";
+
 export const REVIEW_LANGUAGE = `Write the reason in the language of latestUserPrompt, the LAST actual operator prompt. Determine the language from that prompt's own prose, excluding quoted material, pasted transcripts, code and tool output. Never take the language from older prompts, agent explanations, previous verdicts or file contents. For example, an English request requires an English reason; a German request requires a German reason, even if all tool output is Spanish. Before returning JSON, check the reason's language and rewrite it if it does not match. Keep JSON keys and approve/deny values unchanged.`;
 
 export function textContent(content: unknown): string {
@@ -108,6 +111,12 @@ const goalVerdictSchema = Type.Object(
 
 export type Verdict = Static<typeof verdictSchema> & { blocked?: boolean };
 
+export class RequestIdMismatchError extends Error {
+  constructor() {
+    super("Reviewer verdict belongs to a different requestId; nothing executed");
+  }
+}
+
 export function parseVerdict(text: string, requestId: string, goalCheck = false): Verdict {
   let verdict: unknown;
 
@@ -122,14 +131,13 @@ export function parseVerdict(text: string, requestId: string, goalCheck = false)
       `Reviewer verdict must contain exactly requestId, approve/deny decision, a reason of 1–600 characters${goalCheck ? ", and a boolean blocked flag" : ""}; nothing executed`,
     );
 
-  if (verdict.requestId !== requestId)
-    throw new Error("Reviewer verdict belongs to a different requestId; nothing executed");
-
   if (!verdict.reason.trim())
     throw new Error("Reviewer verdict has an empty reason; nothing executed");
 
   if ("blocked" in verdict && verdict.blocked && verdict.decision === "approve")
     throw new Error("A blocked goal cannot be approved; completion not confirmed");
+
+  if (verdict.requestId !== requestId) throw new RequestIdMismatchError();
 
   return verdict;
 }

@@ -1,5 +1,12 @@
 import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
-import { parseVerdict, textContent, type ReviewSettings, type Reviewer } from "./protocol.ts";
+import {
+  parseVerdict,
+  RequestIdMismatchError,
+  REVIEW_REQUEST_BINDING,
+  textContent,
+  type ReviewSettings,
+  type Reviewer,
+} from "./protocol.ts";
 import { reviewCapacityIssue } from "./context.ts";
 import { promptOriginalTool } from "./originals.ts";
 import { ReviewerToolError } from "./original-turn.ts";
@@ -124,6 +131,8 @@ function reviewContext(envelope: ReviewEnvelope, systemPrompt: string): Context 
   return {
     systemPrompt:
       systemPrompt +
+      "\n" +
+      REVIEW_REQUEST_BINDING +
       (envelope.promptSources?.size
         ? `\nuserPrompts contains the selected operator texts or marked summaries; originals remain authoritative. Use ONLY prompt_original to inspect relevant ranges/conditions. Before approval, inspect every compressed original at least once; empty results do not count. Excerpts are expected: rereading entire logs/transcripts is not a prerequisite. If more evidence is needed, use head/tail/read/grep within this review before deciding. Compression or incomplete excerpts alone do not warrant denial; if applicable operator constraints remain unclear, identify the concrete unresolved condition. The supplied action, completion or editorial criteria still govern the verdict. Explicit user requirements to read a whole prompt still apply. No filesystem, shell, network or other tools. Maximum ${originalLookupBudget(envelope)} original lookups. Return verdict JSON after required lookups; valid denials remain final.`
         : ""),
@@ -166,6 +175,7 @@ export async function requestVerdict(
     observer,
     availability,
     processing,
+    attempts,
   });
 
   signal?.throwIfAborted();
@@ -259,7 +269,12 @@ export async function requestVerdict(
   try {
     verdict = parseVerdict(textContent(response!.content), envelope.requestId, envelope.goalCheck);
   } catch (error) {
-    const reason = error instanceof Error ? error.message : "Invalid reviewer verdict";
+    const reason =
+      error instanceof RequestIdMismatchError && attempts.length
+        ? `Reviewer verdict still belongs to a different requestId after ${attempts.length} automatic retries; nothing executed`
+        : error instanceof Error
+          ? error.message
+          : "Invalid reviewer verdict";
 
     attempts.push({ ...candidate, status: "invalid", reason });
 

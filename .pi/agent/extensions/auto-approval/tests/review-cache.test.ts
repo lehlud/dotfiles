@@ -97,13 +97,14 @@ function wireRegistry(
     compat: { supportsExplicitPromptCacheMode: true, sendSessionAffinityHeaders: true },
   };
   let staleId: string | undefined;
+  let staleRemaining = 0;
   const registry: any = {
     find: () => model,
     hasConfiguredAuth: () => true,
     streamSimple(selected: any, context: any, options: any) {
       const data = JSON.parse(context.messages[0].content);
       const verdict = JSON.stringify({
-        requestId: staleId ?? data.requestId,
+        requestId: staleRemaining-- > 0 ? staleId : data.requestId,
         decision: "approve",
         reason: "Synthetic independent verdict.",
         ...(data.goal ? { blocked: false } : {}),
@@ -128,7 +129,14 @@ function wireRegistry(
     },
   };
 
-  return { requests, registry, stale: (id: string) => (staleId = id) };
+  return {
+    requests,
+    registry,
+    stale: (id: string, count = Infinity) => {
+      staleId = id;
+      staleRemaining = count;
+    },
+  };
 }
 
 test("real OpenAI requests reuse keys, schema and explicit prefixes across distinct actions", async () => {
@@ -173,7 +181,7 @@ test("real OpenAI requests reuse keys, schema and explicit prefixes across disti
   await expect(reviewAction(config, wire.registry, second, observer)).rejects.toThrow(
     "different requestId",
   );
-  expect(wire.requests).toHaveLength(3);
+  expect(wire.requests).toHaveLength(6);
 });
 
 test("goal blocker metadata keeps a stable completion schema and cache prefix", async () => {
@@ -421,3 +429,32 @@ test("cache markers preserve payloads, routing restrictions and the complete rev
   expect(marked.input[1].content.map((block: any) => block.text).join("")).toBe(envelope.text);
   expect(cacheReviewPayload(payload, { ...model, provider: "unknown" }, envelope)).toBe(payload);
 });
+
+test.each(["openai", "openrouter"])(
+  "%s wire retries a stale ID without invalidating the schema or cache prefix",
+  async (provider) => {
+    const wire = wireRegistry(provider);
+    const envelope = review();
+
+    wire.stale("old-request", 1);
+
+    const checked = await reviewAction(
+      { ...config, reviewer: { ...config.reviewer!, provider } },
+      wire.registry,
+      envelope,
+      observer,
+    );
+
+    expect(wire.requests).toHaveLength(2);
+    expect(checked.verdict.requestId).toBe(envelope.requestId);
+    expect(checked.usage?.cacheRead).toBe(4000);
+
+    const [first, next] = wire.requests.map((request) => request.body);
+
+    expect(first.text?.format ?? first.response_format).toEqual(
+      next.text?.format ?? next.response_format,
+    );
+    expect(first.prompt_cache_key).toBe(next.prompt_cache_key);
+    expect(JSON.stringify(next)).toContain("Transport protocol correction");
+  },
+);

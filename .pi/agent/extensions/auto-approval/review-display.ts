@@ -73,7 +73,7 @@ export class ReviewDisplay {
           content: [
             {
               type: "text",
-              text: `Reviewer unavailable · ${reviewerLabel(attempt)}\n${attempt.reason}`,
+              text: `${attempt.status === "invalid" ? "Reviewer protocol retry" : "Reviewer unavailable"} · ${reviewerLabel(attempt)}\n${attempt.reason}`,
             },
           ],
           details: { phase: "reviewing", reviewer: this.reviewer, attempt },

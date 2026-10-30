@@ -533,9 +533,15 @@ test("malformed or mismatched verdicts fail closed", async () => {
     } catch (error) {
       expect(error).toBeInstanceOf(ReviewError);
       expect((error as ReviewError).attempts.at(-1)?.status).toBe("invalid");
+
+      if (mode === "mismatch") {
+        expect((error as ReviewError).message).toContain("3 automatic retries");
+        expect((error as ReviewError).attempts).toHaveLength(4);
+        expect((error as ReviewError).usage?.totalTokens).toBe(usage.totalTokens * 4);
+      }
     }
 
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(mode === "mismatch" ? 4 : 1);
   }
 });
 
@@ -724,5 +730,78 @@ test("review deadlines exclude provider backoff but still bound actual requests"
   );
 
   expect(checked.verdict.decision).toBe("approve");
+  expect(calls).toHaveLength(2);
+});
+
+test.each([1, 2, 3])(
+  "recovers from %i stale request IDs within the same review and bills every response",
+  async (stale) => {
+    onResponse = () => {
+      modes.openai = calls.length <= stale ? "mismatch" : "approve";
+    };
+
+    const checked = await run();
+
+    expect(calls).toHaveLength(stale + 1);
+    expect(checked.verdict.requestId).toBe(envelope.requestId);
+    expect(checked.attempts.map((attempt) => attempt.status)).toEqual([
+      ...Array(stale).fill("invalid"),
+      "approve",
+    ]);
+    expect(checked.usage?.totalTokens).toBe(usage.totalTokens * (stale + 1));
+    expect(checked.usage?.cacheRead).toBe(usage.cacheRead * (stale + 1));
+    expect(starts).toEqual(["openai"]);
+    expect(finishes).toBe(1);
+    expect(calls.every((call) => call.context.messages[0].content === envelope.text)).toBe(true);
+    expect(calls.at(-1).context.messages.at(-1).content).toContain(envelope.requestId);
+    expect(calls.every((call) => call.model.provider === "openai")).toBe(true);
+  },
+);
+
+test("a matching denial after a discarded stale verdict remains final", async () => {
+  onResponse = () => {
+    modes.openai = calls.length === 1 ? "mismatch" : "deny";
+  };
+
+  const checked = await run();
+
+  expect(calls).toHaveLength(2);
+  expect(checked.verdict.decision).toBe("deny");
+  expect(checked.attempts.map((attempt) => attempt.status)).toEqual(["invalid", "deny"]);
+});
+
+test("request-ID retry audit failure and cancellation prevent another reviewer call", async () => {
+  modes.openai = "mismatch";
+  await expect(
+    run(config, undefined, {
+      ...observer,
+      failed() {
+        throw new Error("audit failed");
+      },
+    }),
+  ).rejects.toThrow("retry audit failed");
+  expect(calls).toHaveLength(1);
+  calls = [];
+
+  const controller = new AbortController();
+
+  await expect(
+    run(config, controller.signal, {
+      ...observer,
+      failed() {
+        controller.abort();
+      },
+    }),
+  ).rejects.toThrow();
+  expect(calls).toHaveLength(1);
+});
+
+test("request-ID corrections share the original deadline rather than renewing it", async () => {
+  onResponse = () => {
+    modes.openai = calls.length === 1 ? "mismatch" : "timeout";
+  };
+  await expect(run({ ...config, requestTimeoutMs: 10 })).rejects.toThrow("timed out");
+  expect(calls).toHaveLength(2);
+  await new Promise((resolve) => setTimeout(resolve, 45));
   expect(calls).toHaveLength(2);
 });

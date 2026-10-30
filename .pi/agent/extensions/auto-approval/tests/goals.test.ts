@@ -1,3 +1,4 @@
+import { REVIEW_REQUEST_BINDING } from "../../shared/review/protocol.ts";
 import { writeConfigFixture } from "./config-fixture.ts";
 import { test, expect, beforeEach, afterAll } from "bun:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
@@ -327,7 +328,7 @@ test("incomplete verdict continues with missing work; only a later independent a
   expect(requests).toHaveLength(3);
   expect(operatorGoal()).toBeUndefined();
   expect(requests.every((request) => request.model.provider === "openai")).toBe(true);
-  expect(requests[0].context.systemPrompt).toBe(GOAL_REVIEW_SYSTEM);
+  expect(requests[0].context.systemPrompt).toBe(GOAL_REVIEW_SYSTEM + "\n" + REVIEW_REQUEST_BINDING);
   expect(requests[0].context.tools).toBeUndefined();
 });
 

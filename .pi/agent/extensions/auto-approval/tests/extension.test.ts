@@ -1458,14 +1458,14 @@ test("invalid verdicts and cancellation cannot select a different reviewer", asy
   const invalid = await call(bash("touch wrong-verdict"));
 
   expect(invalid.isError).toBe(true);
-  expect(requested).toHaveLength(1);
+  expect(requested).toHaveLength(4);
   expect(invalid.details.reviewAttempts[0].status).toBe("invalid");
 
   const controller = new AbortController();
 
   responseHook = () => controller.abort();
   expect((await call(bash("touch cancelled-review"), controller.signal)).isError).toBe(true);
-  expect(requested).toHaveLength(2);
+  expect(requested).toHaveLength(5);
   expect(executedRequests).toHaveLength(0);
 });
 
@@ -2425,4 +2425,26 @@ test("edit conflicts offer compact retries but every expanded replacement still 
   expect(executedRequests).toHaveLength(2);
   expect(await readFile(join(root, path), "utf8")).toBe(replacement + "\n");
   expect(reviewedReceipts(entries)).toHaveLength(1);
+});
+
+test("one action survives three stale verdicts internally and executes only once after a bound approval", async () => {
+  responseHook = () => {
+    expect(executedRequests).toHaveLength(0);
+    mode = requested.length <= 3 ? "mismatch" : "approve";
+  };
+
+  const result: any = await call(bash("printf exact-request"));
+
+  expect(result.isError).not.toBe(true);
+  expect(requested).toHaveLength(4);
+  expect(executedRequests).toHaveLength(1);
+  expect(new Set(requested.map((call) => call.data.requestId)).size).toBe(1);
+  expect(new Set(requested.map((call) => JSON.stringify(call.data.action))).size).toBe(1);
+  expect(result.details.approval.reviewAttempts.map((attempt: any) => attempt.status)).toEqual([
+    "invalid",
+    "invalid",
+    "invalid",
+    "approve",
+  ]);
+  expect(result.usage.totalTokens).toBe(usage.totalTokens * 4);
 });

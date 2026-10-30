@@ -278,3 +278,48 @@ test.each(["lookup", "lookupFailed"])(
     expect(review.calls).toHaveLength(1);
   },
 );
+
+test("request-ID correction preserves original lookups and cannot waive required evidence", async () => {
+  const { envelope } = fixture();
+  const review = gate(envelope, (turn) =>
+    turn === 1
+      ? [lookup(valid)]
+      : turn === 2
+        ? [
+            {
+              type: "text",
+              text: JSON.stringify({
+                requestId: "stale",
+                decision: "approve",
+                reason: "Discard this stale verdict.",
+              }),
+            },
+          ]
+        : review.verdict(),
+  );
+  const checked = await reviewAction(config, review.registry, envelope, observer);
+
+  expect(review.calls).toHaveLength(3);
+  expect(checked.promptLookups).toHaveLength(1);
+  expect(checked.verdict.requestId).toBe(envelope.requestId);
+
+  const missing = gate(envelope, (turn) =>
+    turn === 1
+      ? [
+          {
+            type: "text",
+            text: JSON.stringify({
+              requestId: "stale",
+              decision: "approve",
+              reason: "Discard this stale verdict.",
+            }),
+          },
+        ]
+      : missing.verdict(),
+  );
+
+  await expect(reviewAction(config, missing.registry, envelope, observer)).rejects.toThrow(
+    "inspect every compressed original",
+  );
+  expect(missing.calls).toHaveLength(2);
+});
