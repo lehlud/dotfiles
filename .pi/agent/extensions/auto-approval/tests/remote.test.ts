@@ -383,7 +383,9 @@ test("remote file tools preserve exact edits, render native numbered diffs and r
     }),
   );
 
-  expect(overlap.error).toContain("overlap");
+  expect(overlap.value.isError).toBe(true);
+  expect(text(overlap)).toContain("overlap");
+  expect(overlap.value.details.editConflict.unchanged).toBe(true);
   expect((await execute(request("read", { path: "/etc/passwd" }))).error).toContain("scoped");
   await symlink("/etc/passwd", join(project, "escape"));
   expect((await execute(request("read", { path: "escape" }))).error).toContain("scoped");

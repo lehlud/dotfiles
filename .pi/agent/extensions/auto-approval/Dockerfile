@@ -6,6 +6,7 @@ WORKDIR /extensions/auto-approval
 COPY auto-approval/package.json ./package.json
 COPY auto-approval/node_modules ./node_modules
 COPY auto-approval/runner.ts ./runner.ts
+COPY auto-approval/edit-operation.ts ./edit-operation.ts
 COPY auto-approval/credential-command.ts ./credential-command.ts
 COPY auto-approval/git-command.ts ./git-command.ts
 COPY auto-approval/git-process.ts ./git-process.ts

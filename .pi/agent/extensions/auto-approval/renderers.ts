@@ -37,9 +37,10 @@ export function createApprovalRenderers(
     context: ToolRenderContext,
     state: RenderState,
     lastComponent?: Component,
+    resolvedArguments?: unknown,
   ): ToolRenderContext => ({
     ...context,
-    args: (context.args as any)?.arguments ?? {},
+    args: resolvedArguments ?? (context.args as any)?.arguments ?? {},
     state: state.native,
     lastComponent,
     // Pi's edit call renderer otherwise computes its preview by reading the
@@ -84,10 +85,12 @@ export function createApprovalRenderers(
       }
 
       state.call =
-        tool?.renderCall?.(displayed, theme, {
-          ...nativeContext(context, state, state.call),
-          args: displayed,
-        }) ?? new Text(theme.fg("toolTitle", theme.bold(name || "approved_action")), 0, 0);
+        name === "edit" && typeof displayed.retry === "string"
+          ? new Text(theme.fg("toolTitle", `edit · retry ${displayed.retry}`), 0, 0)
+          : (tool?.renderCall?.(displayed, theme, {
+              ...nativeContext(context, state, state.call),
+              args: displayed,
+            }) ?? new Text(theme.fg("toolTitle", theme.bold(name || "approved_action")), 0, 0));
 
       let call = state.call;
 
@@ -187,7 +190,7 @@ export function createApprovalRenderers(
             output,
             options,
             theme,
-            nativeContext(context, state, state.result),
+            nativeContext(context, state, state.result, details.approval.action?.arguments),
           ) ?? renderTextResult(output, options, theme, nativeContext(context, state));
         state.wrapper.addChild(state.result);
       } else {

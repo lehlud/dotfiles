@@ -606,3 +606,25 @@ test("empty command output adds neither a body spacer nor an expansion hint", ()
   expect(component.render(120)).toHaveLength(4); // Transcript spacer, call and two approval lines.
   expect(display(component)).not.toContain("to expand");
 });
+
+test("compact edit retries display their reference and the confirmed native diff", () => {
+  const component = row("edit", { retry: "review-id", edits: [{ index: 0, oldText: "before" }] });
+
+  expect(display(component)).toContain("edit · retry review-id");
+
+  const result = approved({
+    content: [{ type: "text", text: "Edited" }],
+    details: { diff: "-1 before\n+1 after", firstChangedLine: 1 },
+  });
+
+  result.details.approval = {
+    decision: "approve",
+    action: {
+      tool: "edit",
+      arguments: { path: "example.txt", edits: [{ oldText: "before", newText: "after" }] },
+    },
+  } as any;
+  component.updateResult(result);
+  expect(display(component)).toContain("-1 before");
+  expect(display(component)).toContain("+1 after");
+});

@@ -156,9 +156,14 @@ nativeTest(
     };
 
     expect(JSON.stringify((await scoped(read)).content)).toContain("shared-source");
-    await expect(
-      scoped({ ...action("write", { path: shared, content: "forbidden" }), sandbox: read.sandbox }),
-    ).rejects.toThrow();
+
+    const rejectedWrite = await scoped({
+      ...action("write", { path: shared, content: "forbidden" }),
+      sandbox: read.sandbox,
+    });
+
+    expect(rejectedWrite.isError).toBe(true);
+    expect(rejectedWrite.details.toolError).toBe(true);
     expect(await readFile(shared, "utf8")).toBe("shared-source");
 
     const written = await scoped({
@@ -867,3 +872,39 @@ test("temporary mount placeholders remain until the last concurrent action relea
   await first();
   await expect(access(join(directory, "pi"))).rejects.toThrow();
 });
+
+nativeTest(
+  "ordinary tool failures are structured results, and multi-edit conflicts do not write partial files",
+  async () => {
+    const path = "edit-conflict.txt";
+    const before = "before\n\nvalue\n";
+
+    await writeFile(join(project, path), before);
+
+    const request = action("edit", {
+      path,
+      edits: [
+        { oldText: "value", newText: "changed" },
+        { oldText: "before\nvalue", newText: "later" },
+      ],
+    });
+    const workspace = await validateWorkspace(project, native, []);
+    const result = await executeIsolated(request, workspace, native);
+
+    expect(result.isError).toBe(true);
+    expect(result.details.editConflict).toEqual({ index: 1, unchanged: true });
+    expect(JSON.stringify(result.content)).toContain("No file changes were made");
+    expect(JSON.stringify(result.content)).not.toContain("sandbox failed");
+    expect(await readFile(join(project, path), "utf8")).toBe(before);
+
+    const missing = await executeIsolated(
+      action("read", { path: "missing-edit-conflict-file" }),
+      workspace,
+      native,
+    );
+
+    expect(missing.isError).toBe(true);
+    expect(missing.details.toolError).toBe(true);
+    expect(JSON.stringify(missing.content)).toContain("Tool read failed");
+  },
+);

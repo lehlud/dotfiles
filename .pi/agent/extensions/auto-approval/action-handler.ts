@@ -316,6 +316,16 @@ class ActionRun {
     const { request } = prepared;
     const result = await this.dispatch(prepared, signal);
 
+    if (
+      request.tool === "edit" &&
+      result.isError &&
+      result.details?.editConflict?.unchanged === true
+    )
+      result.content.push({
+        type: "text",
+        text: `Reuse this edit's path and replacement text with arguments {retry: "${this.audit.requestId}", edits: [{index: ${result.details.editConflict.index ?? 0}, oldText: "correct current text"}]}. Other edits remain unchanged. Supply goal, justification and any required sandbox grants again; the complete edit receives fresh approval.`,
+      });
+
     if (isWebTool(request.tool))
       return {
         ...result,

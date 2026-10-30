@@ -24,6 +24,8 @@ import { containerFileReader } from "./container-reader.ts";
 import type { ContainerPrepared } from "../shared/contracts/containers.ts";
 import { assertDelegatedAction } from "../shared/contracts/subagents.ts";
 
+import { expandEditRetry } from "./edit-retry.ts";
+
 export async function prepareAction(
   raw: unknown,
   ctx: ExtensionContext,
@@ -32,7 +34,7 @@ export async function prepareAction(
   stage: (name: string) => void,
   signal?: AbortSignal,
 ) {
-  const snapshot = actionSnapshot(raw) as Request;
+  const snapshot = expandEditRetry(actionSnapshot(raw), ctx.sessionManager.getBranch()) as Request;
   const validRequest: boolean = Check(strictParameters, snapshot);
 
   if (!validRequest || !snapshot.goal.trim() || !snapshot.justification.trim())

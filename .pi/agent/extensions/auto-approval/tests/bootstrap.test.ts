@@ -47,6 +47,7 @@ beforeAll(async () => {
     "git-command.ts",
     "git-process.ts",
     "git-rebase.ts",
+    "edit-operation.ts",
   ])
     await copyFile(join(import.meta.dir, "..", name), join(source, name));
 

@@ -466,3 +466,33 @@ keeps its assignment lease until executor cleanup. A start receipt is not succes
 evidence. Completion is journaled against the original approval, then delivered
 once or returned by a blocking join. `job wait` and `job sleep` suspend the model;
 neither grants external access. Unmanaged shell detachment remains prohibited.
+
+## Edit conflicts and compact retries
+
+An unmatched, ambiguous or overlapping edit is a tool conflict, not a sandbox launch
+failure. The SDK still validates the complete batch before writing. Conflict results
+state that the file was not changed and, when possible, include a small excerpt of
+current lines captured inside the approved sandbox. They never retarget edits by guessing.
+
+After a conflict, the model can retain the original path, replacement text and other
+edits by referring to its review request ID:
+
+```json
+{
+  "tool": "edit",
+  "arguments": {
+    "retry": "request-id-from-the-conflict",
+    "edits": [{ "index": 0, "oldText": "the actual current anchor" }]
+  },
+  "goal": "The current user task",
+  "justification": "Correct the stale anchor"
+}
+```
+
+References resolve only from approved edit records in this session branch. The runtime
+expands the complete edit before ordinary validation and fresh independent review;
+it reuses no approval, goal, justification or sandbox grant. Request necessary grants
+again. It does not read target files before approval. Unknown references and duplicate
+or invalid indices fail before execution. The original journal retains the text across
+context rotation, avoiding a separate draft cache. For changes beyond anchors, submit a
+normal edit. Local and remote conflicts keep their normal failure status and evidence rules.

@@ -19,6 +19,8 @@ import { containerTool } from "../shared/contracts/containers.ts";
 import { tunnelTool } from "../shared/contracts/remote.ts";
 import { gitTool } from "./git-command.ts";
 
+import { editRetrySchema } from "./edit-retry.ts";
+
 export const TOOL_NAME = "approved_action";
 export const factories = {
   read: createReadToolDefinition,
@@ -44,6 +46,12 @@ const toolNames = Object.keys(factories) as ToolName[];
 export const definitions = Object.fromEntries(
   toolNames.map((name) => [name, factories[name](process.cwd())]),
 ) as Record<ToolName, ToolDefinition<any, any>>;
+
+definitions.edit = {
+  ...definitions.edit,
+  parameters: Type.Union([definitions.edit.parameters, editRetrySchema]),
+};
+
 export const strictParameters = Type.Union(
   toolNames.map((name) =>
     Type.Object(

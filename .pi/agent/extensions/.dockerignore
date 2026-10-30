@@ -29,3 +29,5 @@
 !shared/configuration/credential-profile.ts
 
 !shared/contracts/jobs.ts
+
+!auto-approval/edit-operation.ts

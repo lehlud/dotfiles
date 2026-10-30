@@ -18,6 +18,8 @@ import { writingCheckTool } from "../public-writing/index.ts";
 import { credentialCommandTool, executeCredentialCommand } from "./credential-command.ts";
 import { gitTool, executeGit } from "./git-command.ts";
 
+import { executeEdit } from "./edit-operation.ts";
+
 const factories = {
   read: createReadToolDefinition,
   bash: createBashToolDefinition,
@@ -87,13 +89,29 @@ try {
 
     if (!Check(tool.parameters, request.arguments)) throw new Error("Invalid executor arguments");
 
-    result = await tool.execute(
-      "isolated",
-      request.arguments,
-      undefined,
-      undefined,
-      undefined as any,
-    );
+    try {
+      result =
+        name === "edit"
+          ? await executeEdit(process.cwd(), request.arguments)
+          : await tool.execute(
+              "isolated",
+              request.arguments,
+              undefined,
+              undefined,
+              undefined as any,
+            );
+    } catch (error) {
+      result = {
+        content: [
+          {
+            type: "text",
+            text: `Tool ${name} failed: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+        isError: true,
+        details: { toolError: true },
+      };
+    }
 
     // Bash returns the same successful output twice. Keep its metadata without charging
     // the bounded transport twice for an identical text payload.

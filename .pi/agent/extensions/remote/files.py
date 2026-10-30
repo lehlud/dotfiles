@@ -85,7 +85,6 @@ def read_tool(path, args, budget):
 
 
 def write_tool(path, args, edit):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
     old = ""
     if edit or os.path.exists(path):
         if os.path.getsize(path) > 16777216:
@@ -96,21 +95,29 @@ def write_tool(path, args, edit):
     content = args.get("content", "")
     if edit:
         replacements = []
-        for change in args["edits"]:
+        for index, change in enumerate(args["edits"]):
             needle = change["oldText"]
             if not needle or old.count(needle) != 1:
-                raise ValueError("Each edit must match exactly once in the original file")
+                return text_result(
+                    "Edit conflict: edits[%d].oldText must match exactly once in the original file. "
+                    "No file changes were made; read the current lines before correcting the anchor." % index,
+                    isError=True, details={"editConflict": {"index": index, "unchanged": True}},
+                )
             start = old.index(needle)
             replacements.append((start, start + len(needle), change["newText"]))
 
         replacements.sort()
         if any(left[1] > right[0] for left, right in zip(replacements, replacements[1:])):
-            raise ValueError("Edits overlap")
+            return text_result(
+                "Edit conflict: edits overlap. No file changes were made; combine overlapping edits.",
+                isError=True, details={"editConflict": {"index": 0, "unchanged": True}},
+            )
 
         content = old
         for start, end, replacement in reversed(replacements):
             content = content[:start] + replacement + content[end:]
 
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     handle, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".pi-remote-write-")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as file:

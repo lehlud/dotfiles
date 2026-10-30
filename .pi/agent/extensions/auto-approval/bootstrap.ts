@@ -121,6 +121,7 @@ export async function prepareExecutor(
 
   const sources = await fingerprint(directory, [
     "runner.ts",
+    "edit-operation.ts",
     "../shared/contracts/jobs.ts",
     "credential-command.ts",
     "../shared/configuration/credential-profile.ts",

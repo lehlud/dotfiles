@@ -28,6 +28,7 @@ import type {
 import { writingCheckTool } from "../../public-writing/index.ts";
 import { Coordination } from "../../multiplex/coordination.ts";
 import { JobManager } from "../../jobs/manager.ts";
+import { executeEdit } from "../edit-operation.ts";
 import { reviewedReceipts } from "../../shared/review/receipts.ts";
 import { registerCipTools } from "../../shared/session/cip-tools.ts";
 import { sessionServices } from "../../shared/session/services.ts";
@@ -131,6 +132,8 @@ mock.module("../isolation.ts", () => ({
 
     if (request.tool === "writing_check")
       return writingCheckTool.execute("test-only", request.arguments, signal, undefined, ctx);
+
+    if (request.tool === "edit") return executeEdit(cwd, request.arguments, signal);
 
     const factories: any = {
       bash: createBashToolDefinition,
@@ -2371,4 +2374,55 @@ test("automatic handoff frees the gate queue without reapproval, restart, or ear
       JSON.stringify(receipt.content).includes("slow-auto"),
     ),
   ).toBe(true);
+});
+
+test("edit conflicts offer compact retries but every expanded replacement still needs fresh approval", async () => {
+  const path = "edit-retry-example.txt";
+  const before = "before\n\nvalue\n";
+  const replacement = "replacement ".repeat(1000);
+
+  await writeFile(join(root, path), before);
+
+  const original = {
+    tool: "edit",
+    arguments: { path, edits: [{ oldText: "before\nvalue", newText: replacement }] },
+    goal: "Fix the scoped example",
+    justification: "Replace the current block",
+  };
+  const failed: any = await call(original);
+
+  expect(failed.isError).toBe(true);
+  expect(failed.details.result.editConflict.unchanged).toBe(true);
+  expect(JSON.stringify(failed.content)).toContain("retry");
+  expect(JSON.stringify(failed.content)).not.toContain("sandbox failed");
+
+  const retry = {
+    tool: "edit",
+    arguments: {
+      retry: failed.details.approval.requestId,
+      edits: [{ index: 0, oldText: "before\n\nvalue" }],
+    },
+    goal: original.goal,
+    justification: "Correct the anchor against the unchanged file",
+  };
+
+  expect(JSON.stringify(retry).length).toBeLessThan(JSON.stringify(original).length / 10);
+  mode = "deny";
+  expect((await call(retry)).isError).toBe(true);
+  expect(executedRequests).toHaveLength(1);
+  expect(await readFile(join(root, path), "utf8")).toBe(before);
+  expect(requested[1].data.action.arguments.edits[0].newText).toBe(replacement);
+  mode = "approve";
+
+  const completed = await call({ ...retry, arguments: JSON.stringify(retry.arguments) });
+
+  expect(completed.isError).not.toBe(true);
+  entries.push({
+    type: "message",
+    message: { role: "toolResult", toolName: "approved_action", toolCallId: "call", ...completed },
+  });
+  expect(requested).toHaveLength(3);
+  expect(executedRequests).toHaveLength(2);
+  expect(await readFile(join(root, path), "utf8")).toBe(replacement + "\n");
+  expect(reviewedReceipts(entries)).toHaveLength(1);
 });
