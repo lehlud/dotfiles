@@ -652,7 +652,7 @@ test("the same action uses the same review policy regardless of coordination and
   expect(calls).toHaveLength(2);
   expect(calls[0].context.systemPrompt).toEqual(calls[1].context.systemPrompt);
   expect(calls[0].context.systemPrompt).toContain(
-    "Assess the exact action.tool, action.arguments and sandbox access",
+    "Review ONE exact action.tool, action.arguments and sandboxPlan",
   );
   expect(calls[0].context.systemPrompt).toContain("alternative unreviewed execution routes");
 

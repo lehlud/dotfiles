@@ -1,3 +1,5 @@
+import { safetyReviewFixtures } from "./safety-review-fixtures.ts";
+import { REVIEW_SYSTEM } from "../review-policy.ts";
 import { describe, test, expect } from "bun:test";
 import { buildReview } from "../review.ts";
 import {
@@ -1024,4 +1026,31 @@ test("CIP execution review envelopes retain existing routing, prior denials and 
 
   expect(data.previousDenials[0].reason).toContain("64-GiB");
   expect(data.previousDenials[0].source).toBe("historical-review-result");
+});
+
+test("safety review retains exact operations and access facts without interpreting task order as permission", () => {
+  expect(REVIEW_SYSTEM).toContain("Task ordering is not a security boundary");
+  expect(REVIEW_SYSTEM).not.toContain("Honor explicit user sequencing conditions");
+
+  for (const fixture of safetyReviewFixtures) {
+    const envelope = JSON.parse(
+      buildReview(
+        fixture.action,
+        fixture.entries,
+        config,
+        "/project",
+        ["/etc/shadow"],
+        fixture.sandboxPlan,
+      ).text,
+    );
+
+    expect(envelope.action).toEqual(fixture.action);
+    expect(envelope.userPrompts).toEqual(
+      fixture.entries
+        .filter((entry) => entry.type === "message" && entry.message?.role === "user")
+        .map((entry) => entry.message!.content),
+    );
+
+    if (fixture.sandboxPlan) expect(envelope.sandboxPlan).toEqual(fixture.sandboxPlan);
+  }
 });

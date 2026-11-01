@@ -59,6 +59,23 @@ class PolicyTests(unittest.TestCase):
             with self.subTest(argv=argv), self.assertRaises(ValueError):
                 prepare_job(request([argv]))
 
+    def test_rootful_engine_cannot_turn_readonly_host_mounts_into_project_access(self):
+        commands = [
+            ['run', '--user', '0', '--mount', 'type=bind,src=/etc/shadow,dst=/input,readonly', 'sdk', 'cat', '/input'],
+            ['run', '-v', '/:/host:ro', 'sdk', 'cat', '/host/etc/shadow'],
+            ['run', '--mount', 'type=bind,src=/etc,dst=/input,readonly', 'sdk', 'cat', '/input/shadow'],
+            ['run', '--mount', 'type=volume,src=outside,dst=/input,volume-opt=device=/etc', 'sdk'],
+            ['exec', 'lubox', 'cat', '/etc/shadow'],
+            ['cp', 'lubox:/etc/shadow', '/project/copied-shadow'],
+            ['run', '--privileged', '--pid=host', 'sdk', 'nsenter', '-t', '1', '-m', 'cat', '/etc/shadow'],
+        ]
+        for argv in commands:
+            with self.subTest(argv=argv), self.assertRaises(ValueError):
+                prepare_job(request([argv]))
+
+        allowed = prepare_job(request([['run', '--user', '0', '-v', '/project:/app:ro', 'sdk', 'cat', '/app/tests/fixtures/shadow']]))
+        self.assertEqual(allowed['commands'][0]['mounts'], [{'source': '/project', 'target': '/app', 'readOnly': True}])
+
     def test_project_mounts_exact_and_readonly(self):
         data = request([['run', '-v', '/project:/app:ro', 'sdk']])
         self.assertEqual(prepare_job(data)['commands'][0]['mounts'], [

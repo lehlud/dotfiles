@@ -1,17 +1,27 @@
 # Pi Auto-Approval
 
 Every external action needs an independent verdict persisted before isolated execution.
+Action review checks concrete safety, access/effect authorization and directly evident material
+errors. It does not enforce task order, roadmap phases, milestones, design or deliverable quality,
+even when the user supplies a specific work sequence. Those instructions still govern the working
+agent and completion review. Actual restrictions on files, mutations, secrets, network, deletion
+and publication remain binding. A backup before destroying irreplaceable data is a safety
+condition; finishing one harmless implementation subtask before another is a planning condition.
+
+A rootful Docker/Podman service can act beyond the agent's own sandbox. Its privileges do not
+authorize host access: read-only host mounts, host namespaces, engine sockets and preexisting
+containers remain constrained by exact reviewed grants and deterministic bridge checks. No
+Docker command is executed by the review-only `bun run eval:safety` cases; they contrast ordinary
+out-of-order work with host-secret access and other concrete hazards. Real-model evaluation needs
+the selected reviewer's private login on the machine where it runs.
+
 Direct tools, `!`/`!!`, nested external calls and local host fallbacks are blocked.
 [Remote work](../remote/README.md) uses reviewed SSH; only native operator UI consent
 after failed remote bwrap permits remote-account mode. Local credential isolation remains
 mandatory; unsupported required guarantees fail closed. See the [architecture guide](../README.md).
 
-The gate checks safety, authorization and exact, directly evident unintended errors, not
-preferred design, style, usefulness or work order. Normal scoped edits, tests/docs and
-foreground validation are authorized by the corresponding task. Visible inline programs
-need no exhaustive prerequisite inspection. Intentional negative tests/refactors are legitimate;
-concrete secret access, harmful changes, uploads, deletion and gate interference need scrutiny.
-Editorial rules apply only to explicit [writing_check](../public-writing/README.md).
+Intentional negative tests and intermediate refactors are legitimate. Editorial checks belong
+only to explicit [writing_check](../public-writing/README.md), never ordinary file mutations.
 
 ## Startup and status
 

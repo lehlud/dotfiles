@@ -173,6 +173,6 @@ test("host policy and pre-start/cleanup regressions use only fake engines", () =
     resolve(import.meta.dir, "container-policy.test.py"),
   ]);
 
-  expect(child.stderr.toString()).toContain("Ran 14 tests");
+  expect(child.stderr.toString()).toContain("Ran 15 tests");
   expect(child.exitCode).toBe(0);
 });

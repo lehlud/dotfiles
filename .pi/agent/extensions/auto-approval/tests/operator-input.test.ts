@@ -119,9 +119,11 @@ test("major replacement and stop instructions stay authoritative even when deliv
 
   expect(data.latestUserPrompt).toContain("Stop the migration");
   expect(data.userPrompts).toContain(data.latestUserPrompt);
-  expect(REVIEW_SYSTEM.replace(/\s+/g, " ")).toContain("Never assume steering is minor");
   expect(REVIEW_SYSTEM.replace(/\s+/g, " ")).toContain(
-    "later explicit instructions override earlier scope",
+    "Later instructions can add work, replace or cancel a task, or change permissions.",
+  );
+  expect(REVIEW_SYSTEM.replace(/\s+/g, " ")).toContain(
+    "Later explicit access/effect restrictions override earlier authorization",
   );
 });
 
