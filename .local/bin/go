@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+_helper="${AUTO_UPDATE_APP_HELPER:-$HOME/.local/bin/auto-update-app.bash}"
+if [ ! -r "$_helper" ]; then
+    printf 'go install failed: missing helper: %s\n' "$_helper" >&2
+    exit 1
+fi
+
+. "$_helper"
+
+_go_resolve() {
+    local os
+    local arch
+    local release
+
+    case "$(auto_update_platform_os)" in
+        linux) os=linux ;;
+        darwin) os=darwin ;;
+        *)
+            printf 'go install failed: unsupported OS: %s\n' "$(uname -s)" >&2
+            return 1
+            ;;
+    esac
+
+    case "$(auto_update_platform_arch)" in
+        x86_64) arch=amd64 ;;
+        aarch64) arch=arm64 ;;
+        *)
+            printf 'go install failed: unsupported architecture: %s\n' "$(uname -m)" >&2
+            return 1
+            ;;
+    esac
+
+    release="$(curl --fail --silent --show-error --location \
+        'https://go.dev/VERSION?m=text')" || return 1
+    release="${release%%$'\n'*}"
+    if [[ ! "$release" =~ ^go[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+        printf 'go install failed: invalid stable version: %s\n' "$release" >&2
+        return 1
+    fi
+
+    AUTO_UPDATE_URL="https://go.dev/dl/$release.$os-$arch.tar.gz"
+    AUTO_UPDATE_SOURCE_REL=go
+    AUTO_UPDATE_SOURCE_BIN_REL=go/bin/go
+    AUTO_UPDATE_VERSION="$release"
+}
+
+_platform="$(auto_update_platform_suffix)"
+_cache_dir="$(auto_update_platform_cache_dir "$HOME/.local/cache/go")"
+auto_update_ensure_tar_app go "$_cache_dir" go go/bin/go 3 _go_resolve https://go.dev
+
+# Replace managed defaults inherited from another OS, but preserve custom workspaces.
+case "${GOPATH:-$HOME/go}" in
+    "$HOME/go" | "$HOME/go/darwin-x86_64" | "$HOME/go/darwin-aarch64" | \
+        "$HOME/go/linux-x86_64" | "$HOME/go/linux-aarch64")
+        export GOPATH="$HOME/go/$_platform"
+        ;;
+esac
+
+export GOROOT="$_cache_dir/go"
+export PATH="$GOROOT/bin:$PATH"
+
+exec "$GOROOT/bin/go" "$@"
